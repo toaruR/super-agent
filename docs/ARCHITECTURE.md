@@ -742,6 +742,7 @@ super-agent status
 | **S2** | CVE + 証拠固定 + 簡報（パス渡し） | 判定が環境非依存になる | ✅ **`cve.py`/`brief.py` として実装。N=4 で確認**（16行/2/3/42ファイル） |
 | **S3** | 席 + リース + worktree | 並列実装が壊れない | ❌ **未実施** |
 | **S4** | 3段判定 + 裁定規則 | 信用できる合否 | ✅ **`adjudicate2.py` として実装。実CVE+実LLMで確認**（意見が割れても裁定一致・advisory保持） |
+| **S2+S4 統合** | 検証パイプライン（CVE→簡報→レビュー→裁定） | 一台で end-to-end に検証・裁定 | ✅ **`harness/roles/review_flow.py` として実装。caseGreen/caseB で実CVE実行＋tree_hash束縛＋裁定を確認（11 test passed）。レビュア不能時は judgment_unavailable（偽failなし）** |
 | **S5** | 予算 + 承認キュー + status | 人間の負荷が一定になる | ⚠ **予算のみ実装**（`brief.py`。-81%〜-91%）。承認キュー・statusは未実施 |
 | **S6** | 改良ループ | 同じ失敗を繰り返さない | ❌ **未実施** |
 | **S7** | **OSレベル隔離 + `acceptance[].run` 許可リスト化** | 実行の副作用・インジェクションを封じる | ⚠ **許可リスト化は実装済み**（`verifiers.py`。H2解決）。OS隔離(network/fs namespace)は未実施(U6) |
