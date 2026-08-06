@@ -1,7 +1,7 @@
 # Super Agent ハーネス — 使い方マニュアル
 
 このドキュメントは、**完成した設計・実装を実際にどう動かすか**を説明します。
-設計の意図（なぜこうなっているか）は `docs/ARCHITECTURE.md` を参照。
+設計の意図（なぜこうなっているか）は `docs/spec.md` を参照。
 
 ---
 
@@ -227,7 +227,7 @@ $CVE -m pytest harness/tests/ -q
 - 予算上限での自動停止・承認キュー（Stage D）
 - レビュアの OS レベル隔離（Stage F）
 
-これらは `docs/IMPLEMENTATION_PLAN.md` の Stage B〜F を参照。
+これらは `docs/plan.md` の Stage B〜F を参照。
 
 ---
 

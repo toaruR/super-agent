@@ -5,18 +5,21 @@ Claude Code / Codex / Antigravity など**ベンダーの異なるコーディ�
 
 ## 読む順番
 
+> **全ドキュメントの目録（何がどこにあるか）は [`docs/catalog.md`](docs/catalog.md) を参照。**
+> ドキュメント構造のゴールと評価方法は [`docs/goals/documentation.md`](docs/goals/documentation.md)。
+
 | # | 文書 | 内容 |
 |---|---|---|
-| 1 | [`docs/GOAL_AND_RUBRIC.md`](docs/GOAL_AND_RUBRIC.md) | **ゴール**（何を良しとするか）と**評価方法**（100点ルーブリック） |
-| 2 | [`docs/EVIDENCE.md`](docs/EVIDENCE.md) | 設計の前提となる**実測結果**（推測を排するため設計前に実施） |
-| 3 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **大枠設計 本体**（v3） |
-| 4 | [`docs/SCORING.md`](docs/SCORING.md) | v1(52点)→v2(79点)→v3(92点) の**採点と改稿の記録** |
-| 5 | [`docs/S2_VALIDATION.md`](docs/S2_VALIDATION.md) | 設計の中心主張を**実機で検証**した結果（§5.6 の訂正を含む） |
-| 6 | [`docs/N3_AND_LARGE_DIFF.md`](docs/N3_AND_LARGE_DIFF.md) | N=3→N=4 実測と、大きな差分への対処（決定関連性による劣化） |
-| 7 | [`docs/PERMISSION_CONTROL.md`](docs/PERMISSION_CONTROL.md) | 起動オプションによる制御の実測。**read-only は実行を止めない**という発見 |
-| 8 | [`docs/REVIEW_RESPONSE.md`](docs/REVIEW_RESPONSE.md) | 独立レビュー（`unsound`）への回答・自己採点92点の撤回・改訂案 |
-| 9 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | 設計を動くハーネスにする実装計画（Stage A→F） |
-| 10 | [`docs/USAGE.md`](docs/USAGE.md) | **使い方マニュアル**（実際に動かす手順） |
+| 1 | [`docs/goals/design.md`](docs/goals/design.md) | **ゴール**（何を良しとするか）と**評価方法**（100点ルーブリック） |
+| 2 | [`docs/evidence/000-base-evidence.md`](docs/evidence/000-base-evidence.md) | 設計の前提となる**実測結果**（推測を排するため設計前に実施） |
+| 3 | [`docs/spec.md`](docs/spec.md) | **大枠設計 本体**（v3） |
+| 4 | [`docs/design-notes/scoring.md`](docs/design-notes/scoring.md) | v1(52点)→v2(79点)→v3(92点) の**採点と改稿の記録** |
+| 5 | [`docs/evidence/0606-s2-validation.md`](docs/evidence/0606-s2-validation.md) | 設計の中心主張を**実機で検証**した結果（§5.6 の訂正を含む） |
+| 6 | [`docs/evidence/0606-n3-large-diff.md`](docs/evidence/0606-n3-large-diff.md) | N=3→N=4 実測と、大きな差分への対処（決定関連性による劣化） |
+| 7 | [`docs/evidence/0606-permission-control.md`](docs/evidence/0606-permission-control.md) | 起動オプションによる制御の実測。**read-only は実行を止めない**という発見 |
+| 8 | [`docs/design-notes/review-response.md`](docs/design-notes/review-response.md) | 独立レビュー（`unsound`）への回答・自己採点92点の撤回・改訂案 |
+| 9 | [`docs/plan.md`](docs/plan.md) | 設計を動くハーネスにする実装計画（Stage A→F） |
+| 10 | [`docs/usage.md`](docs/usage.md) | **使い方マニュアル**（実際に動かす手順） |
 
 ## 一言でいうと
 
@@ -61,10 +64,10 @@ S1（台帳）・S3（並列/リース/worktree）・S6（改良ループ）・S
 
 本設計は別ベンダー（codex）による独立レビューを受けており、判定は **`unsound`**（過大主張26件・
 構造的欠陥18件・high 8件）。その後の自らと独立レビュア双方による実測で、中心命題は N=4 で支持された。
-詳細と訂正は [`docs/REVIEW_RESPONSE.md`](docs/REVIEW_RESPONSE.md)、
-権限実測は [`docs/PERMISSION_CONTROL.md`](docs/PERMISSION_CONTROL.md)、
-N=3＋大きな差分は [`docs/N3_AND_LARGE_DIFF.md`](docs/N3_AND_LARGE_DIFF.md)。
+詳細と訂正は [`docs/design-notes/review-response.md`](docs/design-notes/review-response.md)、
+権限実測は [`docs/evidence/0606-permission-control.md`](docs/evidence/0606-permission-control.md)、
+N=3＋大きな差分は [`docs/evidence/0606-n3-large-diff.md`](docs/evidence/0606-n3-large-diff.md)。
 
-実装は `ARCHITECTURE.md` §10 の S1→S7 の順で進める想定。
+実装は `docs/spec.md` §10 の S1→S7 の順で進める想定。
 **現在は Stage A（基盤・CLI）と Stage C（検証パイプライン）が実装済み。**
-実際に動かす手順は **[`docs/USAGE.md`](docs/USAGE.md)** を参照。
+実際に動かす手順は **[`docs/usage.md`](docs/usage.md)** を参照。

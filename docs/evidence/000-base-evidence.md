@@ -93,7 +93,7 @@ codex のレビュー実行で `agent_message` が2件出た。
 
 > 含意: 予算制御は**トークンに正規化**し、価格表はハーネス側で持つ。
 
-### A-5. 同じ `--json-schema` でも渡し方が逆（後日実測 / `N3_AND_LARGE_DIFF.md` §6）
+### A-5. 同じ `--json-schema` でも渡し方が逆（後日実測 / `docs/evidence/0606-n3-large-diff.md` §6）
 
 | ベンダー | スキーマの渡し方 |
 |---|---|
@@ -108,7 +108,7 @@ codex exec --json --output-schema schema.json "$PROMPT"                       # 
 > 含意: 「同じ機能がある」ことと「同じ呼び方ができる」ことは別。
 > §4.1 のアダプタ宣言は、フラグ名だけでなく**引数の意味（本文かパスか）**まで宣言する必要がある。
 
-### A-6. ★「read-only」権限は実行を止めない（後日実測 / `PERMISSION_CONTROL.md` §4, §7）
+### A-6. ★「read-only」権限は実行を止めない（後日実測 / `docs/evidence/0606-permission-control.md` §4, §7）
 
 **実測（「実行しなければ答えられない値」＝ランダムファイルの SHA-256 で検証）**:
 

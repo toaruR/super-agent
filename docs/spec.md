@@ -1,7 +1,7 @@
 # 異ベンダー・エージェントチーム — 大枠設計 (v3)
 
-- 版: v3（v1→v2→v3 の反復結果。採点は `SCORING.md`）
-- 前提の実測: `EVIDENCE.md` / ゴールと評価基準: `GOAL_AND_RUBRIC.md`
+- 版: v3（v1→v2→v3 の反復結果。採点は `design-notes/scoring.md`）
+- 前提の実測: `evidence/000-base-evidence.md` / ゴールと評価基準: `design-goals.md`
 - 対象: Claude Code / Codex / Antigravity(agy) / Hermes ほか
 
 ---
@@ -103,7 +103,7 @@ cve:
 
 > **★実測で確認済み**: このサンプルは git-bash 上でそのまま動く（`python 3.11.11` / `git 2.41.0` を出力）。
 > 初期レビューで「`shell: bash` なのに Windows 絶対パスはおかしい」と指摘されたが、
-> **誤検出だった**（EVIDENCE A-? / 詳細は `PERMISSION_CONTROL.md` と `REVIEW_RESPONSE.md` §3.1）。
+> **誤検出だった**（EVIDENCE A-? / 詳細は `evidence/0606-permission-control.md` と `design-notes/review-response.md` §3.1）。
 > ただしパスは環境依存であり、**別マシンでは書き換えが必要**。
 
 E-4 の偽fail は、この一枚で構造的に消える。
@@ -122,7 +122,7 @@ codex の環境に python が無くても、CVE に在れば検証は通る。
 > **`tree_hash` が一致しない証拠は、裁定時に `advisory` 扱い（採用しない）**。
 > これにより「証拠と成果物の対応」が保証され、中心命題（証拠に基づく裁定）の前提が成立する。
 > 実測: 同一 worktree を**別パスへ再帰コピー**した上で `tree_hash` を再計算しても一致した
->（`7b8f8ae90f23dce4`、N3_AND_LARGE_DIFF.md §0）。証拠の再現性が確認された。
+>（`7b8f8ae90f23dce4`、evidence/0606-n3-large-diff.md §0）。証拠の再現性が確認された。
 > **根拠**: H4 は C2（判定信頼性）の満点根拠を補完する。
 逆に CVE のプローブが落ちていれば、**タスクを開始せずに人間へ上げる**（環境障害をタスク失敗として記録しない）。
 
@@ -191,7 +191,7 @@ agy:
   brief_mode: path
 ```
 
-### 4.1 宣言が吸収する実測差分（すべて EVIDENCE.md 由来）
+### 4.1 宣言が吸収する実測差分（すべて evidence/000-base-evidence.md 由来）
 
 | 実測 | 素朴な設計だとどうなるか | 本設計の吸収先 |
 |---|---|---|
@@ -204,7 +204,7 @@ agy:
 | **A-6 権限フラグの意味がベンダーで違う** | 「read-only」と書いたつもりが挙動がバラバラ | `permission.readonly` をベンダーごとに正しく宣言 |
 | **★「read-only」は実行を止めない** | `--sandbox read-only` / `--allowedTools` でもコマンドは走る | 裁定器のみで独立性を担保（§7.2）。権限は多層防御の一枚 |
 
-> **A-6 の詳細（致命的）**: 実測（`PERMISSION_CONTROL.md` §4, §7）で、
+> **A-6 の詳細（致命的）**: 実測（`evidence/0606-permission-control.md` §4, §7）で、
 > 権限フラグは**実行を阻止しない**ことが判明した。
 > - claude `--disallowedTools "Bash"` → **`PowerShell` ツールで実行された**
 > - claude `--allowedTools` のみ → **許可外の `Bash` が使われた**（強制力なし）
@@ -321,7 +321,7 @@ E-5 の実測（16行のレビューに13.8万トークン）が示す通り、
 > **⚠ 本節は 2026-08-06 に全面改訂した。**
 > 旧版は「簡報は中身の埋め込みでなければならない」と書いていたが、
 > これは **read-only の実装を1通りしか試さずに出した誤った一般化**だった。
-> 実測の詳細は [`PERMISSION_CONTROL.md`](PERMISSION_CONTROL.md)。
+> 実測の詳細は [`evidence/0606-permission-control.md`](evidence/0606-permission-control.md)。
 
 **既定はパス渡し**（証拠＋ファイルパスのみ渡し、ソース本文は渡さない）。
 レビュアには読み取りツールの権限を明示的に与える。
@@ -369,7 +369,7 @@ Code under review: <worktree絶対パス>
 ```
 
 > **★重要な訂正: 「レビュアは実行しない」を前提にしてはならない。**
-> 実測（`PERMISSION_CONTROL.md` §4）で、`--disallowedTools "Bash"` を指定しても
+> 実測（`evidence/0606-permission-control.md` §4）で、`--disallowedTools "Bash"` を指定しても
 > **`PowerShell` ツールで実行され**、`codex --sandbox read-only` でも
 > **コマンドは実行される**ことが判明した（read-only が防ぐのは**書き込みだけ**）。
 >
@@ -396,7 +396,7 @@ Code under review: <worktree絶対パス>
 落としたものは `=== OMITTED (budget) ===` として簡報に**明記**し、
 「省略部分について推測するな」と指示する。**黙って隠さないことが安全性の要**。
 
-**実測**（42ファイル・38,450字、`N3_AND_LARGE_DIFF.md` §4）:
+**実測**（42ファイル・38,450字、`evidence/0606-n3-large-diff.md` §4）:
 
 | 方式 | トークン | 裁定 | 根本原因の特定 |
 |---|---|---|---|
@@ -519,7 +519,7 @@ task.leased(T-012, agent=claude, lease_until=T+15min, budget_tokens=120000)
 > 当初は「証拠なき指摘は破棄」だったが、それでは設計上の懸念やセキュリティの匂いを
 > 機械的に握りつぶす。**裁定には使わない／ただし失わない**が正しい落とし所。
 >
-> **実測**（`N3_AND_LARGE_DIFF.md` §2）: 同一成果物に対しレビュア2者の意見が
+> **実測**（`evidence/0606-n3-large-diff.md` §2）: 同一成果物に対しレビュア2者の意見が
 > `fail`(codex) と `pass`(claude) に**割れたが、機械裁定はどちらも `pass` で一致**し、
 > 4件の指摘は1件も失われず advisory に保持された。
 
@@ -531,7 +531,7 @@ task.leased(T-012, agent=claude, lease_until=T+15min, budget_tokens=120000)
 > **CVE はこの問題を一切解決していない**。判定を環境から独立させただけで、
 > 「何を検証すべきか」の妥当性は未解決のまま残っている。
 >
-> **★実例が出た**（`N3_AND_LARGE_DIFF.md` §2）: Case B は `4 passed`（exit 0）だったが、
+> **★実例が出た**（`evidence/0606-n3-large-diff.md` §2）: Case B は `4 passed`（exit 0）だったが、
 > 実際には (a) Money が可変で**post 後に履歴を書き換えられる**、
 > (b) `is_balanced()` が**恒真でテストとして無意味**、という欠陥が残っていた。
 > 両方とも CVE では検出できず、**レビュアが読んで初めて分かった**。
@@ -566,7 +566,7 @@ task.leased(T-012, agent=claude, lease_until=T+15min, budget_tokens=120000)
 > それも 16行のファイル1本（N=1）で確認したにすぎない。
 > **CVE は環境依存を無くしたのではなく、依存先を1箇所に集約した**。集約先が壊れれば全タスクが止まる。
 
-> ### ★追記（PERMISSION_CONTROL.md 実測を受けて）: 権限制御も判定独立性を担保しない
+> ### ★追記（evidence/0606-permission-control.md 実測を受けて）: 権限制御も判定独立性を担保しない
 > 上の「② codex は read-only で…実行しない」は、**read-only という意図に依存している**。
 > しかし実測では、権限フラグは**実行を阻止しない**ことが判明した
 > （claude は `PowerShell` 経由で、codex は `--sandbox read-only` でも実行された）。
@@ -633,7 +633,7 @@ super-agent status
   実行してよいのは `acceptance[].run` と CVE の定義済みコマンドのみ。
 - write権限は**自分の worktree のみ**。`touch_allow` 外への書き込みは統合時に検出して差し戻す。
 
-> ### ⚠ 実測で判明した権限フラグの限界（`PERMISSION_CONTROL.md` §4）
+> ### ⚠ 実測で判明した権限フラグの限界（`evidence/0606-permission-control.md` §4）
 >
 > ベンダーの権限フラグは**実行を止めない**。実測結果:
 >
