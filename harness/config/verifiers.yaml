@@ -1,0 +1,9 @@
+# H2 fix: verb -> (executable, fixed prefix args)
+# verb はここに登録されたもののみ許可。args はシェル展開せず逐次引数で渡す。
+verifiers:
+  pytest: ["python", "-m", "pytest", "-q"]
+  unittest: ["python", "-m", "unittest"]
+  mypy: ["python", "-m", "mypy"]
+  ruff: ["python", "-m", "ruff", "check"]
+  node-test: ["node", "--test"]
+  go-test: ["go", "test", "./..."]

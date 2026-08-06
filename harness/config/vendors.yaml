@@ -1,0 +1,49 @@
+# §4 ベンダーの抽象化宣言。新ベンダー追加はこのファイルへの宣言のみ（G1/C3）。
+# 全フラグは実測（EVIDENCE A-1〜A-6）に基づく。
+
+claude:
+  headless:  ["claude", "-p", "{prompt}"]
+  structured:
+    flag: "--json-schema"
+    form: inline            # 実測: claude はスキーマをインライン文字列で受ける（A-5）
+  session:
+    id_origin: caller       # ★呼び側が UUID を採番し --session-id で渡す（A-1）
+    resume_flag: ["--resume"]
+  permission:
+    readonly:
+      - "--allowedTools"
+      - "Read,Grep,Glob"    # 読取専用（実行は防げない→A-6）
+  brief_mode: path          # 簡報はファイルパス渡し（§5.6）
+
+codex:
+  headless:  ["codex", "exec", "{prompt}"]
+  structured:
+    flag: "--output-schema"
+    form: file              # 実測: codex はスキーマをファイルパスで受ける（A-5）
+  session:
+    id_origin: callee       # ★codex が採番しハンドルを返す（A-1）
+    resume_flag: ["--resume"]
+    # A-2: codex exec resume は -s を受け付けない。再開時は権限を毎回再宣言。
+    # sandbox read-only は permission.readonly が付与するのでここでは full-auto のみ。
+    resume_extra: ["--full-auto"]
+  permission:
+    readonly:
+      - "--sandbox"
+      - "read-only"         # 書込のみ阻止・実行は防げない（A-6）
+  brief_mode: path
+
+agy:
+  headless:  ["agy", "{prompt}"]
+  structured:
+    flag: "--json-schema"
+    form: inline
+  session:
+    id_origin: callee       # agy は試験不足（E-2a のみ）。callee 仮定
+    resume_flag: ["--resume-session-id"]
+  permission:
+    readonly:
+      - "--mode"
+      - "plan"
+      - "--add-dir"
+      - "{worktree}"        # ★最適解: 実行阻止 + 読取可（PERMISSION_CONTROL §7.4）
+  brief_mode: path

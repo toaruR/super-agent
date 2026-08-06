@@ -1,0 +1,142 @@
+#!/usr/bin/env python
+"""Vendor invocation adapter (ARCHITECTURE §4).
+
+Turns a vendor declaration (config/vendors.yaml) into concrete CLI commands,
+handles structured-output extraction (A-3/A-5), session resume (A-1/A-2), and
+permission flags (A-6). No shell interpolation of model output anywhere.
+
+Two modes:
+- real: actually runs the subprocess (for live use)
+- dry-run: returns the command list only (for tests / inspection)
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+class VendorDecl:
+    def __init__(self, name: str, decl: dict[str, Any]) -> None:
+        self.name = name
+        self.decl = decl
+
+    def headless(self, prompt: str) -> list[str]:
+        return [a.replace("{prompt}", prompt) for a in self.decl["headless"]]
+
+    def structured_flags(self, schema: dict | None) -> list[str]:
+        """Return flags to request structured output.
+
+        claude expects the schema inline (A-5); codex expects a file path (A-5).
+        """
+        if schema is None:
+            return []
+        flag = self.decl["structured"]["flag"]
+        form = self.decl["structured"]["form"]
+        if form == "inline":
+            return [flag, json.dumps(schema, ensure_ascii=False)]
+        # form == file
+        path = self._write_schema(schema)
+        return [flag, path]
+
+    def _schema_file(self) -> Path:
+        d = Path(__file__).resolve().parent.parent / "config"
+        d.mkdir(exist_ok=True)
+        return d / f"_schema_{self.name}.json"
+
+    def _write_schema(self, schema: dict) -> str:
+        p = self._schema_file()
+        p.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+        return str(p)
+
+    def resume_flags(self, session_id: str) -> list[str]:
+        base = list(self.decl["session"]["resume_flag"])
+        cmd = [*base, session_id]
+        extra = self.decl["session"].get("resume_extra")
+        if extra:
+            cmd += extra
+        return cmd
+
+    def permission_flags(self, worktree: str | None = None) -> list[str]:
+        ro = self.decl["permission"]["readonly"]
+        out = []
+        for tok in ro:
+            if tok == "{worktree}" and worktree is not None:
+                out.append(worktree)
+            else:
+                out.append(tok)
+        return out
+
+    def result_path(self) -> str:
+        return self.decl.get("result_path", ".structured_output")
+
+
+def load_vendors(config_dir: str | Path) -> dict[str, VendorDecl]:
+    path = Path(config_dir) / "vendors.yaml"
+    with open(path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return {name: VendorDecl(name, decl) for name, decl in data.items()}
+
+
+def build_command(
+    decl: VendorDecl,
+    prompt: str,
+    *,
+    schema: dict | None = None,
+    session_id: str | None = None,
+    worktree: str | None = None,
+) -> list[str]:
+    """Assemble the full argv for one invocation."""
+    cmd = decl.headless(prompt)
+    if schema is not None:
+        cmd += decl.structured_flags(schema)
+    if session_id is not None:
+        cmd += decl.resume_flags(session_id)
+    cmd += decl.permission_flags(worktree)
+    return cmd
+
+
+def extract_result(stdout: str, result_path: str) -> Any:
+    """Extract the structured field from a vendor response (A-3).
+
+    claude/agy: a JSON object (possibly one of several agent_message events);
+    take the last non-empty JSON line. codex: a JSON object with the schema keys.
+    """
+    candidates = [ln for ln in stdout.splitlines() if ln.strip().startswith("{")]
+    if not candidates:
+        return None
+    obj = json.loads(candidates[-1])
+    # support a dotted result_path (e.g. ".structured_output")
+    cur: Any = obj
+    for key in result_path.split("."):
+        if key:
+            if not isinstance(cur, dict) or key not in cur:
+                return obj  # path missing -> return whole object
+            cur = cur[key]
+    return cur
+
+
+def invoke(
+    decl: VendorDecl,
+    prompt: str,
+    *,
+    schema: dict | None = None,
+    session_id: str | None = None,
+    worktree: str | None = None,
+    dry_run: bool = False,
+    timeout: int = 300,
+) -> dict[str, Any]:
+    cmd = build_command(decl, prompt, schema=schema, session_id=session_id, worktree=worktree)
+    if dry_run:
+        return {"cmd": cmd, "dry_run": True}
+    proc = subprocess.run(cmd, capture_output=True, text=True, shell=False, timeout=timeout)
+    return {
+        "cmd": cmd,
+        "returncode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "result": extract_result(proc.stdout, decl.result_path()),
+    }

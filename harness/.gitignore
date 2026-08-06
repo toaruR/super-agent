@@ -1,0 +1,5 @@
+# harness runtime artifacts (relative to harness/)
+ledger/
+config/_schema_*.json
+__pycache__/
+*.pyc
