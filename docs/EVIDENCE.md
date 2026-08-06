@@ -93,6 +93,39 @@ codex のレビュー実行で `agent_message` が2件出た。
 
 > 含意: 予算制御は**トークンに正規化**し、価格表はハーネス側で持つ。
 
+### A-5. 同じ `--json-schema` でも渡し方が逆（後日実測 / `N3_AND_LARGE_DIFF.md` §6）
+
+| ベンダー | スキーマの渡し方 |
+|---|---|
+| claude | **JSON本文をインラインで**渡す。ファイルパスを渡すと `Error: --json-schema is not valid JSON` |
+| codex | **ファイルパスを** `--output-schema` に渡す |
+
+```bash
+claude -p "$PROMPT" --output-format json --json-schema "$(cat schema.json)"   # 本文
+codex exec --json --output-schema schema.json "$PROMPT"                       # パス
+```
+
+> 含意: 「同じ機能がある」ことと「同じ呼び方ができる」ことは別。
+> §4.1 のアダプタ宣言は、フラグ名だけでなく**引数の意味（本文かパスか）**まで宣言する必要がある。
+
+### A-6. ★「read-only」権限は実行を止めない（後日実測 / `PERMISSION_CONTROL.md` §4, §7）
+
+**実測（「実行しなければ答えられない値」＝ランダムファイルの SHA-256 で検証）**:
+
+| 設定 | 実行されたか |
+|---|---|
+| claude `--disallowedTools "Bash"` | **✅ 実行された**（`PowerShell` ツール経由） |
+| claude `--allowedTools "Read,Grep,Glob"` のみ | **✅ 実行された**（許可外の `Bash` が使われた。強制力なし） |
+| claude `--permission-mode plan` | ❌ 阻止（有効。ただし Write を使う） |
+| codex `--sandbox read-only` | **✅ 実行された**。防ぐのは**書き込みのみ** |
+| agy `--mode plan --add-dir <worktree>` | ❌ 阻止（3者中最も厳格） |
+
+> **含意（致命的）**: 判定独立性は「read-only にする」ことでは担保できない。
+> ベンダーの権限フラグは**多層防御の一枚**に過ぎず、実行を本当に止められるのは
+> agy の `--mode plan` や OS レベルの隔離だけである。
+> したがって独立性を担保するのは**§7.2 の裁定器**（レビュアの実行結果を読まない）であり、
+> 権限ではない。§8.3・§10(S7) も参照。
+
 ---
 
 ## E-4. ★最重要: 異ベンダー引き継ぎの実測と「偽の不合格」

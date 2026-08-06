@@ -1,0 +1,1 @@
+{"findings":[{"severity":"med","claim":"is_balanced() is tautological","cites":["ledger/accounts.py: is_balanced()"]},{"severity":"low","claim":"Money defines __eq__ without __hash__","cites":["ledger/money.py: __eq__"]}],"opinion_verdict":"pass"}

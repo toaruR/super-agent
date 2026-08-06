@@ -1,0 +1,23 @@
+{
+  "cve_ok": true,
+  "tree_hash": "b12a8e0019c93646",
+  "probes": [
+    {
+      "cmd": "D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c import pytest",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "ms": 357
+    }
+  ],
+  "evidence": [
+    {
+      "cmd": "D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -m pytest -q tests/",
+      "exit_code": 1,
+      "stdout": "F                                                                        [100%]\n================================== FAILURES ===================================\n_________________________________ test_smoke __________________________________\n\n    def test_smoke():\n>       assert op0_0(1,2) == 3\n               ^^^^^^^^^^\nE       TypeError: op0_0() missing 1 required positional argument: 'scale'\n\ntests\\test_smoke.py:4: TypeError\n=========================== short test summary info ===========================\nFAILED tests/test_smoke.py::test_smoke - TypeError: op0_0() missing 1 require...\n1 failed in 0.13s\n",
+      "stderr": "",
+      "ms": 801,
+      "id": "E-1"
+    }
+  ]
+}

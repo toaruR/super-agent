@@ -1,0 +1,1 @@
+{"findings":[{"severity":"low","claim":"Money accepts bool as cents","cites":["ledger/money.py: isinstance"]},{"severity":"low","claim":"Money mutable; can rewrite history","cites":["ledger/money.py: __slots__"]}],"opinion_verdict":"fail"}

@@ -1,0 +1,6 @@
+{
+  "probe": [["D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe", "-c", "import pytest"]],
+  "acceptance": [
+    ["D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe", "-m", "pytest", "-q", "tests/"]
+  ]
+}

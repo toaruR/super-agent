@@ -1,0 +1,1 @@
+{"findings":[{"severity":"high","claim":"retry() invokes fn only attempts-1 times","cites":["E-1"]}],"opinion_verdict":"fail"}
