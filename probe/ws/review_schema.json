@@ -1,0 +1,1 @@
+{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},"findings":{"type":"array","items":{"type":"string"}},"tested_command":{"type":"string"}},"required":["verdict","findings","tested_command"],"additionalProperties":false}
