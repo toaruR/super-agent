@@ -1,212 +1,229 @@
 # 実装計画 — 大枠設計を動くハーネスにする
 
-- 作成日: 2026-08-06
-- 現在の状態: 設計 v4（89点/合格）／ 部品5つは `probe/n3/` に実装済み／ 統合ハーネスは未実施
-- ゴール: `super-agent run <要求>` 一発で、**S1→S7 を通る最小ハーネス**を動かす
-- 品質基準: 合格は「設計品質」ではなく「本番相当の動作」。各段階でユニット/統合テストを通す
+- 作成日: 2026-08-06 ／ 改訂: 2026-08-06（「動かしながら確認できる順」へ再構成）
+- 現在の状態: 設計 v4（89点/合格）
+  - **済**: Stage A（台帳・アダプタ・invoke・CLI）／ Stage C（検証パイプライン ⑤⑥⑦⑨）
+  - **未**: ①要求→②分解→③編成→④実装→⑧統合→⑩改良
+- ゴール: `super-agent <サブコマンド>` で §9 の一周（要求→改良）を、**各段階が独立して動作確認できる**形で完成させる
+- 品質基準: 各段階で「実際にコマンドを叩いて結果を見る」ことを完了条件にする
 
 ---
 
-## 0. 既存部品（再利用する。書き直さない）
+## 0. 基本方針 — 「動かしながら確認できる」とは
 
-| ファイル | 役割 | 公開インターフェース |
-|---|---|---|
-| `probe/n3/cve.py` | CVE（唯一の実行環境） | `verify(root, acceptance, probe) -> {cve_ok, tree_hash, evidence[]}` |
-| `probe/n3/verifiers.py` | 許可リスト実行 | `run(acceptance, cwd) -> {ok, exit_code, argv, stdout, stderr}` |
-| `probe/n3/brief.py` | 簡報生成 | `build(ev, changed, context, budget) -> (text, tokens_est, dropped[])` |
-| `probe/n3/adjudicate2.py` | 機械裁定 | `adjudicate(evidence, review) -> {verdict, why, tree_hash, advisory[]}` |
-| `probe/n3/ledger.py` | 台帳 | `Ledger(path)` / `Sequencer(path)` |
+各ステージは **CLI サブコマンド1本で動かせる** ように切る。前段の出力が次段の入力になり、
+ユーザーはいつでも `super-agent status` / `super-agent log <task>` で台帳を覗ける。
 
-> これらは「実験の証跡」として `probe/n3/` に置かれている。
-> **実装計画では、`src/harness/` に製品コードを新規作成**し、必要なら上記から関数を
-> そのまま import する（コピーしない）。`probe/n3/` は回帰テストの題材として残す。
+| §9 | サブコマンド（予定） | 入力 | 出力（台帳イベント） |
+|---|---|---|---|
+| ① Architect | `architect "<要求>"` | 要求文 | `adr.written` |
+| ② Decomposer | `decompose <要求>` | 要求文 | `task.created` + `acceptance` |
+| ③ Scheduler | `plan <要求>` | 要求（分解済み） | `task.leased` + worktree 作成 |
+| ④ Implementer | `implement <task>` | task_id | `artifact.produced` + commit |
+| ⑤⑥⑦⑨ | `review <dir>` | ワークツリー | `verification.run` / `judgment`（**済**） |
+| ⑧ Integrator | `integrate <task>` | task_id | `integrated` |
+| ⑩ 改良 | `evolve` | 台帳 | `design.proposed` |
+
+**進め方の鉄則**: 各ステージは「そのステージだけで `super-agent <cmd>` を叩き、
+台帳にイベントが残り、ユーザーが結果を目で確認できる」ことを完了条件とする。
+一気に全部は書かない。一段完了ごとにコミット。
 
 ---
 
-## 1. ディレクトリ構成（新規 `src/harness/`）
+## 1. ディレクトリ構成（完成形）
 
 ```
 src/harness/
-  __init__.py
-  config/
-    vendors.yaml          # §4 アダプタ宣言（claude/codex/agy）
-    verification_env.yaml # §3.2 CVE 定義
-    verifiers.yaml        # §6.2 H2 許可リスト
-    prices.yaml           # §5.5 C6 価格表
-  core/
-    ledger.py             # Ledger/Sequencer を probe から昇格（そのまま import）
-    invoke.py             # §4 ベンダー呼び出し（構造化出力・再開・権限フラグ）
-    cve.py                # §3.2 CVE ラッパ（verify を呼ぶ）
-    brief.py              # §5.6 簡報（build を呼ぶ）
-    adjudicate.py         # §7.2 裁定（adjudicate を呼ぶ）
-    verifiers.py          # §6.2 許可リスト（そのまま import）
-  roles/
-    decomposer.py         # §6.2 タスク分解 + 構造検査
-    scheduler.py          # §6.3 リース + 割当 + 台帳追記（Sequencer 利用）
-    integrator.py         # §9 統合
-  cli.py                  # super-agent status / run
-  tests/
-    test_ledger.py        # probe/n3/ledger_test.py を昇格
-    test_invoke.py        # 構造化出力・再開の回帰（E-2a/A-1/A-2）
-    test_pipeline.py      # 最小パイプライン統合テスト（caseB で end-to-end）
+  config/        vendors.yaml / verification_env.yaml / verifiers.yaml / prices.yaml
+  core/          ledger.py invoke.py cve.py brief.py adjudicate.py verifiers.py budget.py
+  roles/         review_flow.py(済) decomposer.py scheduler.py implementer.py integrator.py improver.py architect.py
+  cli.py         super-agent <subcommand>
+  tests/         test_*.py
 ```
 
-> **原則**: 各モジュールは「プロンプト組み立て＋既存部品の呼び出し」に留める。
-> ロジックの核心（verify/run/build/adjudicate/Ledger）は既に実装済みなので、書くのは
-> **接着コードと台帳駆動の制御フロー**のみ。これが「小さく始める」の意味。
+> 書くのは「プロンプト組み立て＋既存部品の呼び出し＋台帳駆動の制御フロー」のみ。
+> ロジック核心（verify/run/build/adjudicate/Ledger）は既実装済み。
 
 ---
 
-## 2. 段階（S1 → S7）
+## 2. 段階（§9 の順＝動かしながら確認）
 
-### Stage A — S1: 台帳 + アダプタ + invoke（基盤）
+> 凡例: ✅済 / 🔜今回 / ⏳後続
+> 各段に **動作確認コマンド** と **完了条件** を書く。
 
-**目標**: 3ベンダーを同一IFで叩き、台帳にイベントを残せる。
+### Stage 0 — 動かしやすくする小さな足場（🔜 最初に）
 
-1. `core/ledger.py`: `probe/n3/ledger.py` を `src/harness/core/ledger.py` に配置（そのまま、パス調整のみ）。`tests/test_ledger.py` も移動。
-2. `core/invoke.py`: ベンダー宣言（vendors.yaml）を読み、以下を行う。
-   - 構造化出力: claude=`--json-schema` インライン / codex=`--output-schema` ファイル（A-5）
-   - 再開: claude=`--resume` / codex=`exec resume` + `resume_*` フラグ（A-2）
-   - 権限: claude=`--allowedTools Read,Grep,Glob` / codex=`--sandbox read-only` / agy=`--mode plan --add-dir {worktree}`（A-6/§5.6）
-   - 出力: `result_path` に従って抽出（A-3）
-3. `core/cve.py`, `core/brief.py`, `core/adjudicate.py`, `core/verifiers.py`: 既存部品を import する薄いラッパ。
-4. `roles/scheduler.py` の骨格: 台帳へ `task.created` / `agent.invoked` を書く。
+**目標**: 既に動く⑤⑥⑦⑨を1コマンドで試せるようにし、以降のステージも同じ形で差し込める。
 
-**テスト**: `test_invoke.py` — claude/codex/agy に対し実際に構造化出力を取り、スキーマ通りにパースできること（E-2a）。ローカルで実ベンダーを叩くため、CI では `--dry-run`（コマンド組み立てだけ）に切り替え。
+1. `cli.py` に `review <dir>` サブコマンドを追加（既存 `review_flow.run_pipeline` を呼ぶ）。
+   - `super-agent review probe/n3/caseGreen` で CVE→簡報→レビュー→裁定が走る。
+2. `cli.py` に `log <task>` サブコマンドを追加（台帳から特定タスクのイベント列を表示）。
+3. `cli.py` に `show design` / `show plan` を追加（L6 読み取り操作の先行実装）。
 
-**完了条件**: `super-agent run "..."` が台帳にイベントを1件以上残す。
+**動作確認**:
+```
+super-agent review probe/n3/caseGreen
+super-agent log T-XXXX
+super-agent status
+```
+**完了条件**: ドキュメントの通りに打てば⑤⑥⑦⑨が一人で確認できる。
 
 ---
 
-### Stage B — S3: 席 + リース + worktree（並列の土台）
+### Stage 1 — ① Architect（要求→設計の記録）（🔜）
 
-**目標**: 同一要求を N 並列で実装でき、クラッシュしても放置されない。
+**目標**: 要求に対する設計決定を ADR 形式で台帳に残す。まずは「人間が書いた設計を登録」
+から始め、その後 LLM に起案させる。
 
-1. `roles/decomposer.py`: 要求→DAG + `acceptance[].verb` リスト。構造検査（§6.2 表: 空/verb未登録/DAG循環/touch_allow重複）。
-2. `roles/scheduler.py`:
-   - 各タスクに git worktree を作成（`git worktree add`）。
-   - リース発行（`task.leased` + `lease_until`）。heartbeat で更新。
-   - リース期限切れ→別ベンダーへ再割当（§6.3）。
+1. `roles/architect.py`: 要求を受け、設計方針を LLM に起案させる（read-only）。
+   最初は人間が `architect --spec <file>` で設計を渡す形でも可。
+2. 台帳に `adr.written`（決定内容・根拠）を記録。
+
+**動作確認**:
+```
+super-agent architect "Web API を作れ" --spec my-design.md
+super-agent log <task>     # adr.written があることを確認
+```
+**完了条件**: 要求から設計決定が台帳に残る。LLM 起案は `--dry-run` でコマンド確認。
+
+---
+
+### Stage 2 — ② Decomposer（設計→タスク分解）（🔜）
+
+**目標**: 要求（または設計）から DAG + acceptance[].verb を出し、構造検査する。
+
+1. `roles/decomposer.py`: LLM に分解させ、`{"task_id","goal","acceptance":[{"verb","args"}],"depends_on"}` を返す。
+2. §6.2 構造検査: acceptance 空 / verb 未登録 / DAG 循環 / touch_allow 重複 → 差し戻し。
+3. 各タスクを台帳に `task.created` として記録。
+
+**動作確認**:
+```
+super-agent decompose "Web API を作れ"
+# → タスク一覧 + acceptance が表示される
+super-agent status          # task.created が増えている
+```
+**完了条件**: 要求を入力すると、検査済みのタスクDAGが台帳に残る。
+
+---
+
+### Stage 3 — ③ Scheduler（編成・worktree・リース）（🔜）
+
+**目標**: タスクに役割を割り当て、worktree を作り、リースを発行する。まずは**直列1タスク**から。
+
+1. `roles/scheduler.py`:
+   - タスクごとに `git worktree add` で作業ツリーを作成。
+   - 役割（Implementer 等）をベンダーに割り当て、`task.leased` + `lease_until` を記録。
    - 全イベントを `Sequencer` 経由で台帳へ（H3）。
-3. `core/invoke.py` に worktree パス差し込み（agy の `--add-dir`）。
+2. リース期限切れ→再割当（§6.3）。並列は後で（Stage 3b）。
 
-**テスト**: 2タスクの並列リース→片方を強制終了→再割当が台帳に記録される（モックベンダー使用）。
-
-**完了条件**: 並列実装が競合なく終わり、台帳から状態が再構成できる。
-
----
-
-### Stage C — S2/S4: 検証パイプライン統合（既部品の接着）
-
-**目標**: CVE → 簡報 → レビュー → 裁定 を台帳駆動でつなぐ。
-
-1. `roles/review_flow.py`（新規）: 以下を順に実行し、各結果を台帳に残す。
-   - `cve.verify(worktree, acceptance, probe)` → `verification.run`
-   - `brief.build(evidence, changed_files, context, budget)` → 簡報テキスト
-   - `invoke.review(vendor, brief, worktree)` → `reviewer` の `findings`
-   - `adjudicate.adjudicate(evidence, review)` → `judgment`
-2. tree_hash の束縛（H4）を `verification.run` イベントに含める。
-3. 意見が割れても裁定が一致し、advisory が保持されることを `test_pipeline.py` で確認。
-
-**テスト**: `caseB`（2ファイル相互依存）で end-to-end。期待: CVE pass → 簡報生成 → レビューで欠陥検出 → 裁定 `pass`（advisory に保持）。
-
-**完了条件**: 1要求が「実装→検証→レビュー→裁定」を通り、台帳に全イベントが残る。
+**動作確認**:
+```
+super-agent plan "Web API を作れ"      # decompose + 編成を通す
+super-agent log <task>                 # task.leased + worktree パスを確認
+git worktree list                      # worktree ができている
+```
+**完了条件**: 要求1件で worktree が1つでき、リースが台帳に残る。
 
 ---
 
-### Stage D — S5: 予算 + status（人間の負荷一定化）
+### Stage 4 — ④ Implementer（実装・commit）（🔜）
 
-**目標**: コスト上限と承認キュー。
+**目標**: ベンダーに worktree で実装させ、commit させる。
 
-1. `core/budget.py`（新規）: トークン正規化（A-4）+ `prices.yaml` 換算（C6）。超過で停止。
-2. `cli.py`: `super-agent status` が台帳から `running/blocked/awaiting_review/budget` を1画面出力（§8.2）。
-3. 承認キュー: `escalation` イベントを `approvals/pending/` に書き出し、人間が承認すると `judgment` が確定。
+1. `roles/implementer.py`: `invoke` でベンダーに実装を依頼（write 権限・自 worktree のみ）。
+   `touch_allow` 外への書き込みは拒否。
+2. 完了で `artifact.produced`（paths + commit）を台帳に記録。
 
-**テスト**: 予算超過で pipeline が安全側（停止・途中成果保持）に倒れる。
-
-**完了条件**: `status` が人間に必要な情報のみを出し、承認ゲートが機能する。
-
----
-
-### Stage D' — L6 操作面（Control Surface）
-
-**目標**: 人間からの双方向介入を台帳駆動で実装（ARCHITECTURE §8.4）。
-対話・ダッシュボード・コマンドいずれの形態でも同じバックエンドを操作する。
-
-1. `cli.py` に以下を追加（Stage A の Sequencer を再利用）:
-   - `show design` / `show plan`: 設計・計画の read-only 出力（台帳イベントなし）
-   - `pause <task>` / `resume <task>` / `abort <task>`: `task.paused/resumed/aborted` を記録
-   - `amend <task> --spec <file>`: `task.amended` を記録（要求の曖昧さ解消もこの特例）
-   - `evolve --from <fail>`: `design.proposed` を記録（§9.1 承認ゲートと接続）
-2. スケジューラへシグナルを渡す: 中止/変更は §6.3 のリース機構を再利用
-   （リース解除 = エージェントへの停止指示）。
-3. `--yes` / spec ファイル指定で L6 をバイパス（非対話モード）。
-
-**テスト**: `pause` で `task.paused` が台帳に記録され、`status` が `paused` を反映。
-`abort` で走らせているエージェントのリースが解除される（モックベンダー使用）。
-
-**完了条件**: 人間がいつでも介入でき、その介入が台帳に残る。Stage A の `cli` 拡張として
-完了するため、小さく始められる。
+**動作確認**:
+```
+super-agent implement <task_id>
+super-agent log <task_id>     # artifact.produced + commit hash
+git -C <worktree> log --oneline
+```
+**完了条件**: `implement` で実際にコードが書かれ、commit される。
 
 ---
 
-### Stage E — S6: 改良ループ（G6）
+### Stage 5 — ⑧ Integrator（統合）（⏳）
 
-**目標**: 同じ失敗を二度させない。
+**目標**: 実装済みタスクの worktree を統合ブランチへマージ/検証。
 
-1. `roles/improver.py`（新規）: 台帳を読み、同種 fail 3回で `acceptance` テンプレへ昇格、あるいは憲法へ書き込む（§9.1）。
-2. 改良タスク自身を `super-agent run` に再投入できること（自己適用 G6）。
+1. `roles/integrator.py`: worktree の差分を統合ブランチへ。`conflict` は台帳に `conflict` イベント。
+2. 統合後 `integrated` を記録、`git worktree remove` で後片付け。
 
-**テスト**: 意図的な fail 連発でテンプレ昇格が起きる。
-
----
-
-### Stage F — S7/U6: OS レベル隔離（残余リスクの封じ）
-
-**目標**: レビュアの実行副作用（外部通信等）を OS 側で封じる。
-
-1. レビュア呼び出しを `bwrap`（Linux）/ 同等の namespace 隔離で包む。Windows は制約あり→ `firejail` 相当か、CVE と同じく「実行されても平気」設計で補う。
-2. H2 でインジェクションは塞がっているので、ここは「ベストエフォートの深層防御」。
-
-**テスト**: レビュアからの外部通信がブロックされることを確認（可能なら）。
-
-**完了条件**: 実行副作用が OS 側で抑制される（不可能なら設計上の理由を §12 に記す）。
+**動作確認**:
+```
+super-agent integrate <task_id>
+super-agent log <task_id>     # integrated
+git worktree list            # worktree が消えている
+```
+**完了条件**: implement 済みタスクを統合でき、worktree が綺麗に消える。
 
 ---
 
-## 3. 優先順位とスコープ
+### Stage 6 — ⑩ 改良ループ（⏳）
 
-**最小で価値が出る順**: A（基盤）→ C（検証パイプライン） → B（並列） → D（status） → D'（操作面） → E（改良） → F（隔離）。
+**目標**: 台帳から失敗パターンを拾い、憲法/テンプレへ昇格（G6 自己改良）。
 
-- **A + C が最優先**: これで「要求→検証→裁定」が一台で動く。設計の存在理由（判定の信用）が
-  実際に動く形になる。
-- **D'（操作面）は A の `cli` 拡張として早めに実装**できる。人間がいつでも介入でき、
-  その介入が台帳に残ることは、運用上の安心感（L6）として早期に価値が出る。A 完了直後でも可。
-- B は「並列したい」ときには必須だが、まずは直列で動かす方が早期に価値が出る。
-- D/E/F は運用成熟度。F は H2 で大部分がカバー済みなので最後に回す。
+1. `roles/improver.py`: 台帳を読み、同種 fail 3回で `acceptance` テンプレへ昇格、または憲法へ書き込む（§9.1）。
+2. `super-agent evolve` で起動。
 
-**この計画での「完成」の定義**: Stage A + C が終わり、`super-agent run "<要求>"` が
-caseB 相当のタスクを end-to-end で検証・裁定できる状態。**それ以降は並列・運用・隔離の拡張。**
+**動作確認**:
+```
+super-agent evolve --dry-run     # 提案される design.proposed を確認
+super-agent evolve              # 承認すると design.proposed が記録
+```
+**完了条件**: 失敗パターンからの提案が台帳に残り、次回 decompose に反映される。
 
 ---
 
-## 4. リスクと未解決（実装中に浮上しうる）
+### Stage 7 — D（予算・承認キュー）・D'（操作面）・F（OS隔離）（⏳ 運用成熟度）
+
+- **D**: `budget.py` でトークン正規化＋価格換算。超過で停止。`status` に予算表示。
+- **D'**: `pause`/`resume`/`abort`/`amend` を cli に追加（L6）。
+- **F**: レビュアの OS レベル隔離（H2 でインジェクション済み、深層防御）。
+
+これらは「動く一周」ができてから。
+
+---
+
+## 3. 推奨順序（動かしながら確認）
+
+```
+Stage 0（足場: review/log/show）     → 既存⑤⑥⑦⑨を1コマンドで試せる
+  → Stage 1（architect）             → 要求から設計が残る
+  → Stage 2（decomposer）            → 設計からタスクDAGが残る
+  → Stage 3（scheduler: 直列）       → タスクから worktree+リースが残る
+  → Stage 4（implementer）           → worktree で実装+commit される
+  → Stage 5（integrator）            → 統合されて worktree が消える
+  → [ここで §9 の①〜⑧ が一人で動く]
+  → Stage 6（evolve）                → 失敗から改良が残る（⑩）
+  → Stage 7（D/D'/F）                → 運用成熟度
+```
+
+各ステージは**前段の出力（台帳のイベント）を入力にする**ので、順に積み上がる。
+飛ばさず一段ずつ `super-agent <cmd>` で目で確認して進める。
+
+**「完成」の定義**: `super-agent plan "..."` 一発で ①要求→②分解→③編成→④実装→
+⑤⑥⑦検証裁定→⑧統合 が回り、⑩で失敗から自己改良される。すべて台帳に証拠が残る。
+
+---
+
+## 4. リスクと未解決
 
 | # | リスク | 対応 |
 |---|---|---|
 | R1 | ベンダーCLIの出力形式が変わる | `invoke.py` の `result_path` で吸収。起動時プローブ（U3）で検出 |
-| R2 | worktree の後片付け漏れでリポジトリが汚れる | リース解除時に `git worktree remove` を確実に呼ぶ |
-| R3 | 長時間タスクのリース妥当値（U4） | 初期値15分、実測で調整。Stage B で計測 |
+| R2 | worktree の後片付け漏れでリポジトリが汚れる | リース/統合解除時に `git worktree remove` を確実に呼ぶ |
+| R3 | 長時間タスクのリース妥当値（U4） | 初期値15分、実測で調整。Stage 3 で計測 |
 | R4 | Windows での OS 隔離（F）が困難 | H2 でインジェクション済み。隔離はベストエフォート、不可能なら §12 に記す |
+| R5 | LLM が acceptance を不正に組めないか | §6.2 構造検査（verb ホワイトリスト）で落とす。H2 と同じ防御 |
 
 ---
 
 ## 5. 次の一手
 
-**Stage A を開始する。** 具体的には:
-1. `src/harness/` を作成し、`core/ledger.py` を `probe/n3/ledger.py` から移動（テスト共々）。
-2. `vendors.yaml` / `verification_env.yaml` / `verifiers.yaml` を `config/` に書く。
-3. `core/invoke.py` を書く（構造化出力・再開・権限フラグの実装）。
-4. `test_invoke.py` で claude/codex の実構造化出力を確認。
-
-この4つが終わったら Stage A 完了とし、コミットする。その後 Stage C へ。
+**Stage 0（足場）を開始する。**
+1. `cli.py` に `review <dir>` / `log <task>` / `show design|plan` を追加。
+2. `super-agent review probe/n3/caseGreen` が通ることを確認（既存 review_flow を呼ぶだけ）。
+3. コミット。その後 Stage 1（architect）へ。
