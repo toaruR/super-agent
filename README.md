@@ -15,6 +15,8 @@ Claude Code / Codex / Antigravity など**ベンダーの異なるコーディ�
 | 6 | [`docs/N3_AND_LARGE_DIFF.md`](docs/N3_AND_LARGE_DIFF.md) | N=3→N=4 実測と、大きな差分への対処（決定関連性による劣化） |
 | 7 | [`docs/PERMISSION_CONTROL.md`](docs/PERMISSION_CONTROL.md) | 起動オプションによる制御の実測。**read-only は実行を止めない**という発見 |
 | 8 | [`docs/REVIEW_RESPONSE.md`](docs/REVIEW_RESPONSE.md) | 独立レビュー（`unsound`）への回答・自己採点92点の撤回・改訂案 |
+| 9 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | 設計を動くハーネスにする実装計画（Stage A→F） |
+| 10 | [`docs/USAGE.md`](docs/USAGE.md) | **使い方マニュアル**（実際に動かす手順） |
 
 ## 一言でいうと
 
@@ -63,4 +65,6 @@ S1（台帳）・S3（並列/リース/worktree）・S6（改良ループ）・S
 権限実測は [`docs/PERMISSION_CONTROL.md`](docs/PERMISSION_CONTROL.md)、
 N=3＋大きな差分は [`docs/N3_AND_LARGE_DIFF.md`](docs/N3_AND_LARGE_DIFF.md)。
 
-実装は `ARCHITECTURE.md` §10 の S1→S7 の順で進める想定（現在は S2/S4 のみ実装済み、次は S7）。
+実装は `ARCHITECTURE.md` §10 の S1→S7 の順で進める想定。
+**現在は Stage A（基盤・CLI）と Stage C（検証パイプライン）が実装済み。**
+実際に動かす手順は **[`docs/USAGE.md`](docs/USAGE.md)** を参照。
