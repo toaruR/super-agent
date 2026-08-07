@@ -37,15 +37,43 @@ def ensure_ledger() -> Sequencer:
 
 
 def cmd_decompose(args: argparse.Namespace) -> int:
-    """Stage 2 (§9 ②): decompose a requirement into a structurally-checked task DAG."""
+    """Stage 2 (§9 ②): decompose a requirement or an architect design file
+    into a structurally-checked task DAG.
+
+    With --spec <file>: consume the design file produced by `architect`
+    (requirement is recovered from its '# 設計: <req>' header). Otherwise the
+    positional requirement is used (architect may be skipped).
+    """
+    spec_text = ""
+    if args.spec:
+        p = Path(args.spec)
+        if not p.exists():
+            print(json.dumps({"ok": False, "error": f"spec file not found: {args.spec}"},
+                             ensure_ascii=False, indent=2))
+            return 1
+        spec_text = p.read_text(encoding="utf-8", errors="ignore")
+    # recover requirement from the design file header if not given positionally
+    requirement = args.requirement or ""
+    if not requirement and spec_text:
+        for line in spec_text.splitlines():
+            if line.startswith("# 設計:"):
+                requirement = line[len("# 設計:"):].strip()
+                break
+    if not requirement:
+        print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
+                         ensure_ascii=False, indent=2))
+        return 1
+
     seq = ensure_ledger()
     seq.start()
     task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=args.requirement, role="decomposer")
+    seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
+                design_ref=args.spec or "")
     out = decomposer_decompose(
         task_id,
-        args.requirement,
+        requirement,
         vendor=args.vendor,
+        existing_design=spec_text,
         dry_run=args.dry_run,
         seq=seq,
     )
@@ -186,8 +214,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="assemble the architect prompt without calling the vendor")
     a.set_defaults(func=cmd_architect)
 
-    d = sub.add_parser("decompose", help="decompose requirement into checked task DAG (Stage 2)")
-    d.add_argument("requirement")
+    d = sub.add_parser("decompose", help="decompose requirement/design into checked task DAG (Stage 2)")
+    d.add_argument("requirement", nargs="?", default="",
+                   help="requirement text (optional if --spec is given)")
+    d.add_argument("--spec", default=None,
+                   help="design file from `architect` (requirement recovered from its '# 設計:' header)")
     d.add_argument("--vendor", default="claude")
     d.add_argument("--dry-run", action="store_true",
                    help="assemble the decompose prompt without calling the vendor")

@@ -206,19 +206,24 @@ python -m harness.cli architect "Web API を作れ" --dry-run
 > 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
 
 
-### 2.7 `super-agent decompose "<要求>"` — タスク分解＋構造検査（②）
+### 2.7 `super-agent decompose` — タスク分解＋構造検査（②）
 
 ```bash
+# architect の出力（設計ファイル）を受け取る（推奨）
+python -m harness.cli decompose --spec my-design.md
+# または architect を飛ばして要求を直接渡す（フォールバック）
 python -m harness.cli decompose "<要求>" [--vendor claude] [--dry-run]
 ```
 
 | オプション | 意味 |
 |---|---|
+| `--spec` | `architect` が作った設計ファイル。要求はその `# 設計:` 見出しから復元される |
 | `--vendor` | 分解させるベンダー（既定 `claude`） |
 | `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
 
-**何をするか**：要求からタスク DAG（各タスクに `acceptance[].verb` 付き）を作り、
-**§6.2 の構造検査**を通してから台帳に `task.created` を記録します。検査で落ちたら
+**何をするか**：`--spec` があれば architect の設計を文脈として受け取り、要求からタスク DAG
+（各タスクに `acceptance[].verb` 付き）を作り、**§6.2 の構造検査**を通してから台帳に
+`task.created`（design_ref 付き）を記録します（①→②の連携が台帳で見える）。検査で落ちたら
 記録せず `decompose.rejected`（errors）を返します。
 
 **構造検査（機械強制・H2 含む）**：
@@ -228,16 +233,15 @@ python -m harness.cli decompose "<要求>" [--vendor claude] [--dry-run]
 - DAG に循環が無い
 - 並列タスク間で `touch_allow` が重複しない
 
-**例（dry-run でプロンプト確認）**：
+**例（architect → decompose の流れ）**：
 ```bash
-python -m harness.cli decompose "Excelやワードからオントロジーを作りたい" --dry-run
+python -m harness.cli architect "Excel等からオントロジーを作りたい" --spec my-design.md
+python -m harness.cli decompose --spec my-design.md --dry-run
 # → {"ok": true, "dry_run": true, "cmd": [...]}
 ```
 
 > 実際の呼び出しでは claude 等が DAG を返し、検査を通ると各タスクが `task.created` として
 > 台帳に残ります（`super-agent log <task>` で確認可）。
-
----
 
 ## 3. 検証パイプラインを動かす（Stage C）
 

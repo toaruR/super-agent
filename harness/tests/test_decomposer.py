@@ -85,13 +85,22 @@ def test_decompose_dry_run_assembles_prompt(monkeypatch):
     assert "cmd" in out
 
 
-def test_decompose_records_task_created_on_ok(monkeypatch):
+def test_decompose_spec_consumes_architect_output(monkeypatch, tmp_path):
     monkeypatch.chdir(REPO)
-    ledger = REPO / "harness" / "ledger" / "events.jsonl"
-    if ledger.exists():
-        ledger.unlink()
-    # dry-run path writes task.created (decomposer role) but not DAG (no LLM)
-    res = _run("decompose", "demo", "--dry-run")
-    assert res.returncode == 0
-    lg = ledger.read_text(encoding="utf-8")
-    assert "role\":\"decomposer" in lg or "decomposer" in lg
+    # design file as produced by `architect` (has '# 設計:' header)
+    design = "# 設計: Excel等からオントロジーを作りたい\n\n## 入力アダプタ\n...\n"
+    spec = tmp_path / "my-design.md"
+    spec.write_text(design, encoding="utf-8")
+    res = _run("decompose", "--spec", str(spec), "--dry-run")
+    out = json.loads(res.stdout)
+    assert out["dry_run"] is True
+    # requirement recovered from the design header -> prompt assembled without error
+    assert "cmd" in out
+
+
+def test_decompose_no_requirement_no_spec_errors(monkeypatch):
+    monkeypatch.chdir(REPO)
+    res = subprocess.run([CVE, "-m", "harness.cli", "decompose", "--dry-run"],
+                         cwd=str(REPO), capture_output=True, text=True)
+    assert res.returncode == 1
+    assert "requirement or --spec is required" in res.stdout

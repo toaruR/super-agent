@@ -88,9 +88,9 @@ super-agent log <task>     # adr.written があることを確認
 
 ---
 
-### Stage 2 — ② Decomposer（設計→タスク分解）（🔜）
+### Stage 2 — ② Decomposer（architectの設計→タスク分解）（✅）
 
-**目標**: 要求（または設計）から DAG + acceptance[].verb を出し、構造検査する。
+**目標**: `architect` が作った設計ファイル（`--spec`）を受け取り、そこから DAG + acceptance[].verb を出し、構造検査する。
 
 1. `roles/decomposer.py`: LLM に分解させ、`{"task_id","goal","acceptance":[{"verb","args"}],"depends_on"}` を返す。
 2. §6.2 構造検査: acceptance 空 / verb 未登録 / DAG 循環 / touch_allow 重複 → 差し戻し。
