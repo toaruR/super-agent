@@ -289,7 +289,39 @@ python -m harness.cli review --task T1 --tasks my-design-tasks.md --dry-run
 
 **何をするか**：CVE で検証（§3.2 証拠束縛）→ 差分＋証拠ログ＋受入基則のみを brief に渡して
 レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
- verdict に入らない）。台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
+ 台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
+
+### 2.10 `super-agent integrate` — 実装済みタスクの統合（⑧ Stage 5）
+
+ 実装・レビューを通ったタスクの worktree ブランチ（`task/<id>`）を統合ブランチへマージし、
+ 統合後も acceptance が GREEN か再検証してから worktree を片付けます。
+
+ ```bash
+ # 統合シミュレーション（git/worktree は触らない。ok:true が返る）
+ python -m harness.cli integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run
+
+ # 実際の統合：task/T1 を main へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
+ python -m harness.cli integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+ # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "main", "commit": "..."}
+ ```
+
+ | オプション | 意味 |
+ |---|---|
+ | `--task` | 統合するタスクID |
+ | `--tasks` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
+ | `--target` | 統合先ブランチ（既定 `main`） |
+ | `--worktree` | worktree パス（既定 `workspaces/<task>`；無ければ `task/<id>` から再作成） |
+ | `--dry-run` | マージ/後片付けを実行せず計画のみ表示 |
+
+ **何をするか**：
+
+ 1. `touch_allow` 外の変更を検出 → `integration.touch_violation` で差し戻し（実装者が許可外を触っていないか）
+ 2. `task/<id>` を `--target` へ `--no-ff` マージ。`conflict` は `--abort` して検知（台帳に `conflict`）
+ 3. マージ後に CVE で acceptance を再実行。失敗は `integrated.failed`
+ 4. 成功で `integrated` を記録、`git worktree remove --force` で後片付け
+
+ > **注意**：実行（dry-run なし）すると worktree が削除されます。T1/T2 のように残しておきたい
+ > ワークツリーがある場合は `--dry-run` で確認してください。
 
 ## 3. 検証パイプラインを動かす（Stage C）
 
