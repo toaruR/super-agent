@@ -1,0 +1,8 @@
+# Normalize line endings on checkout/commit.
+# Windows batch files MUST be CRLF or cmd.exe mis-parses them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# bash scripts stay LF
+super-agent text eol=lf
+# Python source stays LF
+*.py text eol=lf
