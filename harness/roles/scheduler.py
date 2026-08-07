@@ -58,12 +58,15 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
         return subprocess.run(c, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", shell=False)
 
-    # 1) branch already checked out in an existing worktree -> reuse it
+    if git is None:
+        # clean stale/prunable worktree metadata so branches are not left
+        # "checked out" at a deleted path (Windows + repeated runs)
+        subprocess.run(["git", "worktree", "prune"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=False)
+
+    # 1) branch already checked out in an existing (live) worktree -> reuse it
     lst = run(["git", "worktree", "list", "--porcelain"]).stdout or ""
-    for line in lst.splitlines():
-        # lines look like: "worktree <path>" then later "branch refs/heads/task/T1"
-        pass
-    # parse porcelain: groups separated by blank lines
     current_path = None
     for line in lst.splitlines():
         if line.startswith("worktree "):
@@ -75,18 +78,21 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
                         "reused": True, "cmd": cmd}
 
     if Path(path).exists():
-        # path present but not a tracked worktree: reuse as-is
+        # path present but not a tracked live worktree: reuse as-is
         return {"path": path, "branch": branch, "ok": True, "reused": True, "cmd": cmd}
 
     proc = run(cmd)
     if proc.returncode == 0:
         return {"path": path, "branch": branch, "ok": True, "cmd": cmd}
-    # branch already exists -> add using the existing branch (no -b)
-    if "already exists" in (proc.stderr or proc.stdout):
-        cmd2 = ["git", "worktree", "add", path, branch]
-        proc2 = run(cmd2)
+    # branch already exists / already checked out -> prune then retry once
+    if "already exists" in (proc.stderr or proc.stdout) or "already checked out" in (proc.stderr or proc.stdout):
+        if git is None:
+            subprocess.run(["git", "worktree", "prune"],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", shell=False)
+        proc2 = run(["git", "worktree", "add", path, branch])
         if proc2.returncode == 0:
-            return {"path": path, "branch": branch, "ok": True, "cmd": cmd2}
+            return {"path": path, "branch": branch, "ok": True, "cmd": ["git", "worktree", "add", path, branch]}
         return {"path": path, "branch": branch, "ok": False,
                 "error": (proc2.stderr or proc2.stdout).strip()}
     return {"path": path, "branch": branch, "ok": False,

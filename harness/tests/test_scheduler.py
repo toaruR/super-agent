@@ -56,6 +56,42 @@ def test_create_worktree_reuses_existing_checked_out_branch(tmp_path):
     assert wt["path"].replace("\\", "/") == f"{tmp_path.as_posix()}/T1"
 
 
+def test_create_worktree_already_checked_out_then_prunes(tmp_path, monkeypatch):
+    from harness.roles.scheduler import create_worktree
+    # simulate the real Windows failure: branch "task/T1" is reported already
+    # checked out at a path, and `git worktree add -b` fails with that message.
+    # Our code should `git worktree prune` (no-op here) then retry without -b.
+    state = {"first": True}
+    def fake_git(*a, **k):
+        cmd = a[0]
+        class R:
+            pass
+        r = R()
+        if cmd[1] == "list":
+            r.returncode = 0
+            r.stdout = f"worktree {tmp_path}/T1\nbranch refs/heads/task/T1\n"
+            r.stderr = ""
+            return r
+        if cmd[1] == "prune":
+            r.returncode = 0; r.stdout = ""; r.stderr = ""
+            return r
+        # worktree add
+        if state["first"]:
+            state["first"] = False
+            r.returncode = 1
+            r.stdout = ""
+            r.stderr = "fatal: 'task/T1' is already checked out at '%s/T1'" % tmp_path
+            return r
+        r.returncode = 0
+        r.stdout = ""
+        r.stderr = ""
+        return r
+    (tmp_path / "T1").mkdir()
+    wt = create_worktree("T1", root=str(tmp_path), git=fake_git)
+    assert wt["ok"] is True
+    assert state["first"] is False  # it retried (prune + add w/o -b)
+
+
 def test_create_worktree_branch_exists_no_checkout(tmp_path):
     from harness.roles.scheduler import create_worktree
     # simulate: `git worktree add -b` fails with "already exists", then add w/o -b succeeds
