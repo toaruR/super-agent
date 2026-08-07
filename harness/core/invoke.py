@@ -132,7 +132,9 @@ def invoke(
     cmd = build_command(decl, prompt, schema=schema, session_id=session_id, worktree=worktree)
     if dry_run:
         return {"cmd": cmd, "dry_run": True}
-    proc = subprocess.run(cmd, capture_output=True, text=True, shell=False, timeout=timeout)
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
+                          shell=False, timeout=timeout)
     return {
         "cmd": cmd,
         "returncode": proc.returncode,
