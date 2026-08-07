@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# super-agent — thin wrapper around `python -m harness.cli` (bash/git-bash/Linux).
+# Windows cmd/PowerShell users: use super-agent.bat instead (same behavior).
+#
+# Usage:  super-agent <subcommand> [args]
+#   e.g.  super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+#
+# Lives in src/ (next to .cve-venv and the harness package). Prefers the local
+# virtualenv python, falls back to `python` on PATH.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ -x .cve-venv/Scripts/python.exe ]; then
+  PY=.cve-venv/Scripts/python.exe
+elif [ -x .cve-venv/bin/python ]; then
+  PY=.cve-venv/bin/python
+else
+  PY=python
+fi
+
+exec "$PY" -m harness.cli "$@"

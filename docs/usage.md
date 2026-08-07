@@ -15,8 +15,12 @@ Super Agent は「異ベンダーのコーディングエージェント（Claud
 - 別ベンダーの**レビュア**が、証拠だけを読んで判定する
 - 判定は**レビュアの実行環境に依存しない**（これがこのシステムの核心）
 
-現在実装済み：Stage A（基盤・台帳・CLI）＋ Stage C（検証パイプライン）。
-並列実行・操作面（pause/abort）・OS隔離は**未実装**（設計のみ）。
+各コマンドは `super-agent <サブコマンド>` で呼び出します。この `super-agent` は
+`src/` にあるラッパー（`super-agent.bat`＝PowerShell/cmd用、`super-agent`＝git-bash/Linux用）で、
+内部で `python -m harness.cli` を呼びます。PowerShell なら拡張子省略（`super-agent status`）、
+git-bash なら `./super-agent status` で実行できます。
+
+現在実装済み：Stage 0（足場）〜 Stage 5（統合）。
 
 ---
 
@@ -39,7 +43,7 @@ VSCode の Python 拡張が `.cve-venv` を自動検出し、ターミナル起�
 
 ```powershell
 cd D:/vagrant/harnesses/super-agent/src
-python -m harness.cli status          # venv の python が使われる
+super-agent status          # venv の python が使われる
 ```
 
 ### 1.2 素の PowerShell（VSCode 外）
@@ -98,7 +102,7 @@ D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, p
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
 ```bash
-python -m harness.cli run "<要求>" [--vendor claude|codex|agy] [--dry-run]
+super-agent run "<要求>" [--vendor claude|codex|agy] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -111,14 +115,14 @@ python -m harness.cli run "<要求>" [--vendor claude|codex|agy] [--dry-run]
 
 **例**：
 ```bash
-python -m harness.cli run "build a fizzbuzz module" --vendor codex --dry-run
+super-agent run "build a fizzbuzz module" --vendor codex --dry-run
 # → task T-XXXX recorded. ledger=...
 ```
 
 ### 2.2 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
 
 ```bash
-python -m harness.cli review <dir> [--accept "pytest tests/"] [--reviewer codex] [--dry-run]
+super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -133,14 +137,14 @@ JSON で裁定を標準出力に出します。
 
 **例**：
 ```bash
-python -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
+super-agent review probe/n3/caseGreen --reviewer codex --dry-run
 # → verdict/judgment_unavailable, tree_hash が束縛される
 ```
 
 ### 2.3 `super-agent status` — 台帳の状態を表示
 
 ```bash
-python -m harness.cli status
+super-agent status
 ```
 
 台帳に記録された全イベントを（クラッシュセーフに）読み出して表示します。
@@ -153,7 +157,7 @@ events in ledger: 2
 ### 2.4 `super-agent log <task>` — 指定タスクの全イベント
 
 ```bash
-python -m harness.cli log T-XXXX
+super-agent log T-XXXX
 ```
 
 指定タスクID（接頭辞でも可）の全イベントを、付随データ付きで表示します。
@@ -169,8 +173,8 @@ events for T-XXXX: 5
 ### 2.5 `super-agent show design|plan` — 設計／計画の表示（L6 読み取り）
 
 ```bash
-python -m harness.cli show design   # docs/goals/design.md を表示
-python -m harness.cli show plan     # docs/plan.md を表示
+super-agent show design   # docs/goals/design.md を表示
+super-agent show plan     # docs/plan.md を表示
 ```
 
 読み取り専用。台帳イベントは発生しません（L6 の `show` 操作）。
@@ -178,7 +182,7 @@ python -m harness.cli show plan     # docs/plan.md を表示
 ### 2.6 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
 ```bash
-python -m harness.cli architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
+super-agent architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -193,13 +197,13 @@ python -m harness.cli architect "<要求>" [--spec <file>] [--vendor claude] [--
 
 **例（人間の設計をそのまま記録 — 最も確実）**：
 ```bash
-python -m harness.cli architect "Web API を作れ" --spec my-design.md
+super-agent architect "Web API を作れ" --spec my-design.md
 # → 既存ならその内容を記録。無ければ LLM が起案して my-design.md を作成し記録
 ```
 
 **例（LLM に起案させる／dry-run で確認）**：
 ```bash
-python -m harness.cli architect "Web API を作れ" --dry-run
+super-agent architect "Web API を作れ" --dry-run
 # → {"source": "llm(dry)", "cmd": [...]}  # 実際に呼ぶコマンドを確認（ファイルは作らない）
 ```
 
@@ -214,11 +218,11 @@ python -m harness.cli architect "Web API を作れ" --dry-run
 
 ```bash
 # ① 分解だけ（--tasks に書き出し。このとき worktree は作らない）
-python -m harness.cli plan --spec my-design.md --tasks my-design-tasks.md --dry-run
+super-agent plan --spec my-design.md --tasks my-design-tasks.md --dry-run
 # ② tasks.md を人間がレビュー/編集した後、分解をスキップして worktree だけ作る
-python -m harness.cli plan --tasks my-design-tasks.md
+super-agent plan --tasks my-design-tasks.md
 # ③ 通常運用：設計から一気に分解→worktree作成→リース発行
-python -m harness.cli plan --spec my-design.md --tasks my-design-tasks.md
+super-agent plan --spec my-design.md --tasks my-design-tasks.md
 ```
 
 | コマンド | vendor呼ぶ？ | worktree作る？ | 使い道 |
@@ -249,9 +253,9 @@ worktree/リースだけ作成します。`--tasks` が無い / 未作成なら 
 
 ```bash
 # tasks.md から T1 を探し、workspaces/T1 で実装→コミット
-python -m harness.cli implement --task T1 --tasks my-design-tasks.md
+super-agent implement --task T1 --tasks my-design-tasks.md
 # ドライラン（プロンプト組み立てのみ）
-python -m harness.cli implement --task T1 --tasks my-design-tasks.md --dry-run
+super-agent implement --task T1 --tasks my-design-tasks.md --dry-run
 ```
 
 | オプション | 意味 |
@@ -274,9 +278,9 @@ tasks.md から自動解決されます（Implementer と**別ベンダー**、�
 
 ```bash
 # implement した T1 をレビュー（CVE実行→brief→read-onlyレビュー→裁定）
-python -m harness.cli review --task T1 --tasks my-design-tasks.md --reviewer codex
+super-agent review --task T1 --tasks my-design-tasks.md --reviewer codex
 # ドライラン（CVEは走るがレビュア呼び出しをスキップ）
-python -m harness.cli review --task T1 --tasks my-design-tasks.md --dry-run
+super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 ```
 
 | オプション | 意味 |
@@ -298,10 +302,10 @@ python -m harness.cli review --task T1 --tasks my-design-tasks.md --dry-run
 
  ```bash
  # 統合シミュレーション（git/worktree は触らない。ok:true が返る）
- python -m harness.cli integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run
+ super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run
 
  # 実際の統合：task/T1 を main へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
- python -m harness.cli integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+ super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
  # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "main", "commit": "..."}
  ```
 
@@ -345,7 +349,7 @@ python -m harness.cli review --task T1 --tasks my-design-tasks.md --dry-run
 （レビュアは呼ばないので `judgment_unavailable` になります。これは正しい動作）：
 
 ```bash
-python -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
+super-agent review probe/n3/caseGreen --reviewer codex --dry-run
 ```
 
 **出力例（caseGreen）**：
@@ -366,7 +370,7 @@ python -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
 `--dry-run` を外すと、レビュア（別ベンダー）が簡報を読んでレビューし、adjudicate が裁定します：
 
 ```bash
-python -m harness.cli review probe/n3/caseB --reviewer claude --dry-run=False
+super-agent review probe/n3/caseB --reviewer claude --dry-run=False
 # PowerShell の場合は --dry-run:$false と書く
 ```
 
@@ -389,7 +393,7 @@ python -m harness.cli review probe/n3/caseB --reviewer claude --dry-run=False
 パイプラインが書いたイベントは全て台帳に残ります。`super-agent log <task>` で確認できます：
 
 ```bash
-python -m harness.cli log T-XXXX
+super-agent log T-XXXX
 # T-XXXX:1 verification.run 3309c1ea35679a40   <- CVE の証拠（tree_hash 束縛）
 # T-XXXX:2 brief.built
 # T-XXXX:3 reviewer.invoked
