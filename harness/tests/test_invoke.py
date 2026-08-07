@@ -75,34 +75,42 @@ def test_extract_no_json() -> None:
 
 
 def test_role_model_and_effort_resolution() -> None:
-    decls = load_vendors("harness/config")
+    # role defaults now live in the top-level `roles:` mapping of vendors.yaml,
+    # resolved by resolve_role(); build_command consumes the resolved model/effort.
+    from harness.core.invoke import resolve_role
 
-    # claude: flag-style effort, role resolves model+effort
-    cl = decls["claude"]
-    cmd = build_command(cl, "P", role="design")
+    # design role -> claude / claude-sonnet-5 / high
+    rd = resolve_role("design", "harness/config")
+    assert rd == {"vendor": "claude", "model": "claude-sonnet-5", "effort": "high"}
+    cl = load_vendors("harness/config")["claude"]
+    cmd = build_command(cl, "P", model=rd["model"], effort=rd["effort"])
     assert "--model" in cmd and "claude-sonnet-5" in cmd
     assert "--effort" in cmd and "high" in cmd
-    cmd2 = build_command(cl, "P", role="implement")
-    assert "low" in cmd2  # implement role -> effort low
 
-    # explicit --model overrides role default and is NOT suffixed
-    cmd3 = build_command(cl, "P", model="custom-model", effort="medium")
-    assert "custom-model" in cmd3 and "--effort" in cmd3
+    # implement role -> agy / gemini-3.6-flash / high (model_suffix folded)
+    ri = resolve_role("implement", "harness/config")
+    assert ri["vendor"] == "agy" and ri["model"] == "gemini-3.6-flash" and ri["effort"] == "high"
+    ag = load_vendors("harness/config")["agy"]
+    cmd = build_command(ag, "P", model=ri["model"], effort=ri["effort"])
+    assert "gemini-3.6-flash-high" in cmd  # suffixed
 
-    # codex: config-style effort via -c model_reasoning_effort=
-    cx = decls["codex"]
-    cmd = build_command(cx, "P", role="design")
-    assert "-m" in cmd and "gpt-5.5" in cmd
+    # review role -> codex / gpt-5.6-luna / high (config-style effort)
+    rr = resolve_role("review", "harness/config")
+    assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.6-luna"
+    cx = load_vendors("harness/config")["codex"]
+    cmd = build_command(cx, "P", model=rr["model"], effort=rr["effort"])
+    assert "-m" in cmd and "gpt-5.6-luna" in cmd
     ci = cmd.index("-c")
     assert cmd[ci + 1] == "model_reasoning_effort=high"
 
-    # agy: effort folded into model name as suffix (role default only)
-    ag = decls["agy"]
-    cmd = build_command(ag, "P", role="design")
-    assert "gemini-3.6-flash-high" in cmd
-    # explicit model is NOT suffixed
-    cmd2 = build_command(ag, "P", model="other-model", effort="low")
-    assert "other-model" in cmd2 and "--effort" in cmd2
+    # explicit CLI override wins over role default
+    ro = resolve_role("design", "harness/config", explicit_vendor="agy",
+                     explicit_model="custom-m", explicit_effort="low")
+    assert ro == {"vendor": "agy", "model": "custom-m", "effort": "low"}
+
+    # explicit --model on agy is suffixed (model_suffix always folds effort in)
+    cmd = build_command(ag, "P", model="other-model", effort="low")
+    assert "other-model-low" in cmd and "--effort" not in cmd
 
 
 if __name__ == "__main__":

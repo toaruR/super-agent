@@ -132,7 +132,38 @@ def load_vendors(config_dir: str | Path) -> dict[str, VendorDecl]:
     path = Path(config_dir) / "vendors.yaml"
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    return {name: VendorDecl(name, decl) for name, decl in data.items()}
+    # top-level `roles:` holds role->vendor/model/effort defaults, not a vendor
+    vendors = {k: v for k, v in data.items() if k != "roles"}
+    return {name: VendorDecl(name, decl) for name, decl in vendors.items()}
+
+
+def load_role_defaults(config_dir: str | Path) -> dict[str, dict]:
+    """Top-level `roles:` mapping: role -> {vendor, model, effort}.
+
+    Single source of truth for which vendor/model/effort each pipeline stage uses
+    when --vendor/--model/--effort are not given on the CLI.
+    """
+    path = Path(config_dir) / "vendors.yaml"
+    with open(path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return data.get("roles", {}) or {}
+
+
+def resolve_role(role: str, config_dir: str | Path,
+                 explicit_vendor: str | None = None,
+                 explicit_model: str | None = None,
+                 explicit_effort: str | None = None) -> dict:
+    """Resolve the effective vendor/model/effort for a pipeline role.
+
+    Precedence: explicit CLI flag > role default (from vendors.yaml `roles:`).
+    Returns {vendor, model, effort}.
+    """
+    defaults = load_role_defaults(config_dir).get(role, {})
+    return {
+        "vendor": explicit_vendor or defaults.get("vendor"),
+        "model": explicit_model or defaults.get("model"),
+        "effort": explicit_effort or defaults.get("effort"),
+    }
 
 
 def build_command(
@@ -157,14 +188,16 @@ def build_command(
         cmd += decl.structured_flags(schema)
     if session_id is not None:
         cmd += decl.resume_flags(session_id)
-    # model: explicit > role default > vendor default; only emit if a flag is declared
-    m = model or decl.role_model(role) or decl.default_model
-    eff = effort or decl.role_effort(role)
-    # effort folded into model name only when using the role-default model
-    # (explicit --model overrides should not be suffixed)
-    fold_effort = (model is None) and decl.effort_style == "model_suffix"
-    if fold_effort:
-        m = decl.model_with_effort(m, eff)
+    # model/effort are resolved by the caller (cli.resolve_role) and passed in.
+    # (Role defaults now live in the top-level `roles:` mapping of vendors.yaml,
+    #  not per-vendor, so build_command no longer looks them up here.)
+    m = model
+    eff = effort
+    # model_suffix style (agy): fold effort into the model name, never emit --effort.
+    # e.g. gemini-3.6-flash + high -> gemini-3.6-flash-high
+    fold_effort = decl.effort_style == "model_suffix"
+    if fold_effort and eff:
+        m = f"{m}-{eff}"
     if m is not None and decl.model_flag:
         cmd += [decl.model_flag, m]
     # effort args for flag/config styles (model_suffix already folded above)

@@ -54,6 +54,7 @@ def run_pipeline(
     budget_tokens: int = 4000,
     dry_run: bool = False,
     model: str | None = None,
+    effort: str | None = None,
     seq: Sequencer | None = None,
 ) -> dict:
     """Run the full verification pipeline for one task. Returns the judgment.
@@ -98,7 +99,7 @@ def run_pipeline(
         review = None
     else:
         res = invoke(reviewer, brief_text, schema=REVIEW_SCHEMA,
-                     worktree=str(worktree), model=model, role="design", dry_run=False)
+                     worktree=str(worktree), model=model, effort=effort, role="design", dry_run=False)
         try:
             review = res.get("result")
         except Exception:

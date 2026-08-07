@@ -51,7 +51,8 @@ def _fmt_acceptance(task: dict) -> str:
 
 def implement(task_id: str, task: dict, worktree_path: str,
               vendor: str = "claude", seq: Sequencer | None = None,
-              dry_run: bool = False, model: str | None = None) -> dict:
+              dry_run: bool = False, model: str | None = None,
+              effort: str | None = None) -> dict:
     """Implement a single task inside its worktree and commit.
 
     Returns a payload with ok/commit/cmd. Records ledger events when seq given.
@@ -67,7 +68,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
 
     decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
     decl = decls.get(vendor, decls["claude"])
-    cmd = build_command(decl, prompt, model=model, role="implement")
+    cmd = build_command(decl, prompt, model=model, role="implement", effort=effort)
 
     if dry_run:
         return {"ok": True, "dry_run": True, "cmd": cmd, "task_id": task_id}

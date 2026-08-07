@@ -20,7 +20,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from harness.core.invoke import invoke, load_vendors
+from harness.core.invoke import invoke, load_vendors, resolve_role
 from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
@@ -126,7 +126,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
         seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
                     design_ref=args.spec or "")
         out = decomposer_decompose(
-            task_id, requirement, vendor=args.vendor,
+            task_id, requirement,
+            vendor=resolve_role("design", CONFIG_DIR, explicit_vendor=args.vendor,
+                                explicit_model=getattr(args, "model", None),
+                                explicit_effort=getattr(args, "effort", None))["vendor"],
             existing_design=spec_text, dry_run=args.dry_run,
             model=getattr(args, "model", None), seq=seq,
         )
@@ -136,7 +139,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             return 0
 
     sched = schedule(
-        task_id, out.get("tasks", []), vendor=args.vendor,
+        task_id, out.get("tasks", []),
+        vendor=resolve_role("implement", CONFIG_DIR, explicit_vendor=args.vendor)["vendor"],
         role="implementer", lease_seconds=args.lease, root=args.root,
         dry_run=args.dry_run, seq=seq,
     )
@@ -161,13 +165,18 @@ def cmd_architect(args: argparse.Namespace) -> int:
     seq.start()
     task_id = f"T-{uuid.uuid4().hex[:8]}"
     seq.propose(task_id, "task.created", goal=args.requirement, role="architect")
+    r = resolve_role("design", CONFIG_DIR,
+                     explicit_vendor=args.vendor,
+                     explicit_model=getattr(args, "model", None),
+                     explicit_effort=getattr(args, "effort", None))
     adr = architect_propose(
         task_id,
         args.requirement,
-        args.vendor,
+        r["vendor"],
         spec_path=args.spec,
         dry_run=args.dry_run,
-        model=getattr(args, "model", None),
+        model=r["model"],
+        effort=r["effort"],
         seq=seq,
     )
     seq.stop()
@@ -181,15 +190,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     task_id = f"T-{uuid.uuid4().hex[:8]}"
     seq.propose(task_id, "task.created", goal=args.requirement)
     decls = load_vendors(CONFIG_DIR)
-    reviewer = decls.get(args.vendor, decls["claude"])
+    r = resolve_role("review", CONFIG_DIR, explicit_vendor=args.vendor,
+                     explicit_model=getattr(args, "model", None),
+                     explicit_effort=getattr(args, "effort", None))
+    reviewer = decls.get(r["vendor"], decls["claude"])
     res = invoke(
         reviewer,
         f"Review task: {args.requirement}",
         schema={"type": "object", "properties": {"notes": {"type": "string"}}},
-        model=getattr(args, "model", None),
-        dry_run=args.dry_run,
+        model=r["model"], effort=r["effort"], dry_run=args.dry_run,
     )
-    seq.propose(task_id, "agent.invoked", vendor=args.vendor, dry_run=args.dry_run)
+    seq.propose(task_id, "agent.invoked", vendor=r["vendor"], dry_run=args.dry_run)
     if not args.dry_run and res.get("returncode", 0) != 0:
         seq.propose(task_id, "agent.error", detail=res.get("stderr", "")[:500])
     seq.stop()
@@ -228,8 +239,12 @@ def cmd_implement(args: argparse.Namespace) -> int:
 
     seq = ensure_ledger()
     seq.start()
-    out = implement(args.task, task, worktree, vendor=args.vendor,
-                   seq=seq, dry_run=args.dry_run, model=getattr(args, "model", None))
+    r = resolve_role("implement", CONFIG_DIR,
+                     explicit_vendor=args.vendor,
+                     explicit_model=getattr(args, "model", None),
+                     explicit_effort=getattr(args, "effort", None))
+    out = implement(args.task, task, worktree, vendor=r["vendor"],
+                   seq=seq, dry_run=args.dry_run, model=r["model"], effort=r["effort"])
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
@@ -313,14 +328,19 @@ def cmd_review(args: argparse.Namespace) -> int:
     seq = ensure_ledger()
     seq.start()
     task_id = args.task or f"T-{uuid.uuid4().hex[:8]}"
+    r = resolve_role("review", CONFIG_DIR,
+                     explicit_vendor=args.reviewer,
+                     explicit_model=getattr(args, "model", None),
+                     explicit_effort=getattr(args, "effort", None))
     j = run_pipeline(
         task_id,
         target,
         acceptance,
-        reviewer_vendor=args.reviewer,
+        reviewer_vendor=r["vendor"],
         budget_tokens=args.budget,
         dry_run=args.dry_run,
-        model=getattr(args, "model", None),
+        model=r["model"],
+        effort=r["effort"],
         seq=seq,
     )
     seq.stop()
@@ -373,16 +393,18 @@ def main(argv: list[str] | None = None) -> int:
 
     r = sub.add_parser("run", help="record a requirement + invoke vendor (Stage A)")
     r.add_argument("requirement")
-    r.add_argument("--vendor", default="claude")
+    r.add_argument("--vendor", default=None)
     r.add_argument("--model", default=None, help="override the vendor's default model")
+    r.add_argument("--effort", default=None, help="override the vendor's default effort")
     r.add_argument("--dry-run", action="store_true")
     r.set_defaults(func=cmd_run)
 
     a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
     a.add_argument("requirement")
     a.add_argument("--spec", default=None, help="human-supplied design file (recorded verbatim)")
-    a.add_argument("--vendor", default="claude")
+    a.add_argument("--vendor", default=None)
     a.add_argument("--model", default=None, help="override the vendor's default model")
+    a.add_argument("--effort", default=None, help="override the vendor's default effort")
     a.add_argument("--dry-run", action="store_true",
                    help="assemble the architect prompt without calling the vendor")
     a.set_defaults(func=cmd_architect)
@@ -392,8 +414,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="requirement text (optional if --spec is given)")
     pl.add_argument("--spec", default=None,
                    help="design file from `architect` (requirement recovered from its '# 設計:' header)")
-    pl.add_argument("--vendor", default="claude")
+    pl.add_argument("--vendor", default=None)
     pl.add_argument("--model", default=None, help="override the vendor's default model")
+    pl.add_argument("--effort", default=None, help="override the vendor's default effort")
     pl.add_argument("--tasks", default=None,
                    help="write the decomposed task DAG as Markdown to this file")
     pl.add_argument("--lease", type=int, default=3600,
@@ -415,8 +438,9 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--accept", default=None,
                     help="acceptance as 'verb arg1 arg2 ...' (default: pytest tests/)")
     rv.add_argument("--expect-exit", dest="expect_exit", type=int, default=0)
-    rv.add_argument("--reviewer", default="codex")
+    rv.add_argument("--reviewer", default=None)
     rv.add_argument("--model", default=None, help="override the reviewer vendor's default model")
+    rv.add_argument("--effort", default=None, help="override the reviewer vendor's default effort")
     rv.add_argument("--budget", type=int, default=4000)
     rv.add_argument("--dry-run", action="store_true",
                     help="run CVE but skip the live reviewer call")
@@ -428,8 +452,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="decomposed task DAG (to look up the task spec)")
     im.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
-    im.add_argument("--vendor", default="claude")
+    im.add_argument("--vendor", default=None)
     im.add_argument("--model", default=None, help="override the implementer vendor's default model")
+    im.add_argument("--effort", default=None, help="override the implementer vendor's default effort")
     im.add_argument("--dry-run", action="store_true",
                     help="assemble the implementer prompt without calling the vendor")
     im.set_defaults(func=cmd_implement)
