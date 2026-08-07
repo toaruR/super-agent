@@ -134,6 +134,32 @@ def structural_check(tasks: list[dict], registry: VerifierRegistry) -> list[str]
     return errs
 
 
+def render_tasks_md(tasks: list[dict], requirement: str = "") -> str:
+    """Render the decomposed task DAG as a human-readable Markdown file."""
+    lines = ["# タスク分解（decompose 出力）", ""]
+    if requirement:
+        lines.append(f"要求: {requirement}")
+        lines.append("")
+    lines.append(f"タスク数: {len(tasks)}")
+    lines.append("")
+    for i, t in enumerate(tasks, 1):
+        lines.append(f"## {i}. {t['task_id']}")
+        lines.append("")
+        lines.append(f"- 目標: {t.get('goal', '')}")
+        deps = t.get("depends_on", [])
+        lines.append(f"- 依存: {', '.join(deps) if deps else '（なし）'}")
+        ta = t.get("touch_allow", [])
+        if ta:
+            lines.append(f"- 触ってよい範囲: {', '.join(ta)}")
+        acc = t.get("acceptance", [])
+        lines.append(f"- 受入基準 ({len(acc)}):")
+        for a in acc:
+            lines.append(f"  - `{a.get('verb', '')}` {' '.join(a.get('args', []))}"
+                         f" (expect_exit={a.get('expect_exit', 0)})")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def decompose(task_id: str, requirement: str, vendor: str = "claude",
               existing_design: str = "", dry_run: bool = False,
               seq=None) -> dict:

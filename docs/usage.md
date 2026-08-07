@@ -184,7 +184,8 @@ python -m harness.cli architect "<要求>" [--spec <file>] [--vendor claude] [--
 |---|---|
 | `--spec` | 設計ファイル。`<file>` が無ければ LLM で起案してそのパスに作成（後で編集可）。既存ならそのまま記録（推奨・確実） |
 | `--vendor` | 起案させるベンダー（既定 `claude`）。`--spec` 無し、または `<file>` が無い時のみ使用 |
-| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない（ファイルも作成しない） |
+| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
+| `--tasks` | 分解結果を Markdown でこのパスに保存（例: `--tasks my-design-tasks.md`） |
 
 **何をするか**：要求を受け、設計決定を **ADR（Architecture Decision Record）** として
 台帳に `adr.written` イベントで記録します（§9 の①）。後から `log <task>` で
@@ -209,7 +210,7 @@ python -m harness.cli architect "Web API を作れ" --dry-run
 ### 2.7 `super-agent decompose` — タスク分解＋構造検査（②）
 
 ```bash
-# architect の出力（設計ファイル）を受け取る（推奨）
+python -m harness.cli decompose --spec my-design.md --tasks my-design-tasks.md
 python -m harness.cli decompose --spec my-design.md
 # または architect を飛ばして要求を直接渡す（フォールバック）
 python -m harness.cli decompose "<要求>" [--vendor claude] [--dry-run]
@@ -236,7 +237,7 @@ python -m harness.cli decompose "<要求>" [--vendor claude] [--dry-run]
 **例（architect → decompose の流れ）**：
 ```bash
 python -m harness.cli architect "Excel等からオントロジーを作りたい" --spec my-design.md
-python -m harness.cli decompose --spec my-design.md --dry-run
+python -m harness.cli decompose --spec my-design.md --tasks my-design-tasks.md --dry-run
 # → {"ok": true, "dry_run": true, "cmd": [...]}
 ```
 

@@ -104,3 +104,21 @@ def test_decompose_no_requirement_no_spec_errors(monkeypatch):
                          cwd=str(REPO), capture_output=True, text=True)
     assert res.returncode == 1
     assert "requirement or --spec is required" in res.stdout
+
+
+def test_decompose_out_writes_markdown(monkeypatch, tmp_path):
+    """--out writes the decomposed DAG as Markdown (no vendor call: dry-run can't,
+    so test the renderer directly)."""
+    from harness.roles.decomposer import render_tasks_md
+    tasks = [{
+        "task_id": "T1", "goal": "g",
+        "acceptance": [{"verb": "pytest", "args": ["tests/"], "expect_exit": 0}],
+        "depends_on": [], "touch_allow": ["src/a.py"],
+    }]
+    md = render_tasks_md(tasks, "demo requirement")
+    assert "demo requirement" in md
+    assert "T1" in md
+    assert "`pytest` tests/" in md
+    out = tmp_path / "tasks.md"
+    out.write_text(md, encoding="utf-8")
+    assert out.exists()

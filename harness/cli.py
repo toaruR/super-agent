@@ -24,6 +24,7 @@ from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
 from harness.roles.decomposer import decompose as decomposer_decompose
+from harness.roles.decomposer import render_tasks_md
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
@@ -78,6 +79,13 @@ def cmd_decompose(args: argparse.Namespace) -> int:
         seq=seq,
     )
     seq.stop()
+
+    # write the human-readable task DAG to a file when requested (and not dry-run)
+    if args.tasks and not args.dry_run and out.get("ok"):
+        Path(args.tasks).write_text(
+            render_tasks_md(out.get("tasks", []), requirement), encoding="utf-8")
+        print(f"# tasks written to {args.tasks}", file=sys.stderr)
+
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
@@ -220,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--spec", default=None,
                    help="design file from `architect` (requirement recovered from its '# 設計:' header)")
     d.add_argument("--vendor", default="claude")
+    d.add_argument("--tasks", default=None,
+                   help="write the decomposed task DAG as Markdown to this file")
     d.add_argument("--dry-run", action="store_true",
                    help="assemble the decompose prompt without calling the vendor")
     d.set_defaults(func=cmd_decompose)
