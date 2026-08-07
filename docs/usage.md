@@ -181,9 +181,9 @@ python -m harness.cli architect "<要求>" [--spec <file>] [--vendor claude] [--
 
 | オプション | 意味 |
 |---|---|
-| `--spec` | 人間が書いた設計ファイルをそのまま ADR として記録（推奨・確実） |
-| `--vendor` | 起案させるベンダー（既定 `claude`）。`--spec` 無しの時のみ使用 |
-| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
+| `--spec` | 設計ファイル。`<file>` が無ければ LLM で起案してそのパスに作成（後で編集可）。既存ならそのまま記録（推奨・確実） |
+| `--vendor` | 起案させるベンダー（既定 `claude`）。`--spec` 無し、または `<file>` が無い時のみ使用 |
+| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない（ファイルも作成しない） |
 
 **何をするか**：要求を受け、設計決定を **ADR（Architecture Decision Record）** として
 台帳に `adr.written` イベントで記録します（§9 の①）。後から `log <task>` で
@@ -192,13 +192,13 @@ python -m harness.cli architect "<要求>" [--spec <file>] [--vendor claude] [--
 **例（人間の設計をそのまま記録 — 最も確実）**：
 ```bash
 python -m harness.cli architect "Web API を作れ" --spec my-design.md
-# → {"source": "human", "decisions": [{"topic": "my-design.md", "decision": "..."}]}
+# → 既存ならその内容を記録。無ければ LLM が起案して my-design.md を作成し記録
 ```
 
 **例（LLM に起案させる／dry-run で確認）**：
 ```bash
 python -m harness.cli architect "Web API を作れ" --dry-run
-# → {"source": "llm(dry)", "cmd": [...]}  # 実際に呼ぶコマンドを確認
+# → {"source": "llm(dry)", "cmd": [...]}  # 実際に呼ぶコマンドを確認（ファイルは作らない）
 ```
 
 > `--spec` なしで LLM に起案させる場合、ベンダーは **read-only**（実装しない）で

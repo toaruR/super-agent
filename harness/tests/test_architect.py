@@ -37,12 +37,17 @@ def test_architect_spec_records_adr(tmp_path, monkeypatch):
     assert "FastAPI" in lg
 
 
-def test_architect_dry_run_assembles_prompt_without_call(monkeypatch):
+def test_architect_spec_missing_creates_via_llm_dry_run(tmp_path, monkeypatch):
     monkeypatch.chdir(REPO)
-    res = _run("architect", "Web API を作れ", "--dry-run")
+    missing = tmp_path / "new-design.md"
+    assert not missing.exists()
+    # dry_run path: assembles the prompt and reports it without calling vendor
+    res = _run("architect", "Excel からオントロジーを作れ", "--spec", str(missing), "--dry-run")
     adr = json.loads(res.stdout)
     assert adr["source"] == "llm(dry)"
-    assert "cmd" in adr  # the command that *would* run
+    assert "cmd" in adr
+    # file still not created in dry-run
+    assert not missing.exists()
 
 
 def test_architect_log_shows_adr(monkeypatch):

@@ -62,9 +62,34 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
         else (lambda tid, typ, **kw: None)  # standalone: no ledger
 
     if spec_path:
-        text = Path(spec_path).read_text(encoding="utf-8", errors="ignore")
-        adr = {"source": "human", "decisions": [{"topic": Path(spec_path).name,
-                                                  "decision": text, "rationale": ""}]}
+        p = Path(spec_path)
+        if p.exists():
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            adr = {"source": "human", "decisions": [{"topic": p.name,
+                                                      "decision": text, "rationale": ""}]}
+        else:
+            # ファイルが無い → LLM で起案してそのパスに保存（A 方針: シームレス作成）
+            decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
+            decl = decls.get(vendor, decls["claude"])
+            prompt = ARCHITECT_PROMPT.format(requirement=requirement, existing=existing_design)
+            if dry_run:
+                res = invoke(decl, prompt, schema=ADR_SCHEMA, dry_run=True)
+                return {"source": "llm(dry)", "cmd": res.get("cmd"), "decisions": []}
+            res = invoke(decl, prompt, schema=ADR_SCHEMA, dry_run=False)
+            parsed = res.get("result") or {}
+            decisions = parsed.get("decisions", [])
+            # 起案結果をファイルに保存（人間が後で編集・参照できるよう）
+            body = "\n\n".join(
+                f"## {d.get('topic', 'decision')}\n\n{d.get('decision', '')}\n\n"
+                f"理由: {d.get('rationale', '')}" for d in decisions
+            )
+            open_questions = parsed.get("open_questions", [])
+            if open_questions:
+                body += "\n\n## 未解決の問い\n" + "\n".join(f"- {q}" for q in open_questions)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"# 設計: {requirement}\n\n{body}\n", encoding="utf-8")
+            adr = {"source": "llm->file", "saved_to": str(p),
+                   "decisions": decisions, "open_questions": open_questions}
     else:
         decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
         decl = decls.get(vendor, decls["claude"])
