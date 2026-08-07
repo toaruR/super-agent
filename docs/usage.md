@@ -327,6 +327,26 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
  > **注意**：実行（dry-run なし）すると worktree が削除されます。T1/T2 のように残しておきたい
  > ワークツリーがある場合は `--dry-run` で確認してください。
 
+### 2.11 `super-agent drive` — DAG 全タスクを一括駆動（Stage B）
+
+`plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して順次（1タスクずつ）** 実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
+
+- `--tasks <md>`: 分解済みタスク DAG。`--tasks` が存在しない場合は `--spec` から分解→worktree 作成→`<md>` に書き出します。
+- `--spec <md>`: 設計ファイル（`--tasks` が無い時に使用）。
+- `--target <branch>`: 統合先ブランチ（既定 `main`）。
+- `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
+- `--dry-run`: ワークツリー作成＋CVE 実行は行うが、レビュア呼び出しと統合（git 操作）をスキップ。
+
+例：
+
+```
+super-agent drive --tasks ./probe/sample/my-design-tasks.md
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
+super-agent drive --spec ./probe/sample/my-design.md --tasks ./probe/sample/my-design-tasks.md
+```
+
+> **並列は未実装**：現在は1タスクずつ直列実行。並列（b）は今後の拡張。
+
 ## 3. 検証パイプラインを動かす（Stage C）
 
 

@@ -29,6 +29,7 @@ from harness.roles.decomposer import render_tasks_md, parse_tasks_md, structural
 from harness.roles.scheduler import schedule
 from harness.roles.implementer import implement
 from harness.roles.integrator import integrate
+from harness.roles.drive import drive
 from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
@@ -288,6 +289,31 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drive(args: argparse.Namespace) -> int:
+    """Stage B: drive the full implement->review->integrate pipeline for every
+    task in the DAG (serial, one task at a time).
+
+    If --tasks does not exist, decompose from --spec first (creating worktrees).
+    """
+    seq = ensure_ledger()
+    seq.start()
+    out = drive(
+        args.requirement or "",
+        args.spec,
+        args.tasks,
+        target_branch=args.target,
+        seq=seq,
+        dry_run=args.dry_run,
+        implement_vendor=args.vendor,
+        reviewer_vendor=args.reviewer,
+    )
+    seq.stop()
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if not out.get("ok"):
+        return 1
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     """Run the verification pipeline (CVE -> brief -> review -> adjudicate)
     against a worktree / case directory. This is the '⑤⑥⑦⑨' part of §9.
@@ -470,6 +496,19 @@ def main(argv: list[str] | None = None) -> int:
     ig.add_argument("--dry-run", action="store_true",
                     help="show the merge/verify plan without touching git")
     ig.set_defaults(func=cmd_integrate)
+
+    dr = sub.add_parser("drive", help="drive implement->review->integrate for every task in the DAG (Stage B)")
+    dr.add_argument("--requirement", default="", help="requirement text (used when --tasks is missing)")
+    dr.add_argument("--spec", default=None, help="design file to decompose from when --tasks is missing")
+    dr.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
+                    help="decomposed task DAG (created from --spec if missing)")
+    dr.add_argument("--target", default="main",
+                    help="integration target branch (default: main)")
+    dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")
+    dr.add_argument("--reviewer", default=None, help="reviewer vendor (default: roles.review)")
+    dr.add_argument("--dry-run", action="store_true",
+                    help="assemble plans and run CVE, but skip vendor calls and git changes")
+    dr.set_defaults(func=cmd_drive)
 
     s = sub.add_parser("status", help="show recent ledger events")
     s.set_defaults(func=cmd_status)
