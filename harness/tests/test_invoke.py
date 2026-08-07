@@ -74,6 +74,37 @@ def test_extract_no_json() -> None:
     assert extract_result("plain text", ".structured_output") is None
 
 
+def test_role_model_and_effort_resolution() -> None:
+    decls = load_vendors("harness/config")
+
+    # claude: flag-style effort, role resolves model+effort
+    cl = decls["claude"]
+    cmd = build_command(cl, "P", role="design")
+    assert "--model" in cmd and "claude-sonnet-5" in cmd
+    assert "--effort" in cmd and "high" in cmd
+    cmd2 = build_command(cl, "P", role="implement")
+    assert "low" in cmd2  # implement role -> effort low
+
+    # explicit --model overrides role default and is NOT suffixed
+    cmd3 = build_command(cl, "P", model="custom-model", effort="medium")
+    assert "custom-model" in cmd3 and "--effort" in cmd3
+
+    # codex: config-style effort via -c model_reasoning_effort=
+    cx = decls["codex"]
+    cmd = build_command(cx, "P", role="design")
+    assert "-m" in cmd and "gpt-5.5" in cmd
+    ci = cmd.index("-c")
+    assert cmd[ci + 1] == "model_reasoning_effort=high"
+
+    # agy: effort folded into model name as suffix (role default only)
+    ag = decls["agy"]
+    cmd = build_command(ag, "P", role="design")
+    assert "gemini-3.6-flash-high" in cmd
+    # explicit model is NOT suffixed
+    cmd2 = build_command(ag, "P", model="other-model", effort="low")
+    assert "other-model" in cmd2 and "--effort" in cmd2
+
+
 if __name__ == "__main__":
     import sys
 
@@ -84,6 +115,7 @@ if __name__ == "__main__":
         test_agy_command_shape,
         test_extract_last_json_line,
         test_extract_no_json,
+        test_role_model_and_effort_resolution,
     ]:
         fn()
         print("PASS", fn.__name__)

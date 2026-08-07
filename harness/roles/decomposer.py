@@ -219,7 +219,7 @@ def parse_tasks_md(path: str) -> list[dict]:
 
 def decompose(task_id: str, requirement: str, vendor: str = "claude",
               existing_design: str = "", dry_run: bool = False,
-              seq=None) -> dict:
+              seq=None, model: str | None = None) -> dict:
     """Decompose a requirement into a checked task DAG. Returns the payload.
 
     ledger events: task.created per task (after structural check passes).
@@ -233,13 +233,13 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
         decls = load_vendors(config_dir)
         decl = decls.get(vendor, decls["claude"])
         prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
-        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, dry_run=True)
+        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, role="implement", dry_run=True)
         return {"ok": True, "dry_run": True, "cmd": res.get("cmd")}
 
     decls = load_vendors(config_dir)
     decl = decls.get(vendor, decls["claude"])
     prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
-    res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, dry_run=False)
+    res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, role="implement", dry_run=False)
     parsed = res.get("result") or {}
     tasks = parsed.get("tasks", [])
 

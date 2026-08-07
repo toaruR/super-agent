@@ -26,19 +26,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 REVIEW_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "findings": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "cites": {"type": "array", "items": {"type": "string"}},
                     "severity": {"type": "string"},
                     "summary": {"type": "string"},
                 },
+                "required": ["cites", "severity", "summary"],
             },
         }
     },
+    "required": ["findings"],
 }
 
 
@@ -49,6 +53,7 @@ def run_pipeline(
     reviewer_vendor: str = "codex",
     budget_tokens: int = 4000,
     dry_run: bool = False,
+    model: str | None = None,
     seq: Sequencer | None = None,
 ) -> dict:
     """Run the full verification pipeline for one task. Returns the judgment.
@@ -93,7 +98,7 @@ def run_pipeline(
         review = None
     else:
         res = invoke(reviewer, brief_text, schema=REVIEW_SCHEMA,
-                     worktree=str(worktree), dry_run=False)
+                     worktree=str(worktree), model=model, role="design", dry_run=False)
         try:
             review = res.get("result")
         except Exception:

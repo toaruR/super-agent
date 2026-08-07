@@ -126,7 +126,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     design_ref=args.spec or "")
         out = decomposer_decompose(
             task_id, requirement, vendor=args.vendor,
-            existing_design=spec_text, dry_run=args.dry_run, seq=seq,
+            existing_design=spec_text, dry_run=args.dry_run,
+            model=getattr(args, "model", None), seq=seq,
         )
         if not out.get("ok"):
             seq.stop()
@@ -165,6 +166,7 @@ def cmd_architect(args: argparse.Namespace) -> int:
         args.vendor,
         spec_path=args.spec,
         dry_run=args.dry_run,
+        model=getattr(args, "model", None),
         seq=seq,
     )
     seq.stop()
@@ -183,6 +185,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         reviewer,
         f"Review task: {args.requirement}",
         schema={"type": "object", "properties": {"notes": {"type": "string"}}},
+        model=getattr(args, "model", None),
         dry_run=args.dry_run,
     )
     seq.propose(task_id, "agent.invoked", vendor=args.vendor, dry_run=args.dry_run)
@@ -225,7 +228,7 @@ def cmd_implement(args: argparse.Namespace) -> int:
     seq = ensure_ledger()
     seq.start()
     out = implement(args.task, task, worktree, vendor=args.vendor,
-                   seq=seq, dry_run=args.dry_run)
+                   seq=seq, dry_run=args.dry_run, model=getattr(args, "model", None))
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
@@ -278,6 +281,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         reviewer_vendor=args.reviewer,
         budget_tokens=args.budget,
         dry_run=args.dry_run,
+        model=getattr(args, "model", None),
         seq=seq,
     )
     seq.stop()
@@ -331,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run", help="record a requirement + invoke vendor (Stage A)")
     r.add_argument("requirement")
     r.add_argument("--vendor", default="claude")
+    r.add_argument("--model", default=None, help="override the vendor's default model")
     r.add_argument("--dry-run", action="store_true")
     r.set_defaults(func=cmd_run)
 
@@ -338,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("requirement")
     a.add_argument("--spec", default=None, help="human-supplied design file (recorded verbatim)")
     a.add_argument("--vendor", default="claude")
+    a.add_argument("--model", default=None, help="override the vendor's default model")
     a.add_argument("--dry-run", action="store_true",
                    help="assemble the architect prompt without calling the vendor")
     a.set_defaults(func=cmd_architect)
@@ -348,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--spec", default=None,
                    help="design file from `architect` (requirement recovered from its '# 設計:' header)")
     pl.add_argument("--vendor", default="claude")
+    pl.add_argument("--model", default=None, help="override the vendor's default model")
     pl.add_argument("--tasks", default=None,
                    help="write the decomposed task DAG as Markdown to this file")
     pl.add_argument("--lease", type=int, default=3600,
@@ -370,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="acceptance as 'verb arg1 arg2 ...' (default: pytest tests/)")
     rv.add_argument("--expect-exit", dest="expect_exit", type=int, default=0)
     rv.add_argument("--reviewer", default="codex")
+    rv.add_argument("--model", default=None, help="override the reviewer vendor's default model")
     rv.add_argument("--budget", type=int, default=4000)
     rv.add_argument("--dry-run", action="store_true",
                     help="run CVE but skip the live reviewer call")
@@ -382,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     im.add_argument("--vendor", default="claude")
+    im.add_argument("--model", default=None, help="override the implementer vendor's default model")
     im.add_argument("--dry-run", action="store_true",
                     help="assemble the implementer prompt without calling the vendor")
     im.set_defaults(func=cmd_implement)

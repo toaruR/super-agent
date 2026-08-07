@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from harness.core.invoke import invoke, load_vendors
+from harness.core.invoke import invoke, load_vendors, build_command
 from harness.core.ledger import Sequencer
 
 IMPLEMENT_PROMPT = """\
@@ -51,7 +51,7 @@ def _fmt_acceptance(task: dict) -> str:
 
 def implement(task_id: str, task: dict, worktree_path: str,
               vendor: str = "claude", seq: Sequencer | None = None,
-              dry_run: bool = False) -> dict:
+              dry_run: bool = False, model: str | None = None) -> dict:
     """Implement a single task inside its worktree and commit.
 
     Returns a payload with ok/commit/cmd. Records ledger events when seq given.
@@ -67,7 +67,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
 
     decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
     decl = decls.get(vendor, decls["claude"])
-    cmd = decl.headless(prompt)
+    cmd = build_command(decl, prompt, model=model, role="implement")
 
     if dry_run:
         return {"ok": True, "dry_run": True, "cmd": cmd, "task_id": task_id}

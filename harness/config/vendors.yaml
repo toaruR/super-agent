@@ -2,6 +2,12 @@
 # 全フラグは実測（EVIDENCE A-1〜A-6）に基づく。
 
 claude:
+  model_flag: "--model"
+  effort_style: "flag"
+  effort_flag: "--effort"
+  roles:
+    design:    { model: claude-sonnet-5, effort: high }
+    implement: { model: claude-sonnet-5, effort: low  }
   headless:  ["claude", "-p", "{prompt}"]
   structured:
     flag: "--json-schema"
@@ -16,6 +22,12 @@ claude:
   brief_mode: path          # 簡報はファイルパス渡し（§5.6）
 
 codex:
+  model_flag: "-m"
+  effort_style: "config"
+  effort_key: "model_reasoning_effort"
+  roles:
+    design:    { model: gpt-5.5, effort: high }
+    implement: { model: gpt-5.5, effort: low  }
   headless:  ["codex", "exec", "{prompt}"]
   structured:
     flag: "--output-schema"
@@ -33,6 +45,11 @@ codex:
   brief_mode: path
 
 agy:
+  model_flag: "--model"
+  effort_style: "model_suffix"
+  roles:
+    design:    { model: gemini-3.6-flash, effort: high }
+    implement: { model: gemini-3.6-flash, effort: low  }
   headless:  ["agy", "{prompt}"]
   structured:
     flag: "--json-schema"

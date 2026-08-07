@@ -24,6 +24,60 @@ class VendorDecl:
         self.name = name
         self.decl = decl
 
+    @property
+    def default_model(self) -> str | None:
+        return self.decl.get("model")
+
+    @property
+    def model_flag(self) -> str | None:
+        return self.decl.get("model_flag")
+
+    @property
+    def effort_style(self) -> str:
+        # "flag"  -> `--effort <lvl>` (claude, agy)
+        # "config" -> `-c <key>=<lvl>` (codex: model_reasoning_effort)
+        # "model_suffix" -> append to model name (agy alt: gemini-3.6-flash-high)
+        return self.decl.get("effort_style", "flag")
+
+    @property
+    def effort_flag(self) -> str | None:
+        return self.decl.get("effort_flag")
+
+    @property
+    def effort_key(self) -> str | None:
+        return self.decl.get("effort_key")
+
+    def role_model(self, role: str | None) -> str | None:
+        roles = self.decl.get("roles") or {}
+        if role and role in roles and "model" in roles[role]:
+            return roles[role]["model"]
+        return None
+
+    def role_effort(self, role: str | None) -> str | None:
+        roles = self.decl.get("roles") or {}
+        if role and role in roles and "effort" in roles[role]:
+            return roles[role]["effort"]
+        return None
+
+    def effort_args(self, effort: str | None) -> list[str]:
+        """Render effort as CLI args per the vendor's effort_style."""
+        if not effort:
+            return []
+        style = self.effort_style
+        if style == "config":
+            key = self.effort_key or "model_reasoning_effort"
+            return ["-c", f"{key}={effort}"]
+        # default: flag style (--effort <lvl>)
+        flag = self.effort_flag or "--effort"
+        return [flag, effort]
+
+    def model_with_effort(self, model: str | None, effort: str | None) -> str | None:
+        """For effort_style=='model_suffix', fold effort into the model name."""
+        if not model or self.effort_style != "model_suffix" or not effort:
+            return model
+        # e.g. gemini-3.6-flash + high -> gemini-3.6-flash-high
+        return f"{model}-{effort}"
+
     def headless(self, prompt: str) -> list[str]:
         return [a.replace("{prompt}", prompt) for a in self.decl["headless"]]
 
@@ -88,13 +142,34 @@ def build_command(
     schema: dict | None = None,
     session_id: str | None = None,
     worktree: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    role: str | None = None,
 ) -> list[str]:
-    """Assemble the full argv for one invocation."""
+    """Assemble the full argv for one invocation.
+
+    Model resolution order: explicit `model` > role default > vendor default.
+    Effort resolution order: explicit `effort` > role default.
+    Effort rendering depends on the vendor's `effort_style` (flag / config / model_suffix).
+    """
     cmd = decl.headless(prompt)
     if schema is not None:
         cmd += decl.structured_flags(schema)
     if session_id is not None:
         cmd += decl.resume_flags(session_id)
+    # model: explicit > role default > vendor default; only emit if a flag is declared
+    m = model or decl.role_model(role) or decl.default_model
+    eff = effort or decl.role_effort(role)
+    # effort folded into model name only when using the role-default model
+    # (explicit --model overrides should not be suffixed)
+    fold_effort = (model is None) and decl.effort_style == "model_suffix"
+    if fold_effort:
+        m = decl.model_with_effort(m, eff)
+    if m is not None and decl.model_flag:
+        cmd += [decl.model_flag, m]
+    # effort args for flag/config styles (model_suffix already folded above)
+    if not fold_effort:
+        cmd += decl.effort_args(eff)
     cmd += decl.permission_flags(worktree)
     return cmd
 
@@ -126,10 +201,14 @@ def invoke(
     schema: dict | None = None,
     session_id: str | None = None,
     worktree: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    role: str | None = None,
     dry_run: bool = False,
     timeout: int = 300,
 ) -> dict[str, Any]:
-    cmd = build_command(decl, prompt, schema=schema, session_id=session_id, worktree=worktree)
+    cmd = build_command(decl, prompt, schema=schema, session_id=session_id,
+                        worktree=worktree, model=model, effort=effort, role=role)
     if dry_run:
         return {"cmd": cmd, "dry_run": True}
     proc = subprocess.run(cmd, capture_output=True, text=True,
