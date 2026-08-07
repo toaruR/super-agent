@@ -24,7 +24,7 @@ Super Agent は「異ベンダーのコーディングエージェント（Claud
 
 | 要件 | 確認済みの値（このマシン） |
 |---|---|
-| Python | `.cve-venv`（uv 作成、pytest 入り）を使用 |
+| Python | `.cve-venv`（pytest 入りの専用仮想環境）を使用 |
 | ベンダーCLI | `claude` / `codex` / `agy` が PATH にあること |
 | OS | Windows + git-bash（パスは `C:/...` / `D:/...` 表記） |
 
@@ -38,7 +38,7 @@ export CVE=/d/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe
 $CVE -c "import yaml, pytest; print('ok')"
 ```
 
-> `.cve-venv` が無い場合：`uv venv .cve-venv && uv pip install pyyaml pytest`
+> `.cve-venv` は**既に存在する**（作り直し不要）。無い場合のみ `uv venv .cve-venv && uv pip install pyyaml pytest`（uv が必要）
 
 作業ディレクトリは必ず `src/` の中で行ってください（`harness/` パッケージが解決できるため）：
 
@@ -50,8 +50,15 @@ cd D:/vagrant/harnesses/super-agent/src
 
 ## 2. コマンド一覧
 
-現在 `super-agent` として使えるコマンドは **2つ**（Stage A）と、
-**パイプライン呼び出し**（Stage C）です。
+`super-agent` として使えるコマンド（Stage A + Stage 0 足場）：
+
+| コマンド | 役割 | § |
+|---|---|---|
+| `run "<要求>"` | 要求を台帳に記録しベンダーを呼ぶ（Stage A） | 2.1 |
+| `review <dir>` | 検証パイプラインを走らせる（Stage 0＝⑤⑥⑦⑨） | 2.2 |
+| `status` | 台帳の最近のイベントを表示 | 2.3 |
+| `log <task>` | 指定タスクの全イベントを表示 | 2.4 |
+| `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.5 |
 
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
@@ -73,7 +80,29 @@ $CVE -m harness.cli run "build a fizzbuzz module" --vendor codex --dry-run
 # → task T-XXXX recorded. ledger=...
 ```
 
-### 2.2 `super-agent status` — 台帳の状態を表示
+### 2.2 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
+
+```bash
+$CVE -m harness.cli review <dir> [--accept "pytest tests/"] [--reviewer codex] [--dry-run]
+```
+
+| オプション | 意味 |
+|---|---|
+| `<dir>` | 検証するワークツリー／題材ディレクトリ（必須） |
+| `--accept` | 受理テスト指定 `"verb arg1 arg2"`（既定 `pytest tests/`）。期待終了コードは `--expect-exit` |
+| `--reviewer` | レビュアベンダー（既定 `codex`） |
+| `--dry-run` | **CVE は実行するがレビュアは呼ばず**。裁定は `judgment_unavailable` になる |
+
+**何をするか**：`run_pipeline` を呼び、CVE→簡報→レビュー→裁定を台帳駆動で実行。
+JSON で裁定を標準出力に出します。
+
+**例**：
+```bash
+$CVE -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
+# → verdict/judgment_unavailable, tree_hash が束縛される
+```
+
+### 2.3 `super-agent status` — 台帳の状態を表示
 
 ```bash
 $CVE -m harness.cli status
@@ -86,12 +115,38 @@ events in ledger: 2
   T-418dd0b1:2 agent.invoked
 ```
 
+### 2.4 `super-agent log <task>` — 指定タスクの全イベント
+
+```bash
+$CVE -m harness.cli log T-XXXX
+```
+
+指定タスクID（接頭辞でも可）の全イベントを、付随データ付きで表示します。
+```
+events for T-XXXX: 5
+  T-XXXX:1 verification.run {"tree_hash": "3309...", "cve_ok": true}
+  T-XXXX:2 brief.built {"tokens_est": 1327}
+  T-XXXX:3 reviewer.invoked {"vendor": "codex"}
+  T-XXXX:4 reviewer.skipped {"reason": "dry_run"}
+  T-XXXX:5 judgment {"verdict": "judgment_unavailable", "tree_hash": "3309..."}
+```
+
+### 2.5 `super-agent show design|plan` — 設計／計画の表示（L6 読み取り）
+
+```bash
+$CVE -m harness.cli show design   # docs/goals/design.md を表示
+$CVE -m harness.cli show plan     # docs/plan.md を表示
+```
+
+読み取り専用。台帳イベントは発生しません（L6 の `show` 操作）。
+
 ---
 
 ## 3. 検証パイプラインを動かす（Stage C）
 
 `run` はまだ検証を走らせません。**実際の「CVE実行→レビュー→裁定」**は
-`harness/roles/review_flow.py` の `run_pipeline()` を呼び出します。
+`super-agent review <dir>`（§2.2）が `run_pipeline` を呼び出して行います。
+ここでは題材と、レビュアも本番呼び出す場合の挙動を補足します。
 
 ### 3.1 テスト題材（probe/n3/）
 
@@ -102,22 +157,13 @@ events in ledger: 2
 | `caseC` | util（retry/cache）。実バグ（attempts-1）あり | ❌ RED |
 | `caseD` | 42ファイルの大きな差分用 | — |
 
-### 3.2 CVE だけ走らせる（レビュアなし）
+### 3.2 基本：CVE 実行＋裁定（レビュアなし）
 
-レビュアを呼ばず、CVE でテストを実行し、証拠（tree_hash 付き）を取る：
+`review --dry-run` で CVE を実行し、証拠（tree_hash 付き）を取って裁定まで回します
+（レビュアは呼ばないので `judgment_unavailable` になります。これは正しい動作）：
 
 ```bash
-$CVE -c "
-import sys; sys.path.insert(0,'.')
-from harness.core.ledger import Sequencer
-from harness.roles.review_flow import run_pipeline
-seq = Sequencer('harness/ledger/events.jsonl'); seq.start()
-j = run_pipeline('T-DEMO', 'probe/n3/caseGreen',
-                 [{'verb':'pytest', 'args':['tests/'], 'expect_exit':0}],
-                 reviewer_vendor='codex', seq=seq, dry_run=True)
-seq.stop()
-import json; print(json.dumps(j, ensure_ascii=False, indent=2))
-"
+$CVE -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
 ```
 
 **出力例（caseGreen）**：
@@ -130,29 +176,19 @@ import json; print(json.dumps(j, ensure_ascii=False, indent=2))
 }
 ```
 
-> `dry_run=True` だと**レビュアを呼ばない**ので、レビュアの出力が無く
-> `judgment_unavailable` になります。これは**正しい動作**です。
 > CVE 自体は実行されており、`tree_hash` が束縛されています。
-> 「受理テストが RED なら fail」を確かめたい場合は次の 3.3 の通り
-> `dry_run=False` にしても、レビュアが構造化出力を返せば判定が出ます。
+> 「受理テストが RED なら fail」を確かめたい場合は caseC を指定してください。
 
 ### 3.3 レビュアも本番呼び出し（claude / codex）
 
+`--dry-run` を外すと、レビュア（別ベンダー）が簡報を読んでレビューし、adjudicate が裁定します：
+
 ```bash
-$CVE -c "
-import sys; sys.path.insert(0,'.')
-from harness.core.ledger import Sequencer
-from harness.roles.review_flow import run_pipeline
-seq = Sequencer('harness/ledger/events.jsonl'); seq.start()
-j = run_pipeline('T-DEMO2', 'probe/n3/caseB',
-                 [{'verb':'pytest', 'args':['tests/'], 'expect_exit':0}],
-                 reviewer_vendor='claude', seq=seq, dry_run=False)
-seq.stop()
-import json; print(json.dumps(j, ensure_ascii=False, indent=2))
-"
+$CVE -m harness.cli review probe/n3/caseB --reviewer claude --dry-run=False
 ```
 
 **裁定の種類**：
+
 | verdict | 意味 |
 |---|---|
 | `pass` | 受理テスト全部 GREEN、証拠裏付けの指摘なし |
@@ -167,23 +203,15 @@ import json; print(json.dumps(j, ensure_ascii=False, indent=2))
 
 ### 3.4 台帳で証拠を確認する
 
-パイプラインが書いたイベントは全て台帳に残ります：
+パイプラインが書いたイベントは全て台帳に残ります。`super-agent log <task>` で確認できます：
 
 ```bash
-$CVE -c "
-import sys; sys.path.insert(0,'.')
-from harness.core.ledger import Ledger
-for e in Ledger('harness/ledger/events.jsonl').load():
-    print(e['event_id'], e['type'], e.get('tree_hash',''))
-"
-```
-
-```
-T-DEMO:1 task.created
-T-DEMO:2 verification.run 3309c1ea35679a40   ← CVE の証拠（tree_hash 束縛）
-T-DEMO:3 brief.built
-T-DEMO:4 reviewer.invoked
-T-DEMO:5 judgment 3309c1ea35679a40          ← 裁定も同じ tree_hash
+$CVE -m harness.cli log T-XXXX
+# T-XXXX:1 verification.run 3309c1ea35679a40   <- CVE の証拠（tree_hash 束縛）
+# T-XXXX:2 brief.built
+# T-XXXX:3 reviewer.invoked
+# T-XXXX:4 reviewer.skipped
+# T-XXXX:5 judgment 3309c1ea35679a40          <- 裁定も同じ tree_hash
 ```
 
 `verification.run` と `judgment` の `tree_hash` が一致することが、**「どの成果物の
