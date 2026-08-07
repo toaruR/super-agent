@@ -35,9 +35,7 @@ DOCS = REPO_ROOT / "docs"
 
 def ensure_ledger() -> Sequencer:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    seq = Sequencer(str(LEDGER_PATH))
-    seq.start()
-    return seq
+    return Sequencer(str(LEDGER_PATH))
 
 
 def cmd_decompose(args: argparse.Namespace) -> int:
