@@ -26,6 +26,7 @@ from harness.roles.architect import propose as architect_propose
 from harness.roles.decomposer import decompose as decomposer_decompose
 from harness.roles.decomposer import render_tasks_md, parse_tasks_md, structural_check
 from harness.roles.scheduler import schedule
+from harness.roles.implementer import implement
 from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
@@ -167,6 +168,39 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_implement(args: argparse.Namespace) -> int:
+    """Stage 4 (§9 ④): implement a single task inside its worktree, then commit.
+
+    Reads the task spec from --tasks, finds the task by --task, and runs the
+    Implementer vendor inside workspaces/<task> (the worktree from `plan`).
+    """
+    tasks_file = Path(args.tasks) if args.tasks else None
+    if not tasks_file or not tasks_file.exists():
+        print(json.dumps({"ok": False, "error": f"tasks file not found: {args.tasks}"},
+                         ensure_ascii=False, indent=2))
+        return 1
+    tasks = parse_tasks_md(str(tasks_file))
+    task = next((t for t in tasks if t["task_id"] == args.task), None)
+    if task is None:
+        print(json.dumps({"ok": False, "error": f"task {args.task} not in {args.tasks}"},
+                         ensure_ascii=False, indent=2))
+        return 1
+
+    worktree = args.worktree or str(Path("workspaces") / args.task)
+    if not Path(worktree).exists():
+        print(json.dumps({"ok": False, "error": f"worktree not found: {worktree} (run `plan` first)"},
+                         ensure_ascii=False, indent=2))
+        return 1
+
+    seq = ensure_ledger()
+    seq.start()
+    out = implement(args.task, task, worktree, vendor=args.vendor,
+                   seq=seq, dry_run=args.dry_run)
+    seq.stop()
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     """Run the verification pipeline (CVE -> brief -> review -> adjudicate)
     against a worktree / case directory. This is the '⑤⑥⑦⑨' part of §9."""
@@ -281,6 +315,17 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--dry-run", action="store_true",
                     help="run CVE but skip the live reviewer call")
     rv.set_defaults(func=cmd_review)
+
+    im = sub.add_parser("implement", help="implement a task in its worktree + commit (Stage 4)")
+    im.add_argument("--task", required=True, help="task id to implement (e.g. T1)")
+    im.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
+                    help="decomposed task DAG (to look up the task spec)")
+    im.add_argument("--worktree", default=None,
+                    help="worktree path (default: workspaces/<task>)")
+    im.add_argument("--vendor", default="claude")
+    im.add_argument("--dry-run", action="store_true",
+                    help="assemble the implementer prompt without calling the vendor")
+    im.set_defaults(func=cmd_implement)
 
     s = sub.add_parser("status", help="show recent ledger events")
     s.set_defaults(func=cmd_status)

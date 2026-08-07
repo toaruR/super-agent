@@ -93,6 +93,7 @@ D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, p
 | `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.5 |
 | `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.6 |
 | `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.7 |
+| `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.8 |
 
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
@@ -241,31 +242,30 @@ worktree/リースだけ作成します。`--tasks` が無い / 未作成なら 
 冪等：再実行しても既存 worktree/ブランチを再利用・または prune して再作成します。
 
 
+### 2.8 `super-agent implement` — タスク実装＋コミット（④）
+
+`plan` が作った worktree 内で、指定タスクを Implementer ベンダーに実装させ、harness が
+コミットします（§3.1 隔離＋§6.2 `touch_allow` 制約）。
+
 ```bash
-# architect の設計から一気に分解＋worktree作成＋リース発行
-python -m harness.cli plan --spec my-design.md --tasks my-design-tasks.md
-# または要求を直接（architect を飛ばす）
-python -m harness.cli plan "<要求>" [--vendor claude] [--lease 3600] [--root workspaces] [--dry-run]
+# tasks.md から T1 を探し、workspaces/T1 で実装→コミット
+python -m harness.cli implement --task T1 --tasks my-design-tasks.md
+# ドライラン（プロンプト組み立てのみ）
+python -m harness.cli implement --task T1 --tasks my-design-tasks.md --dry-run
 ```
-
-`decompose`（②）と `scheduler`（③）を連続実行します。各タスクに対して：
-
-- `git worktree add workspaces/<task_id> -b task/<task_id>` で作業ツリーを作成（§3.1 隔離）
-- 役割（Implementer）をベンダーに割り当て、`task.leased` + `lease_until` を記録
 
 | オプション | 意味 |
 |---|---|
-| `--spec` | `architect` の設計ファイル（②と同じ入力） |
-| `--tasks` | 分解結果を Markdown で保存（例: `--tasks my-design-tasks.md`） |
-| `--lease` | リース秒数（既定 3600） |
-| `--root` | worktree ルート（既定 `workspaces`） |
-| `--dry-run` | プロンプト・worktree 計画のみ（vendor/git は呼ばない） |
+| `--task` | 実装するタスクID（必須） |
+| `--tasks` | タスク定義を探す DAG（既定 `probe/sample/my-design-tasks.md`） |
+| `--worktree` | worktree パス（既定 `workspaces/<task>`） |
+| `--vendor` | Implementer ベンダー（既定 `claude`） |
+| `--dry-run` | プロンプト組み立てのみ（vendor/git は呼ばない） |
 
-**確認**：
-```bash
-python -m harness.cli log <task>      # task.leased + worktree パスを確認
-git worktree list                     # worktree ができている
-```
+**何をするか**：タスクの `goal`・`acceptance`・`touch_allow` をプロンプトに入れ、ベンダーを
+worktree 内で実行。`touch_allow` 以外のファイルは触らせません。実装後、harness が
+`git add <touch_allow>` → `commit` し、台帳に `artifact.produced`（paths, commit）と
+`task.implemented`（commit, tree_hash）を記録します。`tree_hash` は §3.2 の証拠束縛です。
 
 ## 3. 検証パイプラインを動かす（Stage C）
 
@@ -364,12 +364,14 @@ python -m harness.cli log T-XXXX
 
 ```bash
 python -m pytest harness/tests/ -q
-# ...........  11 passed
+# ................  40 passed
 ```
 
 - `test_invoke.py`（6）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）
 - `test_ledger.py`（3）：台帳の原子性（H3）
 - `test_pipeline.py`（2）：パイプラインの CVE 実行＋tree_hash 束縛＋裁定記録
+- `test_implementer.py`（3）：実装→コミットの束縛＋台帳記録（vendor はモック）
+- `test_scheduler.py`（7）：worktree 冪等性・リース記録・再利用
 
 ---
 
@@ -377,7 +379,7 @@ python -m pytest harness/tests/ -q
 
 以下は**設計のみ**。マニュアルに書かれていても、まだ動きません：
 
-- `super-agent run` での**実際の並列実装・リース・worktree**（Stage B）
+- `super-agent run` での**並列実装の自動起動**（Stage B）：worktree/リース/scheduler は動くが、複数タスクを一斉に回す駆動は未実装
 - `pause` / `resume` / `abort` / `amend` / `show` コマンド（Stage D' 操作面）
 - 予算上限での自動停止・承認キュー（Stage D）
 - レビュアの OS レベル隔離（Stage F）
