@@ -67,6 +67,10 @@ hermes:
   model_flag: "-m"
   effort_style: "flag"
   effort_flag: "--reasoning"
+  # 実測(2026-08-07): --reasoning の実効は hy3:free では観測できず。NONE/HIGH で
+  # 同一問いへの回答が変わらず、--reasoning bogus でもエラーにならず通る（値検証が
+  # 緩い、またはモデル側で無視）。フラグを外すよりはマシだが「high が効いている証拠
+  # はなし」。将来のモデル/CLI で効く可能性を残し削除はしない。
   headless:  ["hermes", "chat", "-q", "{prompt}", "-Q"]
   # hermes に構造化出力フラグはない。schema は prompt 内指示とし、
   # extract_result が出力の最後の JSON 行を拾う（result_path 省略→全体）。
