@@ -92,6 +92,7 @@ D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, p
 | `log <task>` | 指定タスクの全イベントを表示 | 2.4 |
 | `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.5 |
 | `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.6 |
+| `decompose "<要求>"` | 要求を構造検査済みタスクDAGに分解（Stage 2＝②） | 2.7 |
 
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
@@ -204,6 +205,41 @@ python -m harness.cli architect "Web API を作れ" --dry-run
 > `--spec` なしで LLM に起案させる場合、ベンダーは **read-only**（実装しない）で
 > 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
 
+
+### 2.7 `super-agent decompose "<要求>"` — タスク分解＋構造検査（②）
+
+```bash
+python -m harness.cli decompose "<要求>" [--vendor claude] [--dry-run]
+```
+
+| オプション | 意味 |
+|---|---|
+| `--vendor` | 分解させるベンダー（既定 `claude`） |
+| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
+
+**何をするか**：要求からタスク DAG（各タスクに `acceptance[].verb` 付き）を作り、
+**§6.2 の構造検査**を通してから台帳に `task.created` を記録します。検査で落ちたら
+記録せず `decompose.rejected`（errors）を返します。
+
+**構造検査（機械強制・H2 含む）**：
+- `acceptance` が空でない（検証不能なタスクを作らない）
+- `acceptance[].verb` が `verifiers.yaml` に登録済み（未登録 verb は差し戻し＝インジェクション排除）
+- `acceptance[].args` はリスト（CVE で実行可能な形式）
+- DAG に循環が無い
+- 並列タスク間で `touch_allow` が重複しない
+
+**例（dry-run でプロンプト確認）**：
+```bash
+python -m harness.cli decompose "Excelやワードからオントロジーを作りたい" --dry-run
+# → {"ok": true, "dry_run": true, "cmd": [...]}
+```
+
+> 実際の呼び出しでは claude 等が DAG を返し、検査を通ると各タスクが `task.created` として
+> 台帳に残ります（`super-agent log <task>` で確認可）。
+
+---
+
+## 3. 検証パイプラインを動かす（Stage C）
 
 
 `run` はまだ検証を走らせません。**実際の「CVE実行→レビュー→裁定」**は

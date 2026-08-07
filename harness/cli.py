@@ -23,6 +23,7 @@ from harness.core.invoke import invoke, load_vendors
 from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
+from harness.roles.decomposer import decompose as decomposer_decompose
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
@@ -33,6 +34,24 @@ DOCS = REPO_ROOT / "docs"
 def ensure_ledger() -> Sequencer:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     return Sequencer(str(LEDGER_PATH))
+
+
+def cmd_decompose(args: argparse.Namespace) -> int:
+    """Stage 2 (§9 ②): decompose a requirement into a structurally-checked task DAG."""
+    seq = ensure_ledger()
+    seq.start()
+    task_id = f"T-{uuid.uuid4().hex[:8]}"
+    seq.propose(task_id, "task.created", goal=args.requirement, role="decomposer")
+    out = decomposer_decompose(
+        task_id,
+        args.requirement,
+        vendor=args.vendor,
+        dry_run=args.dry_run,
+        seq=seq,
+    )
+    seq.stop()
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_architect(args: argparse.Namespace) -> int:
@@ -166,6 +185,13 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--dry-run", action="store_true",
                    help="assemble the architect prompt without calling the vendor")
     a.set_defaults(func=cmd_architect)
+
+    d = sub.add_parser("decompose", help="decompose requirement into checked task DAG (Stage 2)")
+    d.add_argument("requirement")
+    d.add_argument("--vendor", default="claude")
+    d.add_argument("--dry-run", action="store_true",
+                   help="assemble the decompose prompt without calling the vendor")
+    d.set_defaults(func=cmd_decompose)
 
     rv = sub.add_parser("review", help="run verification pipeline on a dir (Stage 0)")
     rv.add_argument("dir", help="worktree / case directory")
