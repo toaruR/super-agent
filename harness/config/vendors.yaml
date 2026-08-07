@@ -62,3 +62,23 @@ agy:
       - "--add-dir"
       - "{worktree}"        # ★最適解: 実行阻止 + 読取可（PERMISSION_CONTROL §7.4）
   brief_mode: path
+
+hermes:
+  model_flag: "-m"
+  effort_style: "flag"
+  effort_flag: "--reasoning"
+  headless:  ["hermes", "chat", "-q", "{prompt}", "-Q"]
+  # hermes に構造化出力フラグはない。schema は prompt 内指示とし、
+  # extract_result が出力の最後の JSON 行を拾う（result_path 省略→全体）。
+  # structured キーは意図的に省略（build_command でガード済み）。
+  session:
+    id_origin: callee       # hermes が session_id: 行を出力（--resume で再開）
+    resume_flag: ["--resume"]
+  permission:
+    readonly:
+      - "--safe-mode"       # 純粋な read-only フラグはない→全カスタマイズ無効で自壊を防ぐ
+  # 実測(2026-08-07): --safe-mode は「書き込み禁止」ではない。headless(-Q) で
+  # ファイル作成が実行された。よって read-only の担保は harness 側の worktree
+  # 隔離（レビュー結果は本流へ書き戻さない）に依存する。claude/codex 同様
+  # 「実行は防げない」(A-6) が hermes でも確認済み。
+  brief_mode: path

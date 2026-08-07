@@ -5,8 +5,8 @@ Stage A: ledger + vendor adapter (run/status).
 Stage 0: review/log/show — drive the verification pipeline and inspect the ledger.
 
 Usage:
-  python -m harness.cli run "<requirement>" [--vendor claude|codex|agy] [--dry-run]
-  python -m harness.cli review <dir> [--accept pytest tests/] [--reviewer codex] [--dry-run]
+  python -m harness.cli run "<requirement>" [--vendor claude|codex|agy|hermes] [--dry-run]
+  python -m harness.cli review <dir> [--accept pytest tests/] [--reviewer codex|claude|agy|hermes] [--dry-run]
   python -m harness.cli status
   python -m harness.cli log <task>
   python -m harness.cli show design|plan

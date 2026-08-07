@@ -17,7 +17,7 @@ SCHEMA = {"type": "object", "properties": {"x": {"type": "string"}}}
 
 def test_load_vendors() -> None:
     decls = load_vendors("harness/config")
-    assert set(decls) == {"claude", "codex", "agy"}
+    assert set(decls) == {"claude", "codex", "agy", "hermes"}
     # claude: caller issues session id (A-1)
     assert decls["claude"].decl["session"]["id_origin"] == "caller"
     # codex: callee issues (A-1)
@@ -127,3 +127,18 @@ if __name__ == "__main__":
     ]:
         fn()
         print("PASS", fn.__name__)
+
+def test_hermes_no_structured_flag_and_result_extraction() -> None:
+    """Hermes has no `structured` key; build_command must skip schema flags,
+    and extract_result must return the whole object (no result_path)."""
+    decls = load_vendors("harness/config")
+    h = decls["hermes"]
+    # schema present but vendor has no `structured` -> no schema flag emitted
+    cmd = build_command(h, "do it", schema={"type": "object"}, model="tencent/hy3:free", effort="high")
+    assert "--json-schema" not in cmd and "--output-schema" not in cmd
+    assert "-m" in cmd and "tencent/hy3:free" in cmd
+    assert "--reasoning" in cmd and "high" in cmd
+    assert h.result_path() == ""
+    # extract_result returns whole object when result_path is empty
+    out = "session_id: 20260807_xyz\n" '{"verdict": "pass", "why": "ok"}\n'
+    assert extract_result(out, "") == {"verdict": "pass", "why": "ok"}

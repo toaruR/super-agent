@@ -85,8 +85,13 @@ class VendorDecl:
         """Return flags to request structured output.
 
         claude expects the schema inline (A-5); codex expects a file path (A-5).
+        Vendors without a `structured` declaration (e.g. hermes) emit no flags —
+        the caller is expected to instruct JSON-only in the prompt, and
+        extract_result() recovers the last JSON line from stdout.
         """
         if schema is None:
+            return []
+        if "structured" not in self.decl:
             return []
         flag = self.decl["structured"]["flag"]
         form = self.decl["structured"]["form"]
@@ -125,7 +130,8 @@ class VendorDecl:
         return out
 
     def result_path(self) -> str:
-        return self.decl.get("result_path", ".structured_output")
+        # Empty string => no dotted path; extract_result returns the whole object.
+        return self.decl.get("result_path", "")
 
 
 def load_vendors(config_dir: str | Path) -> dict[str, VendorDecl]:
@@ -217,7 +223,9 @@ def extract_result(stdout: str, result_path: str) -> Any:
     if not candidates:
         return None
     obj = json.loads(candidates[-1])
-    # support a dotted result_path (e.g. ".structured_output")
+    # support a dotted result_path (e.g. ".structured_output"); empty => whole object
+    if not result_path:
+        return obj
     cur: Any = obj
     for key in result_path.split("."):
         if key:

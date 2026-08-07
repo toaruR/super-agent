@@ -7,7 +7,7 @@
 
 ## 0. これは何か（30秒で）
 
-Super Agent は「異ベンダーのコーディングエージェント（Claude Code / Codex / Antigravity）
+Super Agent は「異ベンダーのコーディングエージェント（Claude Code / Codex / Antigravity / Hermes）
 を、1つの検証可能な生産ラインの作業員として動かす」ハーネスです。
 
 - あなたが**要求**を出す
@@ -29,7 +29,7 @@ git-bash なら `./super-agent status` で実行できます。
 | 要件 | 確認済みの値（このマシン） |
 |---|---|
 | Python | `.cve-venv`（pytest 入りの専用仮想環境）を使用 |
-| ベンダーCLI | `claude` / `codex` / `agy` が PATH にあること |
+| ベンダーCLI | `claude` / `codex` / `agy` / `hermes` が PATH にあること |
 | OS | Windows（git-bash / PowerShell 両方可） |
 
 **venv を有効化してから `python -m` で実行するのが基本です。コマンド内のパスはすべて
@@ -102,7 +102,7 @@ D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, p
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
 ```bash
-super-agent run "<要求>" [--vendor claude|codex|agy] [--dry-run]
+super-agent run "<要求>" [--vendor claude|codex|agy|hermes] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -122,7 +122,7 @@ super-agent run "build a fizzbuzz module" --vendor codex --dry-run
 ### 2.2 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
 
 ```bash
-super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex] [--dry-run]
+super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy|hermes] [--dry-run]
 ```
 
 | オプション | 意味 |
