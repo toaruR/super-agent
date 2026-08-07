@@ -29,6 +29,35 @@ def test_drive_calls_pipeline_per_task_in_order() -> None:
     int_calls = [c.args[0] for c in m_int.call_args_list]
     assert "T1" in int_calls and "T2" in int_calls
 
+def test_drive_resolves_vendors_from_roles_yaml_when_unspecified() -> None:
+    """Stage B consolidation (A/B/C): drive must resolve implement/reviewer
+    vendors from vendors.yaml `roles:` defaults, not hardcoded fallbacks."""
+    with mock.patch.object(drive, "structural_check", return_value=[]),          mock.patch.object(drive, "implement") as m_impl,          mock.patch.object(drive, "run_pipeline") as m_rev,          mock.patch.object(drive, "integrate", return_value={"ok": True}),          mock.patch.object(drive, "schedule"),          mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []}
+         ]):
+        m_impl.return_value = {"ok": True, "commit": "c1"}
+        m_rev.return_value = {"verdict": "pass"}
+        out = drive.drive("", None, "probe/sample/my-design-tasks.md",
+                          seq=None, dry_run=False)
+        assert out["ok"] is True
+        # vendor falls back to roles.implement.vendor (agy) and roles.review.vendor (codex)
+        assert m_impl.call_args.kwargs["vendor"] == "agy"
+        assert m_rev.call_args.kwargs["reviewer_vendor"] == "codex"
+
+
+def test_drive_respects_explicit_vendor_override() -> None:
+    with mock.patch.object(drive, "structural_check", return_value=[]),          mock.patch.object(drive, "implement") as m_impl,          mock.patch.object(drive, "run_pipeline") as m_rev,          mock.patch.object(drive, "integrate", return_value={"ok": True}),          mock.patch.object(drive, "schedule"),          mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []}
+         ]):
+        m_impl.return_value = {"ok": True, "commit": "c1"}
+        m_rev.return_value = {"verdict": "pass"}
+        out = drive.drive("", None, "probe/sample/my-design-tasks.md",
+                          seq=None, dry_run=False,
+                          implement_vendor="hermes", reviewer_vendor="claude")
+        assert out["ok"] is True
+        assert m_impl.call_args.kwargs["vendor"] == "hermes"
+        assert m_rev.call_args.kwargs["reviewer_vendor"] == "claude"
+
 
 def test_drive_skips_integrate_when_review_fails() -> None:
     with mock.patch.object(drive, "structural_check", return_value=[]), \

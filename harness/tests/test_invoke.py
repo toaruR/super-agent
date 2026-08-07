@@ -94,12 +94,14 @@ def test_role_model_and_effort_resolution() -> None:
     cmd = build_command(ag, "P", model=ri["model"], effort=ri["effort"])
     assert "gemini-3.6-flash-high" in cmd  # suffixed
 
-    # review role -> codex / gpt-5.6-luna / high (config-style effort)
+    # review role -> codex / gpt-5.5 / high (config-style effort)
+    # NOTE: gpt-5.5 is the model that works on codex 0.146.1 (gpt-5.6-luna
+    # requires a newer Codex CLI and fails with judgment_unavailable).
     rr = resolve_role("review", "harness/config")
-    assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.6-luna"
+    assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.5"
     cx = load_vendors("harness/config")["codex"]
     cmd = build_command(cx, "P", model=rr["model"], effort=rr["effort"])
-    assert "-m" in cmd and "gpt-5.6-luna" in cmd
+    assert "-m" in cmd and "gpt-5.5" in cmd
     ci = cmd.index("-c")
     assert cmd[ci + 1] == "model_reasoning_effort=high"
 

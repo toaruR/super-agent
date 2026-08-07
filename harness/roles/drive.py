@@ -26,7 +26,7 @@ from harness.roles.implementer import implement
 from harness.roles.review_flow import run_pipeline
 from harness.roles.integrator import integrate
 from harness.core.verifiers import VerifierRegistry
-
+from harness.core.invoke import resolve_role
 
 def _resolve_acceptance(task: dict, tasks_text: str | None = None) -> list[dict]:
     acc = task.get("acceptance") or []
@@ -63,7 +63,7 @@ def drive(
             seq.propose(tid, "task.created", goal=requirement, role="decomposer")
         out = decomposer_decompose(
             tid if seq is not None else "T-drive",
-            requirement, vendor="claude", existing_design=spec_path or "",
+            requirement, vendor=resolve_role("design", config_dir)["vendor"], existing_design=spec_path or "",
             dry_run=dry_run, seq=seq,
         )
         if not out.get("ok"):
@@ -95,14 +95,15 @@ def drive(
         entry: dict[str, Any] = {"task_id": tid}
 
         # ④ implement
-        impl = implement(tid, task, worktree, vendor=implement_vendor or "claude",
+        impl_vendor = implement_vendor or resolve_role("implement", config_dir)["vendor"]
+        impl = implement(tid, task, worktree, vendor=impl_vendor,
                          seq=seq, dry_run=dry_run)
         entry["implement"] = {"ok": impl.get("ok"), "commit": impl.get("commit")}
 
         # ⑤⑥⑦ review
         acc = _resolve_acceptance(task)
         rev = run_pipeline(tid, worktree, acc,
-                           reviewer_vendor=reviewer_vendor or "codex",
+                           reviewer_vendor=reviewer_vendor or resolve_role("review", config_dir)["vendor"],
                            dry_run=dry_run, seq=seq)
         entry["review"] = {"verdict": rev.get("verdict"),
                             "judgment_unavailable": rev.get("judgment") == "judgment_unavailable"}
