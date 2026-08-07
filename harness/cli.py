@@ -25,6 +25,7 @@ from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
 from harness.roles.decomposer import decompose as decomposer_decompose
 from harness.roles.decomposer import render_tasks_md
+from harness.roles.scheduler import schedule
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
@@ -34,7 +35,9 @@ DOCS = REPO_ROOT / "docs"
 
 def ensure_ledger() -> Sequencer:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return Sequencer(str(LEDGER_PATH))
+    seq = Sequencer(str(LEDGER_PATH))
+    seq.start()
+    return seq
 
 
 def cmd_decompose(args: argparse.Namespace) -> int:
@@ -87,6 +90,62 @@ def cmd_decompose(args: argparse.Namespace) -> int:
         print(f"# tasks written to {args.tasks}", file=sys.stderr)
 
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Stage 3 (§9 ③): decompose a requirement/design, then schedule worktrees + leases.
+
+    Combines Stage 2 (decompose) and Stage 3 (scheduler) in one call.
+    """
+    # reuse decompose to get the checked task DAG
+    spec_text = ""
+    if args.spec:
+        p = Path(args.spec)
+        if not p.exists():
+            print(json.dumps({"ok": False, "error": f"spec file not found: {args.spec}"},
+                             ensure_ascii=False, indent=2))
+            return 1
+        spec_text = p.read_text(encoding="utf-8", errors="ignore")
+    requirement = args.requirement or ""
+    if not requirement and spec_text:
+        for line in spec_text.splitlines():
+            if line.startswith("# 設計:"):
+                requirement = line[len("# 設計:"):].strip()
+                break
+    if not requirement:
+        print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
+                         ensure_ascii=False, indent=2))
+        return 1
+
+    seq = ensure_ledger()
+    seq.start()
+    task_id = f"T-{uuid.uuid4().hex[:8]}"
+    seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
+                design_ref=args.spec or "")
+
+    out = decomposer_decompose(
+        task_id, requirement, vendor=args.vendor,
+        existing_design=spec_text, dry_run=args.dry_run, seq=seq,
+    )
+    if not out.get("ok"):
+        seq.stop()
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    sched = schedule(
+        task_id, out.get("tasks", []), vendor=args.vendor,
+        role="implementer", lease_seconds=args.lease, root=args.root,
+        dry_run=args.dry_run, seq=seq,
+    )
+    seq.stop()
+
+    if args.tasks and not args.dry_run and out.get("ok"):
+        Path(args.tasks).write_text(
+            render_tasks_md(out.get("tasks", []), requirement), encoding="utf-8")
+        print(f"# tasks written to {args.tasks}", file=sys.stderr)
+
+    print(json.dumps({"decompose": out, "schedule": sched}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -233,6 +292,22 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--dry-run", action="store_true",
                    help="assemble the decompose prompt without calling the vendor")
     d.set_defaults(func=cmd_decompose)
+
+    pl = sub.add_parser("plan", help="decompose + schedule worktrees/leases (Stage 3)")
+    pl.add_argument("requirement", nargs="?", default="",
+                   help="requirement text (optional if --spec is given)")
+    pl.add_argument("--spec", default=None,
+                   help="design file from `architect` (requirement recovered from its '# 設計:' header)")
+    pl.add_argument("--vendor", default="claude")
+    pl.add_argument("--tasks", default=None,
+                   help="write the decomposed task DAG as Markdown to this file")
+    pl.add_argument("--lease", type=int, default=3600,
+                   help="lease duration in seconds (default 3600)")
+    pl.add_argument("--root", default="workspaces",
+                   help="worktree root directory (default: workspaces)")
+    pl.add_argument("--dry-run", action="store_true",
+                   help="assemble prompts and plan worktrees without calling vendor / git")
+    pl.set_defaults(func=cmd_plan)
 
     rv = sub.add_parser("review", help="run verification pipeline on a dir (Stage 0)")
     rv.add_argument("dir", help="worktree / case directory")
