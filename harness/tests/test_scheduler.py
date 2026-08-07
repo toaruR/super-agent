@@ -40,10 +40,58 @@ def test_topo_order_cycle_safe():
     assert set(topo_order(tasks)) == {"A", "B"}
 
 
+def test_create_worktree_reuses_existing_checked_out_branch(tmp_path):
+    from harness.roles.scheduler import create_worktree
+    # simulate: `git worktree list --porcelain` reports the branch already checked out
+    def fake_git(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = f"worktree {tmp_path}/T1\nbranch refs/heads/task/T1\n"
+            stderr = ""
+        return R()
+    (tmp_path / "T1").mkdir()
+    wt = create_worktree("T1", root=str(tmp_path), git=fake_git)
+    assert wt["ok"] is True
+    assert wt.get("reused") is True
+    assert wt["path"].replace("\\", "/") == f"{tmp_path.as_posix()}/T1"
+
+
+def test_create_worktree_branch_exists_no_checkout(tmp_path):
+    from harness.roles.scheduler import create_worktree
+    # simulate: `git worktree add -b` fails with "already exists", then add w/o -b succeeds
+    calls = {"n": 0}
+    def fake_git(*args, **kwargs):
+        cmd = args[0]
+        class R:
+            pass
+        r = R()
+        if cmd[1] == "list":
+            r.returncode = 0
+            r.stdout = ""
+            r.stderr = ""
+            return r
+        r.returncode = 1 if calls["n"] == 0 else 0
+        r.stdout = ""
+        r.stderr = "fatal: a branch named 'task/T1' already exists" if calls["n"] == 0 else ""
+        calls["n"] += 1
+        return r
+    wt = create_worktree("T1", root=str(tmp_path), git=fake_git)
+    assert wt["ok"] is True
+    assert calls["n"] == 2  # tried -b then without
+
+
 def test_create_worktree_plan(monkeypatch):
     from harness.roles.scheduler import create_worktree
-    wt = create_worktree("T1", root="workspaces", git=lambda *a, **k: None)
-    assert wt["path"] == "workspaces/T1"
+
+    def fake_git(*a, **k):
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    wt = create_worktree("T1", root="workspaces", git=fake_git)
+    assert wt["path"].replace("\\", "/") == "workspaces/T1"
     assert wt["branch"] == "task/T1"
     assert wt["ok"] is True
     assert wt["cmd"][:3] == ["git", "worktree", "add"]

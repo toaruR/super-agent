@@ -40,23 +40,57 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
 
     `git` is injectable for testing; defaults to subprocess. Returns a dict
     with path/branch/ok/error. When dry_run, plans the command without running it.
+
+    Idempotent & robust to stale state:
+      - if the branch is already checked out in another worktree, reuse it;
+      - if the branch already exists (not checked out), add without `-b`;
+      - otherwise create a fresh branch.
     """
     path = str(Path(root, task_id).as_posix())
     branch = f"task/{task_id}"
     cmd = ["git", "worktree", "add", path, "-b", branch]
     if dry_run:
         return {"path": path, "branch": branch, "ok": True, "cmd": cmd, "dry_run": True}
-    if git is None:
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, shell=False)
-            ok = proc.returncode == 0
-            return {"path": path, "branch": branch, "ok": ok,
-                    "cmd": cmd,
-                    "error": None if ok else (proc.stderr or proc.stdout).strip()}
-        except FileNotFoundError as e:
-            return {"path": path, "branch": branch, "ok": False, "cmd": cmd, "error": str(e)}
-    # injected (test): just return the planned command
-    return {"path": path, "branch": branch, "ok": True, "cmd": cmd}
+
+    def run(c):
+        if git is not None:
+            return git(c)
+        return subprocess.run(c, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", shell=False)
+
+    # 1) branch already checked out in an existing worktree -> reuse it
+    lst = run(["git", "worktree", "list", "--porcelain"]).stdout or ""
+    for line in lst.splitlines():
+        # lines look like: "worktree <path>" then later "branch refs/heads/task/T1"
+        pass
+    # parse porcelain: groups separated by blank lines
+    current_path = None
+    for line in lst.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree "):].strip()
+        elif line.startswith("branch refs/heads/") and current_path:
+            existing = line[len("branch refs/heads/"):].strip()
+            if existing == branch and Path(current_path).exists():
+                return {"path": current_path, "branch": branch, "ok": True,
+                        "reused": True, "cmd": cmd}
+
+    if Path(path).exists():
+        # path present but not a tracked worktree: reuse as-is
+        return {"path": path, "branch": branch, "ok": True, "reused": True, "cmd": cmd}
+
+    proc = run(cmd)
+    if proc.returncode == 0:
+        return {"path": path, "branch": branch, "ok": True, "cmd": cmd}
+    # branch already exists -> add using the existing branch (no -b)
+    if "already exists" in (proc.stderr or proc.stdout):
+        cmd2 = ["git", "worktree", "add", path, branch]
+        proc2 = run(cmd2)
+        if proc2.returncode == 0:
+            return {"path": path, "branch": branch, "ok": True, "cmd": cmd2}
+        return {"path": path, "branch": branch, "ok": False,
+                "error": (proc2.stderr or proc2.stdout).strip()}
+    return {"path": path, "branch": branch, "ok": False,
+            "error": (proc.stderr or proc.stdout).strip()}
 
 
 def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
