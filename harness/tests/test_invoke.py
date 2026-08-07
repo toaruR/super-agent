@@ -94,14 +94,14 @@ def test_role_model_and_effort_resolution() -> None:
     cmd = build_command(ag, "P", model=ri["model"], effort=ri["effort"])
     assert "gemini-3.6-flash-high" in cmd  # suffixed
 
-    # review role -> codex / gpt-5.5 / high (config-style effort)
-    # NOTE: gpt-5.5 is the model that works on codex 0.146.1 (gpt-5.6-luna
-    # requires a newer Codex CLI and fails with judgment_unavailable).
+    # review role -> codex / gpt-5.6-luna / high (config-style effort)
+    # NOTE: gpt-5.6-luna is the correct model for the current Codex CLI
+    # (verified live 2026-08-07: model: gpt-5.6-luna, reasoning effort: high, EXIT 0).
     rr = resolve_role("review", "harness/config")
-    assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.5"
+    assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.6-luna"
     cx = load_vendors("harness/config")["codex"]
     cmd = build_command(cx, "P", model=rr["model"], effort=rr["effort"])
-    assert "-m" in cmd and "gpt-5.5" in cmd
+    assert "-m" in cmd and "gpt-5.6-luna" in cmd
     ci = cmd.index("-c")
     assert cmd[ci + 1] == "model_reasoning_effort=high"
 
@@ -126,6 +126,8 @@ if __name__ == "__main__":
         test_extract_last_json_line,
         test_extract_no_json,
         test_role_model_and_effort_resolution,
+        test_hermes_no_structured_flag_and_result_extraction,
+        test_extract_recovers_fenced_json,
     ]:
         fn()
         print("PASS", fn.__name__)
@@ -144,3 +146,23 @@ def test_hermes_no_structured_flag_and_result_extraction() -> None:
     # extract_result returns whole object when result_path is empty
     out = "session_id: 20260807_xyz\n" '{"verdict": "pass", "why": "ok"}\n'
     assert extract_result(out, "") == {"verdict": "pass", "why": "ok"}
+
+
+def test_extract_recovers_fenced_json() -> None:
+    """Models (e.g. hermes) often wrap JSON in a ```json ... ``` fence.
+    extract_result must recover it instead of returning None."""
+    fenced = (
+        "session_id: 20260807_abc\n"
+        "Here is the result:\n"
+        "```json\n"
+        '{"verdict": "pass", "score": 9}\n'
+        "```\n"
+    )
+    assert extract_result(fenced, "") == {"verdict": "pass", "score": 9}
+
+    # plain ``` fence (no language tag) also works
+    fenced2 = "text\n```\n" '{"a": 1}\n' "```\n"
+    assert extract_result(fenced2, "") == {"a": 1}
+
+    # no JSON anywhere -> None (not a crash)
+    assert extract_result("just text, no json", "") is None

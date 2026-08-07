@@ -216,14 +216,44 @@ def build_command(
 def extract_result(stdout: str, result_path: str) -> Any:
     """Extract the structured field from a vendor response (A-3).
 
-    claude/agy: a JSON object (possibly one of several agent_message events);
-    take the last non-empty JSON line. codex: a JSON object with the schema keys.
+    Strategy (most-to-least reliable), so all vendors recover JSON even when the
+    model wraps it in a markdown fence (e.g. hermes emits ```json ... ```):
+      1. last line that starts with `{` (claude/agy/codex plain JSON)
+      2. content of the last ```json / ``` fenced block
+      3. first balanced {...} substring anywhere in the output
     """
-    candidates = [ln for ln in stdout.splitlines() if ln.strip().startswith("{")]
-    if not candidates:
+    lines = stdout.splitlines()
+
+    # 1) last JSON-ish line
+    candidates = [ln for ln in lines if ln.strip().startswith("{")]
+    if candidates:
+        obj = _parse_json_line(candidates[-1])
+        if obj is not None:
+            return _apply_result_path(obj, result_path)
+
+    # 2) last fenced block (```json ... ``` or plain ``` ... ```)
+    fenced = _extract_last_fence(stdout)
+    if fenced is not None:
+        obj = _parse_json_line(fenced)
+        if obj is not None:
+            return _apply_result_path(obj, result_path)
+
+    # 3) first balanced {...} substring
+    obj = _extract_first_balanced_json(stdout)
+    if obj is not None:
+        return _apply_result_path(obj, result_path)
+
+    return None
+
+
+def _parse_json_line(text: str) -> Any | None:
+    try:
+        return json.loads(text.strip())
+    except (json.JSONDecodeError, ValueError):
         return None
-    obj = json.loads(candidates[-1])
-    # support a dotted result_path (e.g. ".structured_output"); empty => whole object
+
+
+def _apply_result_path(obj: Any, result_path: str) -> Any:
     if not result_path:
         return obj
     cur: Any = obj
@@ -233,6 +263,34 @@ def extract_result(stdout: str, result_path: str) -> Any:
                 return obj  # path missing -> return whole object
             cur = cur[key]
     return cur
+
+
+def _extract_last_fence(stdout: str) -> str | None:
+    """Return the inner content of the last markdown code fence, if any."""
+    import re
+    # matches ```lang\n...\n``` or ```\n...\n```
+    fences = re.findall(r"```[a-zA-Z0-9]*\n(.*?)\n```", stdout, flags=re.DOTALL)
+    return fences[-1].strip() if fences else None
+
+
+def _extract_first_balanced_json(stdout: str) -> Any | None:
+    """Find the first balanced {...} (or [...] ) substring and parse it."""
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = stdout.find(opener)
+        if start == -1:
+            continue
+        depth = 0
+        for i in range(start, len(stdout)):
+            if stdout[i] == opener:
+                depth += 1
+            elif stdout[i] == closer:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(stdout[start : i + 1])
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+    return None
 
 
 def invoke(
