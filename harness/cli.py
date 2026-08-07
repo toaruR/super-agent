@@ -24,8 +24,9 @@ from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
 from harness.roles.decomposer import decompose as decomposer_decompose
-from harness.roles.decomposer import render_tasks_md
+from harness.roles.decomposer import render_tasks_md, parse_tasks_md, structural_check
 from harness.roles.scheduler import schedule
+from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
@@ -38,65 +39,11 @@ def ensure_ledger() -> Sequencer:
     return Sequencer(str(LEDGER_PATH))
 
 
-def cmd_decompose(args: argparse.Namespace) -> int:
-    """Stage 2 (§9 ②): decompose a requirement or an architect design file
-    into a structurally-checked task DAG.
-
-    With --spec <file>: consume the design file produced by `architect`
-    (requirement is recovered from its '# 設計: <req>' header). Otherwise the
-    positional requirement is used (architect may be skipped).
-    """
-    spec_text = ""
-    if args.spec:
-        p = Path(args.spec)
-        if not p.exists():
-            print(json.dumps({"ok": False, "error": f"spec file not found: {args.spec}"},
-                             ensure_ascii=False, indent=2))
-            return 1
-        spec_text = p.read_text(encoding="utf-8", errors="ignore")
-    # recover requirement from the design file header if not given positionally
-    requirement = args.requirement or ""
-    if not requirement and spec_text:
-        for line in spec_text.splitlines():
-            if line.startswith("# 設計:"):
-                requirement = line[len("# 設計:"):].strip()
-                break
-    if not requirement:
-        print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
-                         ensure_ascii=False, indent=2))
-        return 1
-
-    seq = ensure_ledger()
-    seq.start()
-    task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
-                design_ref=args.spec or "")
-    out = decomposer_decompose(
-        task_id,
-        requirement,
-        vendor=args.vendor,
-        existing_design=spec_text,
-        dry_run=args.dry_run,
-        seq=seq,
-    )
-    seq.stop()
-
-    # write the human-readable task DAG to a file when requested (and not dry-run)
-    if args.tasks and not args.dry_run and out.get("ok"):
-        Path(args.tasks).write_text(
-            render_tasks_md(out.get("tasks", []), requirement), encoding="utf-8")
-        print(f"# tasks written to {args.tasks}", file=sys.stderr)
-
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-    return 0
-
-
 def cmd_plan(args: argparse.Namespace) -> int:
     """Stage 3 (§9 ③): decompose a requirement/design, then schedule worktrees + leases.
 
     Combines Stage 2 (decompose) and Stage 3 (scheduler) in one call.
     """
-    # reuse decompose to get the checked task DAG
     spec_text = ""
     if args.spec:
         p = Path(args.spec)
@@ -105,31 +52,60 @@ def cmd_plan(args: argparse.Namespace) -> int:
                              ensure_ascii=False, indent=2))
             return 1
         spec_text = p.read_text(encoding="utf-8", errors="ignore")
-    requirement = args.requirement or ""
-    if not requirement and spec_text:
-        for line in spec_text.splitlines():
-            if line.startswith("# 設計:"):
-                requirement = line[len("# 設計:"):].strip()
-                break
-    if not requirement:
-        print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
-                         ensure_ascii=False, indent=2))
-        return 1
 
     seq = ensure_ledger()
     seq.start()
-    task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
-                design_ref=args.spec or "")
 
-    out = decomposer_decompose(
-        task_id, requirement, vendor=args.vendor,
-        existing_design=spec_text, dry_run=args.dry_run, seq=seq,
-    )
-    if not out.get("ok"):
-        seq.stop()
-        print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0
+    # --- tasks source: reuse --tasks file if it already exists (no vendor) ---
+    tasks_file = Path(args.tasks) if args.tasks else None
+    if tasks_file and tasks_file.exists():
+        tasks = parse_tasks_md(str(tasks_file))
+        requirement = args.requirement or ""
+        if not requirement and spec_text:
+            for line in spec_text.splitlines():
+                if line.startswith("# 設計:"):
+                    requirement = line[len("# 設計:"):].strip()
+                    break
+        # light structural validation so a hand-edited file still routes safely
+        config_dir = Path(__file__).resolve().parent / "config"
+        registry = VerifierRegistry(config_dir / "verifiers.yaml")
+        errs = structural_check(tasks, registry)
+        task_id = f"T-{uuid.uuid4().hex[:8]}"
+        if errs:
+            if seq is not None:
+                seq.propose(task_id, "decompose.rejected", errors=errs)
+            seq.stop()
+            print(json.dumps({"ok": False, "errors": errs, "tasks": tasks},
+                             ensure_ascii=False, indent=2))
+            return 0
+        out = {"ok": True, "tasks": tasks, "reused_tasks_file": True}
+        if seq is not None:
+            seq.propose(task_id, "decompose.ok", n_tasks=len(tasks),
+                        source="tasks.md")
+    else:
+        # decompose via vendor (creates the task DAG)
+        requirement = args.requirement or ""
+        if not requirement and spec_text:
+            for line in spec_text.splitlines():
+                if line.startswith("# 設計:"):
+                    requirement = line[len("# 設計:"):].strip()
+                    break
+        if not requirement:
+            print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
+                             ensure_ascii=False, indent=2))
+            seq.stop()
+            return 1
+        task_id = f"T-{uuid.uuid4().hex[:8]}"
+        seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
+                    design_ref=args.spec or "")
+        out = decomposer_decompose(
+            task_id, requirement, vendor=args.vendor,
+            existing_design=spec_text, dry_run=args.dry_run, seq=seq,
+        )
+        if not out.get("ok"):
+            seq.stop()
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            return 0
 
     sched = schedule(
         task_id, out.get("tasks", []), vendor=args.vendor,
@@ -138,7 +114,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     )
     seq.stop()
 
-    if args.tasks and not args.dry_run and out.get("ok"):
+    if args.tasks and not args.dry_run and out.get("ok") and not out.get("reused_tasks_file"):
         Path(args.tasks).write_text(
             render_tasks_md(out.get("tasks", []), requirement), encoding="utf-8")
         print(f"# tasks written to {args.tasks}", file=sys.stderr)
@@ -278,18 +254,6 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--dry-run", action="store_true",
                    help="assemble the architect prompt without calling the vendor")
     a.set_defaults(func=cmd_architect)
-
-    d = sub.add_parser("decompose", help="decompose requirement/design into checked task DAG (Stage 2)")
-    d.add_argument("requirement", nargs="?", default="",
-                   help="requirement text (optional if --spec is given)")
-    d.add_argument("--spec", default=None,
-                   help="design file from `architect` (requirement recovered from its '# 設計:' header)")
-    d.add_argument("--vendor", default="claude")
-    d.add_argument("--tasks", default=None,
-                   help="write the decomposed task DAG as Markdown to this file")
-    d.add_argument("--dry-run", action="store_true",
-                   help="assemble the decompose prompt without calling the vendor")
-    d.set_defaults(func=cmd_decompose)
 
     pl = sub.add_parser("plan", help="decompose + schedule worktrees/leases (Stage 3)")
     pl.add_argument("requirement", nargs="?", default="",

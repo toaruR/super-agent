@@ -15,6 +15,7 @@ Structural checks (machine-enforced, before any LLM re-prompt):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from harness.core.invoke import invoke, load_vendors
@@ -158,6 +159,62 @@ def render_tasks_md(tasks: list[dict], requirement: str = "") -> str:
                          f" (expect_exit={a.get('expect_exit', 0)})")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def parse_tasks_md(path: str) -> list[dict]:
+    """Reverse of render_tasks_md: read a task DAG back from the Markdown file.
+
+    Used by `plan --tasks <existing.md>` to skip re-decomposition. Returns a
+    list of task dicts. Roughly parses our own emitted format.
+    """
+    text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    tasks: list[dict] = []
+    cur: dict | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        m = re.match(r"^##\s+\d+\.\s+(\S+)", line)
+        if m:
+            if cur is not None:
+                tasks.append(cur)
+            cur = {"task_id": m.group(1), "acceptance": [], "depends_on": [],
+                   "touch_allow": []}
+            continue
+        if cur is None:
+            continue
+        if line.startswith("- 目標:"):
+            cur["goal"] = line[len("- 目標:"):].strip()
+        elif line.startswith("- 依存:"):
+            deps = line[len("- 依存:"):].strip()
+            if deps and deps != "（なし）":
+                cur["depends_on"] = [d.strip() for d in deps.split(",") if d.strip()]
+        elif line.startswith("- 触ってよい範囲:"):
+            ta = line[len("- 触ってよい範囲:"):].strip()
+            if ta:
+                cur["touch_allow"] = [t.strip() for t in ta.split(",") if t.strip()]
+        elif line.lstrip().startswith("- `") and "`" in line[line.find("`")+1:]:
+            # acceptance bullet: `verb` args... (expect_exit=N)
+            # only the verb is backticked; args follow after the closing backtick
+            tick = line.find("`")
+            close = line.find("`", tick + 1)
+            verb = line[tick+1:close].strip()
+            rest = line[close+1:].strip()
+            expect = "0"
+            # strip the (expect_exit=N) suffix wherever it sits
+            if "(expect_exit=" in rest:
+                head, _, tail = rest.partition("(expect_exit=")
+                args_part = head.strip()
+                expect = tail.rstrip(")").strip()
+            else:
+                args_part = rest
+            args = args_part.split()
+            cur["acceptance"].append({
+                "verb": verb,
+                "args": args,
+                "expect_exit": int(expect) if str(expect).isdigit() else 0,
+            })
+    if cur is not None:
+        tasks.append(cur)
+    return tasks
 
 
 def decompose(task_id: str, requirement: str, vendor: str = "claude",

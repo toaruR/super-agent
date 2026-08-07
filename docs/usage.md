@@ -92,7 +92,7 @@ D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, p
 | `log <task>` | 指定タスクの全イベントを表示 | 2.4 |
 | `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.5 |
 | `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.6 |
-| `decompose "<要求>"` | 要求を構造検査済みタスクDAGに分解（Stage 2＝②） | 2.7 |
+| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.7 |
 
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
@@ -206,47 +206,40 @@ python -m harness.cli architect "Web API を作れ" --dry-run
 > 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
 
 
-### 2.7 `super-agent decompose` — タスク分解＋構造検査（②）
+### 2.7 `super-agent plan` — 分解(②)＋編成・worktree・リース(③)
+
+`plan` は Stage 2（decomposer）と Stage 3（scheduler）を連続実行します。
+`--tasks` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
 
 ```bash
-# architect の出力（設計ファイル）を受け取る（推奨）
-python -m harness.cli decompose --spec my-design.md --tasks my-design-tasks.md
-# または architect を飛ばして要求を直接渡す（フォールバック）
-python -m harness.cli decompose "<要求>" [--vendor claude] [--tasks out.md] [--dry-run]
+# ① 分解だけ（--tasks に書き出し。このとき worktree は作らない）
+python -m harness.cli plan --spec my-design.md --tasks my-design-tasks.md --dry-run
+# ② tasks.md を人間がレビュー/編集した後、分解をスキップして worktree だけ作る
+python -m harness.cli plan --tasks my-design-tasks.md
+# ③ 通常運用：設計から一気に分解→worktree作成→リース発行
+python -m harness.cli plan --spec my-design.md --tasks my-design-tasks.md
 ```
 
-| オプション | 意味 |
-|---|---|
-| `--spec` | `architect` が作った設計ファイル。要求はその `# 設計:` 見出しから復元される |
-| `--vendor` | 分解させるベンダー（既定 `claude`） |
-| `--tasks` | 分解結果を Markdown でこのパスに保存（例: `--tasks my-design-tasks.md`） |
-| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
+| コマンド | vendor呼ぶ？ | worktree作る？ | 使い道 |
+|---|---|---|---|
+| `plan --spec X --tasks Y`（Y未作成） | ✔ | ✔ | 通常運用（分解→作業台） |
+| `plan --spec X --tasks Y --dry-run` | × | ×（計画のみ） | 構成確認 |
+| `plan --tasks Y`（Y既存） | × | ✔ | tasks.mdからworktreeだけ作る |
 
-**何をするか**：`--spec` があれば architect の設計を文脈として受け取り、要求からタスク DAG
-（各タスクに `acceptance[].verb` 付き）を作り、**§6.2 の構造検査**を通してから台帳に
-`task.created`（design_ref 付き）を記録します（①→②の連携が台帳で見える）。検査で落ちたら
-記録せず `decompose.rejected`（errors）を返します。
+`--tasks` が**既存ファイル**ならそれを読み込んで（人手編集も反映）、vendor を呼ばずに
+worktree/リースだけ作成します。`--tasks` が無い / 未作成なら vendor で分解してから進みます。
 
-**構造検査（機械強制・H2 含む）**：
-- `acceptance` が空でない（検証不能なタスクを作らない）
+**構造検査（機械強制・H2 含む、再利用時も適用）**：
+- `acceptance` が空でない
 - `acceptance[].verb` が `verifiers.yaml` に登録済み（未登録 verb は差し戻し＝インジェクション排除）
-- `acceptance[].args` はリスト（CVE で実行可能な形式）
+- `acceptance[].args` はリスト
 - DAG に循環が無い
 - 並列タスク間で `touch_allow` が重複しない
 
-**例（architect → decompose の流れ）**：
-```bash
-python -m harness.cli architect "Excel等からオントロジーを作りたい" --spec my-design.md
-python -m harness.cli decompose --spec my-design.md --tasks my-design-tasks.md --dry-run
-# → {"ok": true, "dry_run": true, "cmd": [...]}
-```
+各タスクに対して `git worktree add workspaces/<task_id> -b task/<task_id>` で作業ツリーを作成
+（§3.1 隔離）、台帳に `worktree.created` と `task.leased`（lease_until, touch_allow 付き）を記録します。
+冪等：再実行しても既存 worktree/ブランチを再利用・または prune して再作成します。
 
-> 実際の呼び出しでは claude 等が DAG を返し、検査を通ると各タスクが `task.created` として
-> 台帳に残ります（`super-agent log <task>` で確認可）。
-
----
-
-### 2.8 `super-agent plan` — 編成・worktree・リース（③）
 
 ```bash
 # architect の設計から一気に分解＋worktree作成＋リース発行
