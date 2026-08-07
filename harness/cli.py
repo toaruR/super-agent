@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -33,6 +34,30 @@ CONFIG_DIR = Path(__file__).resolve().parent / "config"
 LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = REPO_ROOT / "docs"
+
+
+def ensure_worktree(task_id: str, root: str = "workspaces") -> str | None:
+    """Return the worktree path for a task, recreating it from branch task/<id>
+    if git metadata is stale (dir deleted but branch survives). Returns None if
+    neither the dir nor a recoverable branch exists."""
+    path = str(Path(root, task_id).as_posix())
+    if Path(path).exists():
+        return path
+    branch = f"task/{task_id}"
+    # prune stale 'registered but missing' metadata, then try to re-create
+    subprocess.run(["git", "worktree", "prune"],
+                   capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", shell=False)
+    branches = subprocess.run(["git", "branch", "--list", branch],
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", shell=False).stdout
+    if branch in branches:
+        r = subprocess.run(["git", "worktree", "add", path, branch],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", shell=False)
+        if r.returncode == 0 and Path(path).exists():
+            return path
+    return None
 
 
 def ensure_ledger() -> Sequencer:
@@ -188,6 +213,11 @@ def cmd_implement(args: argparse.Namespace) -> int:
 
     worktree = args.worktree or str(Path("workspaces") / args.task)
     if not Path(worktree).exists():
+        # recover a stale/missing worktree from its branch if possible
+        recovered = ensure_worktree(args.task, str(Path("workspaces")))
+        if recovered:
+            worktree = recovered
+    if not Path(worktree).exists():
         print(json.dumps({"ok": False, "error": f"worktree not found: {worktree} (run `plan` first)"},
                          ensure_ascii=False, indent=2))
         return 1
@@ -203,21 +233,44 @@ def cmd_implement(args: argparse.Namespace) -> int:
 
 def cmd_review(args: argparse.Namespace) -> int:
     """Run the verification pipeline (CVE -> brief -> review -> adjudicate)
-    against a worktree / case directory. This is the '⑤⑥⑦⑨' part of §9."""
-    target = Path(args.dir)
-    if not target.exists():
-        print(f"error: directory not found: {target}", file=sys.stderr)
-        return 2
-    # acceptance: default to pytest tests/ with expect_exit=0 (green)
-    if args.accept:
-        verb, *rest = args.accept.split()
-        acceptance = [{"verb": verb, "args": rest, "expect_exit": args.expect_exit}]
+    against a worktree / case directory. This is the '⑤⑥⑦⑨' part of §9.
+
+    With --task <id> --tasks <dag.md>, the acceptance and worktree path are
+    resolved from the implemented task (Stage 4 -> Stage 5 handoff).
+    """
+    # Stage 5 handoff: resolve acceptance + worktree from the task DAG
+    if args.task and args.tasks:
+        tasks_file = Path(args.tasks)
+        if not tasks_file.exists():
+            print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
+            return 2
+        tasks = parse_tasks_md(str(tasks_file))
+        task = next((t for t in tasks if t["task_id"] == args.task), None)
+        if task is None:
+            print(f"error: task {args.task} not in {args.tasks}", file=sys.stderr)
+            return 2
+        target = Path(args.worktree) if args.worktree else (Path("workspaces") / args.task)
+        # recover a stale/missing worktree from its branch before reviewing
+        resolved = ensure_worktree(args.task, str(Path("workspaces")))
+        if resolved:
+            target = Path(resolved)
+        acceptance = task.get("acceptance") or [
+            {"verb": "pytest", "args": ["tests/"], "expect_exit": 0}]
     else:
-        acceptance = [{"verb": "pytest", "args": ["tests/"], "expect_exit": 0}]
+        target = Path(args.dir)
+        if not target.exists():
+            print(f"error: directory not found: {target}", file=sys.stderr)
+            return 2
+        # acceptance: default to pytest tests/ with expect_exit=0 (green)
+        if args.accept:
+            verb, *rest = args.accept.split()
+            acceptance = [{"verb": verb, "args": rest, "expect_exit": args.expect_exit}]
+        else:
+            acceptance = [{"verb": "pytest", "args": ["tests/"], "expect_exit": 0}]
 
     seq = ensure_ledger()
     seq.start()
-    task_id = f"T-{uuid.uuid4().hex[:8]}"
+    task_id = args.task or f"T-{uuid.uuid4().hex[:8]}"
     j = run_pipeline(
         task_id,
         target,
@@ -305,8 +358,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="assemble prompts and plan worktrees without calling vendor / git")
     pl.set_defaults(func=cmd_plan)
 
-    rv = sub.add_parser("review", help="run verification pipeline on a dir (Stage 0)")
-    rv.add_argument("dir", help="worktree / case directory")
+    rv = sub.add_parser("review", help="run verification pipeline on a dir (Stage 0/5)")
+    rv.add_argument("dir", nargs="?", default=None,
+                    help="worktree / case directory (or use --task --tasks)")
+    rv.add_argument("--task", default=None, help="task id to review (Stage 5 handoff from implement)")
+    rv.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
+                    help="decomposed task DAG (to resolve --task's acceptance + worktree)")
+    rv.add_argument("--worktree", default=None,
+                    help="worktree path (default: workspaces/<task>) when using --task")
     rv.add_argument("--accept", default=None,
                     help="acceptance as 'verb arg1 arg2 ...' (default: pytest tests/)")
     rv.add_argument("--expect-exit", dest="expect_exit", type=int, default=0)

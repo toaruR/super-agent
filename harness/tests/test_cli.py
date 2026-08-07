@@ -39,7 +39,37 @@ def test_review_dry_run_writes_pipeline_events(tmp_path, monkeypatch):
     assert "judgment" in lg
 
 
-def test_log_shows_task_events(tmp_path, monkeypatch):
+def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypatch):
+    """Stage 5 handoff: `review --task T1 --tasks dag.md` resolves acceptance
+    and the worktree path from the implemented task (no live vendor)."""
+    monkeypatch.chdir(REPO)
+    # write a task DAG with T1 having a custom acceptance
+    dag = tmp_path / "tasks.md"
+    dag.write_text(
+        "# タスク分解\n要求: demo\nタスク数: 1\n\n"
+        "## 1. T1\n\n- 目標: g\n- 依存: （なし）\n"
+        "- 触ってよい範囲: wclite/core.py\n"
+        "- 受入基準 (1):\n  - `pytest` tests/test_core.py (expect_exit=0)\n",
+        encoding="utf-8")
+    # stage a worktree dir so target.exists() passes
+    wt = REPO / "workspaces" / "T1"
+    wt.mkdir(parents=True, exist_ok=True)
+    try:
+        ledger = REPO / "harness" / "ledger" / "events.jsonl"
+        if ledger.exists():
+            ledger.unlink()
+        res = _run("review", "--task", "T1", "--tasks", str(dag),
+                   "--reviewer", "codex", "--dry-run")
+        j = json.loads(res.stdout)
+        assert j["tree_hash"], "tree_hash must be bound (CVE ran)"
+        assert j["verdict"] in ("pass", "fail", "judgment_unavailable", "environment_error")
+        # the task id is reused (T1), not a fresh T-xxxx
+        lg = ledger.read_text(encoding="utf-8")
+        assert "T1:" in lg
+        assert "verification.run" in lg
+    finally:
+        import shutil
+        shutil.rmtree(wt, ignore_errors=True)
     monkeypatch.chdir(REPO)
     ledger = REPO / "harness" / "ledger" / "events.jsonl"
     if ledger.exists():

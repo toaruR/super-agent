@@ -267,6 +267,30 @@ worktree 内で実行。`touch_allow` 以外のファイルは触らせません
 `git add <touch_allow>` → `commit` し、台帳に `artifact.produced`（paths, commit）と
 `task.implemented`（commit, tree_hash）を記録します。`tree_hash` は §3.2 の証拠束縛です。
 
+### 2.9 `super-agent review` — 読み取り専用レビュー（⑤⑥⑦）
+
+実装済みタスク（④）を、`--task` で直接レビューできます。acceptance と worktree パスは
+tasks.md から自動解決されます（Implementer と**別ベンダー**、かつ read-only が強制）。
+
+```bash
+# implement した T1 をレビュー（CVE実行→brief→read-onlyレビュー→裁定）
+python -m harness.cli review --task T1 --tasks my-design-tasks.md --reviewer codex
+# ドライラン（CVEは走るがレビュア呼び出しをスキップ）
+python -m harness.cli review --task T1 --tasks my-design-tasks.md --dry-run
+```
+
+| オプション | 意味 |
+|---|---|
+| `--task` | レビューするタスクID（④の成果物） |
+| `--tasks` | タスク定義 DAG（acceptance + worktree 解決用） |
+| `--worktree` | worktree パス（既定 `workspaces/<task>`） |
+| `--reviewer` | レビュア（Implementer と別であること／既定 `codex`） |
+| `--dry-run` | CVE は実行、レビュア呼び出しはスキップ |
+
+**何をするか**：CVE で検証（§3.2 証拠束縛）→ 差分＋証拠ログ＋受入基則のみを brief に渡して
+レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
+ verdict に入らない）。台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
+
 ## 3. 検証パイプラインを動かす（Stage C）
 
 
@@ -385,6 +409,9 @@ python -m pytest harness/tests/ -q
 - レビュアの OS レベル隔離（Stage F）
 
 これらは `docs/plan.md` の Stage B〜F を参照。
+
+> **実装済み（Stage 0〜5）**：review は implement の成果物（worktree）に対して
+> `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。
 
 ---
 
