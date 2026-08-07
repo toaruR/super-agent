@@ -6,6 +6,11 @@ role functions. Stage B parallel (b) fans the `implement` role out into multiple
 channels (multi-vendor / multi-model): each channel runs in its own worktree and
 branch in parallel, and the first channel whose review passes is integrated.
 
+Task-level parallelism (Stage B parallel, task fan-out): independent tasks (per
+topo layers) run concurrently during the implement+review phase; the integrate
+phase (git checkout/merge on the shared repo root) is always serialized to avoid
+concurrent git mutations.
+
 All ledger events flow through the shared Sequencer (single writer, thread-safe).
 """
 from __future__ import annotations
@@ -22,7 +27,12 @@ from harness.roles.decomposer import (
     render_tasks_md,
     structural_check,
 )
-from harness.roles.scheduler import create_worktree, schedule, topo_order
+from harness.roles.scheduler import (
+    create_worktree,
+    schedule,
+    topo_layers,
+    topo_order,
+)
 from harness.roles.implementer import implement
 from harness.roles.review_flow import run_pipeline
 from harness.roles.integrator import integrate
@@ -50,6 +60,8 @@ def drive(
     implement_vendor: str | None = None,
     reviewer_vendor: str | None = None,
     implement_channels: list[dict] | None = None,
+    parallel_tasks: bool = False,
+    max_task_workers: int = 4,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
 
@@ -57,6 +69,12 @@ def drive(
     (multi-vendor / multi-model). Each channel runs in its own worktree/branch in
     parallel (ThreadPoolExecutor); the first channel whose review passes is
     integrated, the rest are discarded.
+
+    Task-level parallelism: when `parallel_tasks` is True, tasks that have no
+    inter-dependencies (per topo layers) are driven concurrently during the
+    implement+review phase. The integrate phase is always serialized (git on the
+    shared repo root). Default (parallel_tasks=False) keeps the original serial
+    per-task behavior.
 
     Channel declaration (precedence):
       1. `implement_channels` arg (parsed from CLI `--implement-vendors "agy:2,hermes:3"`)
@@ -104,6 +122,7 @@ def drive(
     order = topo_order(tasks)
     by_id = {t["task_id"]: t for t in tasks}
     results: list[dict] = []
+    results_by_id: dict[str, dict] = {}
 
     # Resolve the implement channel fan-out once (shared by all tasks).
     if implement_vendor:
@@ -113,7 +132,9 @@ def drive(
             "implement", config_dir, explicit_override=implement_channels
         )
 
-    for tid in order:
+    def _run_task_pipeline(tid: str) -> dict:
+        """Phase A: implement (channels parallel) + review, pick winner.
+        No git mutation here, so it is safe to run concurrently across tasks."""
         task = by_id.get(tid, {})
         entry: dict[str, Any] = {"task_id": tid}
 
@@ -182,8 +203,31 @@ def drive(
         }
         first_verdict = reviews[0]["verdict"] if reviews else None
         entry["review"]["verdict"] = first_verdict  # mirror single-channel shape
+        entry["_winner"] = winner  # internal: used by the serial integrate phase
+        return entry
 
-        # ⑧ integrate — only the winning channel (first that passed)
+    # Phase A: run task pipelines. Independent tasks (topo layers) run in parallel;
+    # layers themselves run serially so dependencies are satisfied before a task
+    # is implemented. Each task's channels are already parallel inside _run_task.
+    if parallel_tasks:
+        layers = topo_layers(tasks)
+        for layer in layers:
+            with ThreadPoolExecutor(max_workers=max_task_workers) as ex:
+                for entry in ex.map(_run_task_pipeline, layer):
+                    results_by_id[entry["task_id"]] = entry
+    else:
+        for tid in order:
+            results_by_id[tid] = _run_task_pipeline(tid)
+
+    # Phase B: integrate winners serially (git checkout/merge on the shared repo
+    # root must not run concurrently). Ordered by topo_order so a child is merged
+    # after its parents.
+    for tid in order:
+        entry = results_by_id.get(tid)
+        if entry is None:
+            continue
+        task = by_id.get(tid, {})
+        winner = entry.pop("_winner", None)
         if not dry_run and winner is not None:
             integ = integrate(winner["task_id"], task, winner["worktree"],
                              target_branch=target_branch, seq=seq, dry_run=dry_run)
@@ -193,7 +237,6 @@ def drive(
         else:
             entry["integrate"] = {"skipped": True,
                                   "reason": "dry_run" if dry_run else "no passing channel"}
-
         results.append(entry)
 
     return {"ok": True, "reused_tasks_file": reused, "tasks": results}

@@ -103,3 +103,37 @@ def test_drive_multichannel_fanout_and_winner_integration() -> None:
     assert m_int.call_count == 2  # T1 + T2
     winner_tid = m_int.call_args_list[0].args[0]
     assert "agy_0" in winner_tid
+
+
+def test_topo_layers_partitions_independent_tasks() -> None:
+    from harness.roles.scheduler import topo_layers
+    tasks = [
+        {"task_id": "A", "depends_on": []},
+        {"task_id": "B", "depends_on": ["A"]},
+        {"task_id": "C", "depends_on": []},   # independent of A/B
+        {"task_id": "D", "depends_on": ["B", "C"]},
+    ]
+    layers = topo_layers(tasks)
+    # layer 0 = independent (A, C); layer 1 = B (needs A); layer 2 = D
+    assert set(layers[0]) == {"A", "C"}
+    assert layers[1] == ["B"]
+    assert layers[2] == ["D"]
+
+
+def test_drive_parallel_tasks_runs_independent_concurrently() -> None:
+    # Stage B task-level: --parallel-tasks で独立タスクを同時に implement+review。
+    # ここでは呼び出し回数と順序のみ検証（実 vendor はモック）。
+    tasks_md = "probe/sample/my-design-tasks-parallel.md"  # PA, PB (独立)
+    with mock.patch.object(drive, "structural_check", return_value=[]),          mock.patch.object(drive, "implement") as m_impl,          mock.patch.object(drive, "run_pipeline") as m_rev,          mock.patch.object(drive, "integrate") as m_int,          mock.patch.object(drive, "schedule"):
+        m_impl.return_value = {"ok": True, "commit": "cX"}
+        m_rev.return_value = {"verdict": "pass"}
+        m_int.return_value = {"ok": True, "commit": "cI"}
+
+        out = drive.drive("", None, tasks_md, seq=None, dry_run=False,
+                          parallel_tasks=True)
+    assert out["ok"] is True
+    assert len(out["tasks"]) == 2
+    # both tasks implemented (single channel each -> 1 impl call per task)
+    assert m_impl.call_count == 2
+    # both integrated (serial, but both present)
+    assert m_int.call_count == 2

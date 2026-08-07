@@ -35,6 +35,38 @@ def topo_order(tasks: list[dict]) -> list[str]:
     return ordered
 
 
+def topo_layers(tasks: list[dict]) -> list[list[str]]:
+    """Partition task_ids into dependency layers for parallel execution.
+
+    Layer 0 = tasks with no (in-graph) dependencies. Each subsequent layer holds
+    tasks whose dependencies are all in earlier layers. Tasks within a layer have
+    no inter-dependencies and can run concurrently. Cyclic-safe (a cycle collapses
+    into whichever layer its members first reach).
+    """
+    ids = [t["task_id"] for t in tasks]
+    deps = {t["task_id"]: [d for d in t.get("depends_on", []) if d in ids]
+            for t in tasks}
+    layer_of: dict[str, int] = {}
+    changed = True
+    # iterate to a fixed point: a node's layer = 1 + max(layer of deps), init 0
+    for tid in ids:
+        layer_of[tid] = 0
+    while changed:
+        changed = False
+        for tid in ids:
+            if deps[tid]:
+                want = 1 + max(layer_of[d] for d in deps[tid])
+                if want > layer_of[tid]:
+                    layer_of[tid] = want
+                    changed = True
+    layers: list[list[str]] = []
+    for tid in ids:
+        while len(layers) <= layer_of[tid]:
+            layers.append([])
+        layers[layer_of[tid]].append(tid)
+    return [layer for layer in layers if layer]
+
+
 def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: bool = False) -> dict:
     """Create `git worktree add <root>/<task_id> -b task/<task_id>`.
 

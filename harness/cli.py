@@ -315,6 +315,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
         implement_vendor=args.vendor,
         reviewer_vendor=args.reviewer,
         implement_channels=implement_channels,
+        parallel_tasks=args.parallel_tasks,
+        max_task_workers=args.max_task_workers,
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -518,6 +520,11 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--implement-vendors", default=None,
                     help='multi-channel override, e.g. "agy:2,hermes:3" '
                          '(each entry becomes one parallel implement channel)')
+    dr.add_argument("--parallel-tasks", action="store_true",
+                    help="run independent tasks (topo layers) concurrently during "
+                         "implement+review (integrate stays serial)")
+    dr.add_argument("--max-task-workers", type=int, default=4,
+                    help="max concurrent tasks when --parallel-tasks is set")
     dr.add_argument("--dry-run", action="store_true",
                     help="assemble plans and run CVE, but skip vendor calls and git changes")
     dr.set_defaults(func=cmd_drive)
