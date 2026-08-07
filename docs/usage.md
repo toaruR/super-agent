@@ -26,25 +26,57 @@ Super Agent は「異ベンダーのコーディングエージェント（Claud
 |---|---|
 | Python | `.cve-venv`（pytest 入りの専用仮想環境）を使用 |
 | ベンダーCLI | `claude` / `codex` / `agy` が PATH にあること |
-| OS | Windows + git-bash（パスは `C:/...` / `D:/...` 表記） |
+| OS | Windows（git-bash / PowerShell 両方可） |
 
-**実行に使う Python** は必ず `.cve-venv` のものを使ってください：
+**venv を有効化してから `python -m` で実行するのが基本です。コマンド内のパスはすべて
+`src/` からの相対表記**です（例: `probe/n3/caseGreen`）。
 
-```bash
-# このマシンでの例
-export CVE=/d/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe
+### 1.1 VSCode ターミナル（推奨・最も簡単）
 
-# 動作確認
-$CVE -c "import yaml, pytest; print('ok')"
+VSCode の Python 拡張が `.cve-venv` を自動検出し、ターミナル起動時に
+`Activate.ps1` を自動実行してくれます（プロンプトに `(.cve-venv)` が付く）。
+手動で Activate する必要はありません。
+
+```powershell
+cd D:/vagrant/harnesses/super-agent/src
+python -m harness.cli status          # venv の python が使われる
 ```
 
-> `.cve-venv` は**既に存在する**（作り直し不要）。無い場合のみ `uv venv .cve-venv && uv pip install pyyaml pytest`（uv が必要）
+### 1.2 素の PowerShell（VSCode 外）
 
-作業ディレクトリは必ず `src/` の中で行ってください（`harness/` パッケージが解決できるため）：
+自動 Activate が効かないので、venv の `python.exe` を**フルパスで直接**指定します
+（Activate 経由より確実）。コマンド内の題材パス等は相対表記のままで可。
+
+```powershell
+cd D:/vagrant/harnesses/super-agent/src
+D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -m harness.cli status
+```
+
+### 1.3 git-bash
 
 ```bash
 cd D:/vagrant/harnesses/super-agent/src
+./.cve-venv/Scripts/python.exe -m harness.cli status
 ```
+
+### 1.4 動作確認（どの環境でも共通）
+
+venv の python が使われているか：
+
+```bash
+python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
+# または
+D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, pytest; print('ok')"
+```
+
+> `.cve-venv` が無い／壊れている場合は作り直します（PyYAML と pytest が必要）：
+> ```powershell
+> cd D:/vagrant/harnesses/super-agent
+> python -m venv .cve-venv
+> .cve-venv/Scripts/python.exe -m pip install pyyaml pytest
+> ```
+
+作業ディレクトリは必ず `src/` の中で行ってください（`harness/` パッケージが解決できるため）。
 
 ---
 
@@ -63,7 +95,7 @@ cd D:/vagrant/harnesses/super-agent/src
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
 ```bash
-$CVE -m harness.cli run "<要求>" [--vendor claude|codex|agy] [--dry-run]
+python -m harness.cli run "<要求>" [--vendor claude|codex|agy] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -76,14 +108,14 @@ $CVE -m harness.cli run "<要求>" [--vendor claude|codex|agy] [--dry-run]
 
 **例**：
 ```bash
-$CVE -m harness.cli run "build a fizzbuzz module" --vendor codex --dry-run
+python -m harness.cli run "build a fizzbuzz module" --vendor codex --dry-run
 # → task T-XXXX recorded. ledger=...
 ```
 
 ### 2.2 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
 
 ```bash
-$CVE -m harness.cli review <dir> [--accept "pytest tests/"] [--reviewer codex] [--dry-run]
+python -m harness.cli review <dir> [--accept "pytest tests/"] [--reviewer codex] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -98,14 +130,14 @@ JSON で裁定を標準出力に出します。
 
 **例**：
 ```bash
-$CVE -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
+python -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
 # → verdict/judgment_unavailable, tree_hash が束縛される
 ```
 
 ### 2.3 `super-agent status` — 台帳の状態を表示
 
 ```bash
-$CVE -m harness.cli status
+python -m harness.cli status
 ```
 
 台帳に記録された全イベントを（クラッシュセーフに）読み出して表示します。
@@ -118,7 +150,7 @@ events in ledger: 2
 ### 2.4 `super-agent log <task>` — 指定タスクの全イベント
 
 ```bash
-$CVE -m harness.cli log T-XXXX
+python -m harness.cli log T-XXXX
 ```
 
 指定タスクID（接頭辞でも可）の全イベントを、付随データ付きで表示します。
@@ -134,8 +166,8 @@ events for T-XXXX: 5
 ### 2.5 `super-agent show design|plan` — 設計／計画の表示（L6 読み取り）
 
 ```bash
-$CVE -m harness.cli show design   # docs/goals/design.md を表示
-$CVE -m harness.cli show plan     # docs/plan.md を表示
+python -m harness.cli show design   # docs/goals/design.md を表示
+python -m harness.cli show plan     # docs/plan.md を表示
 ```
 
 読み取り専用。台帳イベントは発生しません（L6 の `show` 操作）。
@@ -163,7 +195,7 @@ $CVE -m harness.cli show plan     # docs/plan.md を表示
 （レビュアは呼ばないので `judgment_unavailable` になります。これは正しい動作）：
 
 ```bash
-$CVE -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
+python -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
 ```
 
 **出力例（caseGreen）**：
@@ -184,7 +216,8 @@ $CVE -m harness.cli review probe/n3/caseGreen --reviewer codex --dry-run
 `--dry-run` を外すと、レビュア（別ベンダー）が簡報を読んでレビューし、adjudicate が裁定します：
 
 ```bash
-$CVE -m harness.cli review probe/n3/caseB --reviewer claude --dry-run=False
+python -m harness.cli review probe/n3/caseB --reviewer claude --dry-run=False
+# PowerShell の場合は --dry-run:$false と書く
 ```
 
 **裁定の種類**：
@@ -206,7 +239,7 @@ $CVE -m harness.cli review probe/n3/caseB --reviewer claude --dry-run=False
 パイプラインが書いたイベントは全て台帳に残ります。`super-agent log <task>` で確認できます：
 
 ```bash
-$CVE -m harness.cli log T-XXXX
+python -m harness.cli log T-XXXX
 # T-XXXX:1 verification.run 3309c1ea35679a40   <- CVE の証拠（tree_hash 束縛）
 # T-XXXX:2 brief.built
 # T-XXXX:3 reviewer.invoked
@@ -236,7 +269,7 @@ $CVE -m harness.cli log T-XXXX
 ## 5. テストを通す（動作の証明）
 
 ```bash
-$CVE -m pytest harness/tests/ -q
+python -m pytest harness/tests/ -q
 # ...........  11 passed
 ```
 
