@@ -91,7 +91,7 @@ def drive(
 
     for tid in order:
         task = by_id.get(tid, {})
-        worktree = str(Path("workspaces") / tid)
+        worktree = str(Path("workspaces").resolve() / tid)
         entry: dict[str, Any] = {"task_id": tid}
 
         # ④ implement
@@ -102,9 +102,11 @@ def drive(
 
         # ⑤⑥⑦ review
         acc = _resolve_acceptance(task)
+        rev_role = resolve_role("review", config_dir)
         rev = run_pipeline(tid, worktree, acc,
-                           reviewer_vendor=reviewer_vendor or resolve_role("review", config_dir)["vendor"],
-                           dry_run=dry_run, seq=seq)
+                           reviewer_vendor=reviewer_vendor or rev_role["vendor"],
+                           dry_run=dry_run, seq=seq,
+                           model=rev_role["model"], effort=rev_role["effort"])
         entry["review"] = {"verdict": rev.get("verdict"),
                             "judgment_unavailable": rev.get("judgment") == "judgment_unavailable"}
 

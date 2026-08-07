@@ -29,6 +29,13 @@ class VendorDecl:
         return self.decl.get("model")
 
     @property
+    def prompt_stdin(self) -> bool:
+        # When true, the prompt is passed via stdin (subprocess input=) instead
+        # of as a CLI argument. Used by codex exec, which otherwise waits on
+        # stdin for "additional input" when given a long prompt + --output-schema.
+        return bool(self.decl.get("prompt_stdin", False))
+
+    @property
     def model_flag(self) -> str | None:
         return self.decl.get("model_flag")
 
@@ -78,8 +85,14 @@ class VendorDecl:
         # e.g. gemini-3.6-flash + high -> gemini-3.6-flash-high
         return f"{model}-{effort}"
 
-    def headless(self, prompt: str) -> list[str]:
-        return [a.replace("{prompt}", prompt) for a in self.decl["headless"]]
+    def headless(self, prompt: str, worktree: str | None = None) -> list[str]:
+        out = []
+        for a in self.decl["headless"]:
+            a = a.replace("{prompt}", prompt)
+            if worktree is not None:
+                a = a.replace("{worktree}", worktree)
+            out.append(a)
+        return out
 
     def structured_flags(self, schema: dict | None) -> list[str]:
         """Return flags to request structured output.
@@ -189,7 +202,7 @@ def build_command(
     Effort resolution order: explicit `effort` > role default.
     Effort rendering depends on the vendor's `effort_style` (flag / config / model_suffix).
     """
-    cmd = decl.headless(prompt)
+    cmd = decl.headless(prompt, worktree=worktree)
     if schema is not None:
         cmd += decl.structured_flags(schema)
     if session_id is not None:
@@ -209,7 +222,13 @@ def build_command(
     # effort args for flag/config styles (model_suffix already folded above)
     if not fold_effort:
         cmd += decl.effort_args(eff)
-    cmd += decl.permission_flags(worktree)
+    # Permission/readonly flags apply only to read-only roles (design/review).
+    # Implementers must be able to write inside their worktree, so they get none
+    # (isolation is via the worktree + --add-dir). Note A-6: even "readonly" flags
+    # don't truly block execution for claude/codex, but agy's `--mode plan` *does*
+    # hard-block edits, so we must never attach it to an implementer.
+    if role in ("design", "review"):
+        cmd += decl.permission_flags(worktree)
     return cmd
 
 
@@ -262,6 +281,17 @@ def _apply_result_path(obj: Any, result_path: str) -> Any:
             if not isinstance(cur, dict) or key not in cur:
                 return obj  # path missing -> return whole object
             cur = cur[key]
+    # claude-style envelope: result_path points at a *string* that itself holds
+    # JSON (e.g. the "result" field). Recover the JSON from inside it.
+    if isinstance(cur, str):
+        recovered = _extract_first_balanced_json(cur)
+        if recovered is not None:
+            return recovered
+        fenced = _extract_last_fence(cur)
+        if fenced is not None:
+            parsed = _parse_json_line(fenced)
+            if parsed is not None:
+                return parsed
     return cur
 
 
@@ -310,9 +340,13 @@ def invoke(
                         worktree=worktree, model=model, effort=effort, role=role)
     if dry_run:
         return {"cmd": cmd, "dry_run": True}
+    # codex (prompt_stdin) reads the prompt from stdin; others get DEVNULL so
+    # they never block waiting on stdin. Passing `input=` makes subprocess use a
+    # pipe for stdin automatically, so we must not also set stdin=DEVNULL.
+    stdin_kw = {"input": prompt} if decl.prompt_stdin else {"stdin": subprocess.DEVNULL}
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace",
-                          shell=False, timeout=timeout)
+                          shell=False, timeout=timeout, **stdin_kw)
     return {
         "cmd": cmd,
         "returncode": proc.returncode,

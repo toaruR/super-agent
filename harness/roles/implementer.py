@@ -8,6 +8,12 @@ ledger as `artifact.produced` (+ `task.implemented`).
 §3.1 isolation: the vendor only ever sees its own worktree; §6.2 `touch_allow`
 is the allow-list it may modify. The harness (not the vendor) performs the
 commit so the evidence (`tree_hash`/commit) is bound deterministically.
+
+NOTE (agy / cwd-ignoring vendors): some vendors (agy) ignore the process cwd
+and write to a fixed scratch dir unless the prompt states an absolute path.
+So the prompt is built with `{worktree}` and instructs the vendor to write to
+`<worktree>/<file>` using the absolute path. `--dangerously-skip-permissions`
+is required for agy (placed before `--print`). See vendors.yaml.
 """
 from __future__ import annotations
 
@@ -21,6 +27,9 @@ from harness.core.ledger import Sequencer
 
 IMPLEMENT_PROMPT = """\
 あなたは Implementer です。以下のタスクを実装してください。
+
+# 作業ディレクトリ（絶対パス）
+{worktree}
 
 # タスク
 タスクID: {task_id}
@@ -37,6 +46,10 @@ IMPLEMENT_PROMPT = """\
 - それ以外のファイル（設定、他タスクのファイル、README 等）には触らないこと。
 - コミットは harness が行うので、あなたはコミットしなくてよい。
 - 実装が終わったら、受入基準を自分で確認できる範囲で満たしているか考えよ。
+- 【最重要】すべてのファイルは **作業ディレクトリ {worktree} の絶対パス** に作成・変更すること。
+  例えば `live_probe.txt` を作る場合は `{worktree}/live_probe.txt` を絶対パスで書き込む。
+  相対パスや「カレントディレクトリ」への指定は無視され別の場所に書かれるため、必ず
+  上記 {worktree} を接頭した絶対パスを使用すること（一部のエージェントは cwd を無視する）。
 """
 
 
@@ -46,6 +59,17 @@ def _fmt_acceptance(task: dict) -> str:
         verb = a.get("verb", "")
         args = " ".join(a.get("args", []))
         out.append(f"- `{verb} {args}` (expect_exit={a.get('expect_exit', 0)})")
+    return "\n".join(out) if out else "- （なし）"
+
+
+def _fmt_touch_allow(task: dict, worktree: str) -> str:
+    """touch_allow を worktree の絶対パス付きで表示（agy 等が cwd を無視する対策）。"""
+    out = []
+    for p in task.get("touch_allow", []):
+        if p.startswith("/") or (len(p) > 1 and p[1] == ":"):
+            out.append(f"- {p}")
+        else:
+            out.append(f"- {worktree}/{p}")
     return "\n".join(out) if out else "- （なし）"
 
 
@@ -63,12 +87,14 @@ def implement(task_id: str, task: dict, worktree_path: str,
         task_id=task_id,
         goal=goal,
         acceptance=_fmt_acceptance(task),
-        touch_allow="\n".join(f"- {p}" for p in touch_allow) or "- （なし）",
+        touch_allow=_fmt_touch_allow(task, worktree_path),
+        worktree=worktree_path,
     )
 
     decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
     decl = decls.get(vendor, decls["claude"])
-    cmd = build_command(decl, prompt, model=model, role="implement", effort=effort)
+    cmd = build_command(decl, prompt, model=model, role="implement",
+                        effort=effort, worktree=worktree_path)
 
     if dry_run:
         return {"ok": True, "dry_run": True, "cmd": cmd, "task_id": task_id}
@@ -78,6 +104,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
         proc = subprocess.run(
             cmd, cwd=str(worktree_path), capture_output=True, text=True,
             encoding="utf-8", errors="replace", shell=False,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as e:
         if seq is not None:

@@ -6,16 +6,18 @@
 roles:
   design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
   implement: { vendor: agy,    model: gemini-3.6-flash, effort: high }
-  review:    { vendor: codex,  model: gpt-5.6-luna,     effort: high }
+  review:    { vendor: codex,  model: gpt-5.6-luna,    effort: high }   # codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価: $0.20/$1.20 vs gpt-5.5 の $5/$30）
 
 claude:
   model_flag: "--model"
   effort_style: "flag"
   effort_flag: "--effort"
-  headless:  ["claude", "-p", "{prompt}"]
-  structured:
-    flag: "--json-schema"
-    form: inline            # 実測: claude はスキーマをインライン文字列で受ける（A-5）
+  headless:  ["claude", "-p", "--output-format", "json", "{prompt}"]
+  # 非対話は -p 必須。--output-format json で envelope {"result": "...", ...} が返る。
+  # 実測(A-7): claude は --json-schema を StructuredOutput ツール不在で拒否するため、
+  # structured キーは持たず（hermes と同様）、prompt 内で JSON を指示し、
+  # extract_result が result テキストから JSON を再抽出する。
+  result_path: "result"     # envelope から result テキストを抽出
   session:
     id_origin: caller       # ★呼び側が UUID を採番し --session-id で渡す（A-1）
     resume_flag: ["--resume"]
@@ -29,7 +31,18 @@ codex:
   model_flag: "-m"
   effort_style: "config"
   effort_key: "model_reasoning_effort"
-  headless:  ["codex", "exec", "{prompt}"]
+  # headless は v0.147.0 の実体を絶対パスで指定。
+  # 背景: subprocess 経由で単に "codex" を呼ぶと nvm4w の codex.cmd が v0.138.0 を
+  # 解決し gpt-5.6-luna が "newer version required" で弾かれる。対話シェル(PowerShell)では
+  # .ps1 経由で v0.147.0 になるが、Python の subprocess は .CMD(v0.138) を拾うため。
+  # よって node + codex.js の絶対パスを直接指定する（v0.147.0 確実）。
+  headless:  ["C:/nvm4w/nodejs/node.exe", "C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js", "exec"]
+  # codex exec は --output-schema と長文プロンプトを組み合わせると引数プロンプトを無視し
+  # stdin からの追加入力を待つ（実測: RC=1 "Reading additional input from stdin..."）。
+  # よって prompt_stdin: true を立て、invoke.py がプロンプトを stdin 経由で渡す（input=prompt）。
+  # headless には {prompt} を置かない（引数プロンプトは使わない）。
+  # 他ベンダー(claude/agy/hermes)は引数からプロンプトを読むので stdin の input は無視される。
+  prompt_stdin: true
   structured:
     flag: "--output-schema"
     form: file              # 実測: codex はスキーマをファイルパスで受ける（A-5）
@@ -48,10 +61,19 @@ codex:
 agy:
   model_flag: "--model"
   effort_style: "model_suffix"
-  headless:  ["agy", "{prompt}"]
-  structured:
-    flag: "--json-schema"
-    form: inline
+  headless:  ["agy", "--add-dir", "{worktree}", "--dangerously-skip-permissions", "--print", "{prompt}"]
+  # 非対話は --print 必須（省略で対話待機→ハング）。
+  # --add-dir {worktree}: worktree をワークスペースに加え、agy がそのディレクトリを認識できるようにする。
+  # --dangerously-skip-permissions は --print の「前」に置く（後だと無視される実測）。
+  # 重要: agy は cwd (=worktree) を無視し固定 scratch に書く。worktree 内に書かせるには
+  # implementer.py がプロンプトに worktree の絶対パスを埋め込み、「その絶対パスに書け」と
+  # 指示する必要がある（実測で確認: 絶対パス明示なら worktree 内に作成される）。--add-dir や
+  # Set-Location だけでは cwd は認識されない。
+  # 注意: `--output-format json` を付けると agy --print が「構造化出力の説明モード」に入り
+  # 実ファイル作成をしなくなる（実測）。よって json フラグは付けず、プロンプト内で JSON 指示
+  # し、extract_result がフェンス/JSON を回復する（hermes と同様の運用）。result_path は空。
+  # structured ブロックは意図的に持たない（--json-schema は --output-format 必須で、それを
+  # 外すと schema を渡せないため）。
   session:
     id_origin: callee       # agy は試験不足（E-2a のみ）。callee 仮定
     resume_flag: ["--resume-session-id"]
@@ -59,8 +81,9 @@ agy:
     readonly:
       - "--mode"
       - "plan"
-      - "--add-dir"
-      - "{worktree}"        # ★最適解: 実行阻止 + 読取可（PERMISSION_CONTROL §7.4）
+      # worktree の追加は headless の --add-dir {worktree} が担当（implement/reviewer 共通）。
+      # ここでは read-only の --mode plan のみ。agy の --mode plan は編集を硬くブロックする
+      # ため、implement ロールでは build_command が permission_flags を付けない。
   brief_mode: path
 
 hermes:

@@ -26,12 +26,12 @@ def test_load_vendors() -> None:
 
 def test_claude_command_shape() -> None:
     d = load_vendors("harness/config")["claude"]
-    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt")
+    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt", role="review")
     assert cmd[0] == "claude"
-    assert "--json-schema" in cmd  # inline form (A-5)
-    # inline schema is a single arg (not a file path)
-    js_idx = cmd.index("--json-schema")
-    assert cmd[js_idx + 1].startswith("{") and "D:" not in cmd[js_idx + 1]
+    # A-7: claude has no `structured` key (rejects --json-schema), so NO schema flag
+    assert "--json-schema" not in cmd
+    # --output-format json is required to get the envelope (A-7)
+    assert "--output-format" in cmd and "json" in cmd
     assert "--resume" in cmd and "S1" in cmd
     # A-6: read-only is allowedTools, execution is NOT blocked by it
     assert "--allowedTools" in cmd
@@ -41,8 +41,10 @@ def test_claude_command_shape() -> None:
 
 def test_codex_command_shape() -> None:
     d = load_vendors("harness/config")["codex"]
-    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt")
-    assert cmd[:2] == ["codex", "exec"]
+    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt", role="review")
+    assert cmd[0].endswith("node.exe")
+    assert "codex.js" in cmd[1]
+    assert cmd[2] == "exec"
     assert "--output-schema" in cmd  # file form (A-5)
     # file form writes a path, not inline json
     os_idx = cmd.index("--output-schema")
@@ -56,12 +58,15 @@ def test_codex_command_shape() -> None:
 
 def test_agy_command_shape() -> None:
     d = load_vendors("harness/config")["agy"]
-    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt")
+    # review role: readonly `--mode plan` applied; worktree path is injected via
+    # headless `--add-dir {worktree}` (implementer needs it too, reviewer sees it).
+    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt", role="review")
     assert cmd[0] == "agy"
     assert "--mode" in cmd and "plan" in cmd
     assert "--add-dir" in cmd and "D:/wt" in cmd
-    # --mode plan appears once (from permission), not doubled with headless
+    # --mode plan appears once (from permission), --add-dir once (from headless)
     assert cmd.count("--mode") == 1
+    assert cmd.count("--add-dir") == 1
 
 
 def test_extract_last_json_line() -> None:
@@ -95,8 +100,7 @@ def test_role_model_and_effort_resolution() -> None:
     assert "gemini-3.6-flash-high" in cmd  # suffixed
 
     # review role -> codex / gpt-5.6-luna / high (config-style effort)
-    # NOTE: gpt-5.6-luna is the correct model for the current Codex CLI
-    # (verified live 2026-08-07: model: gpt-5.6-luna, reasoning effort: high, EXIT 0).
+    # NOTE: codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価）。
     rr = resolve_role("review", "harness/config")
     assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.6-luna"
     cx = load_vendors("harness/config")["codex"]
@@ -114,6 +118,28 @@ def test_role_model_and_effort_resolution() -> None:
     cmd = build_command(ag, "P", model="other-model", effort="low")
     assert "other-model-low" in cmd and "--effort" not in cmd
 
+
+
+def test_extract_claude_envelope_result_field() -> None:
+    """Claude --output-format json returns an envelope; the answer lives in the
+    `result` string which itself contains JSON. extract_result must unwrap it."""
+    envelope = (
+        '{"is_error": false, "type": "result", '
+        '"result": "Here is the verdict: {\\"verdict\\": \\"pass\\", \\"why\\": \\"ok\\"}", '
+        '"session_id": "abc"}'
+    )
+    assert extract_result(envelope, "result") == {"verdict": "pass", "why": "ok"}
+
+
+def test_extract_agy_envelope_structured_output() -> None:
+    """agy --output-format json returns an envelope with a `structured_output`
+    dict already parsed. result_path should return that dict directly."""
+    envelope = (
+        '{"status": "SUCCESS", '
+        '"structured_output": {"verdict": "pass", "why": "ok"}, '
+        '"response": "the json was returned above"}'
+    )
+    assert extract_result(envelope, "structured_output") == {"verdict": "pass", "why": "ok"}
 
 if __name__ == "__main__":
     import sys
