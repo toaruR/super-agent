@@ -22,6 +22,7 @@ from pathlib import Path
 from harness.core.invoke import invoke, load_vendors
 from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
+from harness.roles.architect import propose as architect_propose
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
@@ -32,6 +33,29 @@ DOCS = REPO_ROOT / "docs"
 def ensure_ledger() -> Sequencer:
     LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     return Sequencer(str(LEDGER_PATH))
+
+
+def cmd_architect(args: argparse.Namespace) -> int:
+    """Stage 1 (§9 ①): record design decisions as ADRs on the ledger.
+
+    With --spec <file>: record the human-supplied design verbatim.
+    Without: ask a read-only vendor to propose ADRs (or just dry-run the prompt).
+    """
+    seq = ensure_ledger()
+    seq.start()
+    task_id = f"T-{uuid.uuid4().hex[:8]}"
+    seq.propose(task_id, "task.created", goal=args.requirement, role="architect")
+    adr = architect_propose(
+        task_id,
+        args.requirement,
+        args.vendor,
+        spec_path=args.spec,
+        dry_run=args.dry_run,
+        seq=seq,
+    )
+    seq.stop()
+    print(json.dumps(adr, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -134,6 +158,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--vendor", default="claude")
     r.add_argument("--dry-run", action="store_true")
     r.set_defaults(func=cmd_run)
+
+    a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
+    a.add_argument("requirement")
+    a.add_argument("--spec", default=None, help="human-supplied design file (recorded verbatim)")
+    a.add_argument("--vendor", default="claude")
+    a.add_argument("--dry-run", action="store_true",
+                   help="assemble the architect prompt without calling the vendor")
+    a.set_defaults(func=cmd_architect)
 
     rv = sub.add_parser("review", help="run verification pipeline on a dir (Stage 0)")
     rv.add_argument("dir", help="worktree / case directory")

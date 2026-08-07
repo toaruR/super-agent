@@ -91,6 +91,7 @@ D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, p
 | `status` | 台帳の最近のイベントを表示 | 2.3 |
 | `log <task>` | 指定タスクの全イベントを表示 | 2.4 |
 | `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.5 |
+| `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.6 |
 
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
@@ -172,9 +173,38 @@ python -m harness.cli show plan     # docs/plan.md を表示
 
 読み取り専用。台帳イベントは発生しません（L6 の `show` 操作）。
 
----
+### 2.6 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
-## 3. 検証パイプラインを動かす（Stage C）
+```bash
+python -m harness.cli architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
+```
+
+| オプション | 意味 |
+|---|---|
+| `--spec` | 人間が書いた設計ファイルをそのまま ADR として記録（推奨・確実） |
+| `--vendor` | 起案させるベンダー（既定 `claude`）。`--spec` 無しの時のみ使用 |
+| `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
+
+**何をするか**：要求を受け、設計決定を **ADR（Architecture Decision Record）** として
+台帳に `adr.written` イベントで記録します（§9 の①）。後から `log <task>` で
+「何を・なぜ決めたか」を辿れます。
+
+**例（人間の設計をそのまま記録 — 最も確実）**：
+```bash
+python -m harness.cli architect "Web API を作れ" --spec my-design.md
+# → {"source": "human", "decisions": [{"topic": "my-design.md", "decision": "..."}]}
+```
+
+**例（LLM に起案させる／dry-run で確認）**：
+```bash
+python -m harness.cli architect "Web API を作れ" --dry-run
+# → {"source": "llm(dry)", "cmd": [...]}  # 実際に呼ぶコマンドを確認
+```
+
+> `--spec` なしで LLM に起案させる場合、ベンダーは **read-only**（実装しない）で
+> 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
+
+
 
 `run` はまだ検証を走らせません。**実際の「CVE実行→レビュー→裁定」**は
 `super-agent review <dir>`（§2.2）が `run_pipeline` を呼び出して行います。
