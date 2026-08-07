@@ -28,6 +28,7 @@ from harness.roles.decomposer import decompose as decomposer_decompose
 from harness.roles.decomposer import render_tasks_md, parse_tasks_md, structural_check
 from harness.roles.scheduler import schedule
 from harness.roles.implementer import implement
+from harness.roles.integrator import integrate
 from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
@@ -234,6 +235,44 @@ def cmd_implement(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_integrate(args: argparse.Namespace) -> int:
+    """Stage 5 (plan.md): merge an implemented task's worktree into the target
+    branch, re-verify acceptance, then tear down the worktree.
+
+    Resolves the task spec from --tasks, finds the worktree from --worktree or
+    workspaces/<task>, and merges branch task/<task> into --target.
+    """
+    tasks_file = Path(args.tasks)
+    if not tasks_file.exists():
+        print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
+        return 2
+    tasks = parse_tasks_md(str(tasks_file))
+    task = next((t for t in tasks if t["task_id"] == args.task), None)
+    if task is None:
+        print(f"error: task {args.task} not in {args.tasks}", file=sys.stderr)
+        return 2
+
+    worktree = args.worktree or str(Path("workspaces") / args.task)
+    if not Path(worktree).exists():
+        recovered = ensure_worktree(args.task, str(Path("workspaces")))
+        if recovered:
+            worktree = recovered
+    if not Path(worktree).exists():
+        print(json.dumps({"ok": False, "error": f"worktree not found: {worktree}"},
+                         ensure_ascii=False, indent=2))
+        return 1
+
+    seq = ensure_ledger()
+    seq.start()
+    out = integrate(
+        args.task, task, worktree,
+        target_branch=args.target, seq=seq, dry_run=args.dry_run,
+    )
+    seq.stop()
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     """Run the verification pipeline (CVE -> brief -> review -> adjudicate)
     against a worktree / case directory. This is the '⑤⑥⑦⑨' part of §9.
@@ -394,6 +433,18 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--dry-run", action="store_true",
                     help="assemble the implementer prompt without calling the vendor")
     im.set_defaults(func=cmd_implement)
+
+    ig = sub.add_parser("integrate", help="merge implemented task into target + tear down (Stage 5)")
+    ig.add_argument("--task", required=True, help="task id to integrate (e.g. T1)")
+    ig.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
+                    help="decomposed task DAG (to look up the task spec)")
+    ig.add_argument("--worktree", default=None,
+                    help="worktree path (default: workspaces/<task>)")
+    ig.add_argument("--target", default="main",
+                    help="integration target branch (default: main)")
+    ig.add_argument("--dry-run", action="store_true",
+                    help="show the merge/verify plan without touching git")
+    ig.set_defaults(func=cmd_integrate)
 
     s = sub.add_parser("status", help="show recent ledger events")
     s.set_defaults(func=cmd_status)

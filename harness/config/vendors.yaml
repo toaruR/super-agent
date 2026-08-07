@@ -7,7 +7,7 @@ claude:
   effort_flag: "--effort"
   roles:
     design:    { model: claude-sonnet-5, effort: high }
-    implement: { model: claude-sonnet-5, effort: low  }
+    implement: { model: claude-sonnet-5, effort: low }
   headless:  ["claude", "-p", "{prompt}"]
   structured:
     flag: "--json-schema"
@@ -27,7 +27,7 @@ codex:
   effort_key: "model_reasoning_effort"
   roles:
     design:    { model: gpt-5.5, effort: high }
-    implement: { model: gpt-5.5, effort: low  }
+    implement: { model: gpt-5.5, effort: low }
   headless:  ["codex", "exec", "{prompt}"]
   structured:
     flag: "--output-schema"
@@ -49,7 +49,7 @@ agy:
   effort_style: "model_suffix"
   roles:
     design:    { model: gemini-3.6-flash, effort: high }
-    implement: { model: gemini-3.6-flash, effort: low  }
+    implement: { model: gemini-3.6-flash, effort: high }
   headless:  ["agy", "{prompt}"]
   structured:
     flag: "--json-schema"

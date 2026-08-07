@@ -3,7 +3,10 @@
 - 作成日: 2026-08-06 ／ 改訂: 2026-08-06（「動かしながら確認できる順」へ再構成）
 - 現在の状態: 設計 v4（89点/合格）
   - **済**: Stage A（台帳・アダプタ・invoke・CLI）／ Stage C（検証パイプライン ⑤⑥⑦⑨）
-  - **未**: ①要求→②分解→③編成→④実装→⑧統合→⑩改良
+  - **済**: Stage 0（review/log/show）／ Stage 1（architect）／ Stage 2（decomposer）／
+         Stage 3（scheduler: worktree+リース）／ Stage 4（implementer）／
+         **Stage 5（integrator: 統合+worktree後片付け）**
+  - **未**: Stage 6（evolve 改良）／ Stage 7（D/D'/F 運用成熟度）／ Stage B（並列駆動）
 - ゴール: `super-agent <サブコマンド>` で §9 の一周（要求→改良）を、**各段階が独立して動作確認できる**形で完成させる
 - 品質基準: 各段階で「実際にコマンドを叩いて結果を見る」ことを完了条件にする
 
@@ -144,20 +147,25 @@ git -C <worktree> log --oneline
 
 ---
 
-### Stage 5 — ⑧ Integrator（統合）（⏳）
+### Stage 5 — ⑧ Integrator（統合）（✅）
 
 **目標**: 実装済みタスクの worktree を統合ブランチへマージ/検証。
 
-1. `roles/integrator.py`: worktree の差分を統合ブランチへ。`conflict` は台帳に `conflict` イベント。
-2. 統合後 `integrated` を記録、`git worktree remove` で後片付け。
+1. `roles/integrator.py`: 
+   - `touch_allow` 外の変更を検出して差し戻し（`integration.touch_violation`）。
+   - `task/<id>` を `--target`（既定 main）へ `--no-ff` マージ。`conflict` は `--abort` して検知。
+   - マージ後 acceptance（CVE）を再実行し GREEN を確認。失敗は `integrated.failed`。
+   - 成功で `integrated` 記録＋`git worktree remove --force` 後片付け。
+2. `cli.py` に `integrate --task <id> --tasks <dag> [--target main] [--dry-run]` を追加。
 
 **動作確認**:
 ```
-super-agent integrate <task_id>
+super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run  # ok:true、worktree は維持
+super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md            # 統合→integrated, worktree 消える
 super-agent log <task_id>     # integrated
 git worktree list            # worktree が消えている
 ```
-**完了条件**: implement 済みタスクを統合でき、worktree が綺麗に消える。
+**完了条件**: implement 済みタスクを統合でき、worktree が綺麗に消える（単体テスト4件: success/conflict/violation/verify-fail）。
 
 ---
 
