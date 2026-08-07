@@ -176,13 +176,98 @@ def resolve_role(role: str, config_dir: str | Path,
 
     Precedence: explicit CLI flag > role default (from vendors.yaml `roles:`).
     Returns {vendor, model, effort}.
+
+    For the `implement` role (which may declare multiple channels as a list),
+    this returns the *first* channel's vendor/model/effort as the default. Use
+    `resolve_role_channels()` to get the full fan-out list.
     """
-    defaults = load_role_defaults(config_dir).get(role, {})
+    raw = load_role_defaults(config_dir).get(role, {})
+    if isinstance(raw, list):
+        raw = raw[0] if raw else {}
+    defaults = raw if isinstance(raw, dict) else {}
     return {
         "vendor": explicit_vendor or defaults.get("vendor"),
         "model": explicit_model or defaults.get("model"),
         "effort": explicit_effort or defaults.get("effort"),
     }
+
+
+def parse_channel_override(spec: str) -> list[dict]:
+    """Parse a CLI override like ``"agy:2,hermes:3"`` into a channel list.
+
+    Each ``vendor:N`` contributes N channels of that vendor (model/effort left to
+    the vendor/role defaults). Returns a list of {vendor, model, effort} dicts.
+    Raises ValueError on a malformed spec.
+    """
+    channels: list[dict] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            vendor, n_s = part.split(":", 1)
+            vendor = vendor.strip()
+            try:
+                n = int(n_s.strip())
+            except ValueError:
+                raise ValueError(f"invalid channel count in override: {part!r}")
+            if n < 1:
+                raise ValueError(f"channel count must be >= 1: {part!r}")
+        else:
+            vendor = part
+            n = 1
+        for _ in range(n):
+            channels.append({"vendor": vendor, "model": None, "effort": None})
+    if not channels:
+        raise ValueError("empty channel override")
+    return channels
+
+
+def resolve_role_channels(role: str, config_dir: str | Path,
+                          explicit_override: list[dict] | None = None) -> list[dict]:
+    """Resolve the channel list for a pipeline role (Stage B parallel (b)).
+
+    Each channel is {vendor, model, effort}. The number of channels equals the
+    number of list elements — the user declares fan-out by listing entries:
+        roles:
+          implement:
+            - {vendor: agy,    model: gemini-3.6-flash, effort: high}
+            - {vendor: hermes, model: hy3:Free,         effort: high}
+            - {vendor: hermes, model: hy3:Free,         effort: high}
+
+    Backward compatible: a single dict `roles.implement: {vendor, model, effort}`
+    is normalized to a 1-element list. An explicit override (e.g. parsed from a
+    CLI flag) takes precedence over the yaml declaration.
+
+    Returns a list of {vendor, model, effort} dicts (never empty; falls back to
+    the role default vendor if the declaration is missing).
+    """
+    if explicit_override is not None:
+        raw = explicit_override
+    else:
+        raw = load_role_defaults(config_dir).get(role, {})
+    if isinstance(raw, dict):
+        return [dict(raw)]
+    if isinstance(raw, list):
+        out: list[dict] = []
+        for el in raw:
+            if isinstance(el, str):
+                out.append({"vendor": el, "model": None, "effort": None})
+            elif isinstance(el, dict):
+                out.append({
+                    "vendor": el.get("vendor"),
+                    "model": el.get("model"),
+                    "effort": el.get("effort"),
+                })
+        if out:
+            return out
+    # fallback: single channel from the flat default
+    d = raw if isinstance(raw, dict) else {}
+    return [{
+        "vendor": d.get("vendor"),
+        "model": d.get("model"),
+        "effort": d.get("effort"),
+    }]
 
 
 def build_command(

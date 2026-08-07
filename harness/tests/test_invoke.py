@@ -192,3 +192,40 @@ def test_extract_recovers_fenced_json() -> None:
 
     # no JSON anywhere -> None (not a crash)
     assert extract_result("just text, no json", "") is None
+
+
+def test_resolve_role_channels_list_and_dict() -> None:
+    # Stage B parallel (b): roles.implement がリストならチャンネル数 = リスト長
+    from harness.core.invoke import resolve_role_channels
+
+    ch = resolve_role_channels("implement", "harness/config")
+    assert isinstance(ch, list) and len(ch) == 1
+    assert ch[0]["vendor"] == "agy"
+
+    override = [
+        {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high"},
+        {"vendor": "hermes", "model": "hy3:Free", "effort": "high"},
+        {"vendor": "hermes", "model": "hy3:Free", "effort": "high"},
+        {"vendor": "hermes", "model": "hy3:Free", "effort": "high"},
+        {"vendor": "agy", "model": "gemini-3.6-pro", "effort": "high"},
+    ]
+    ch = resolve_role_channels("implement", "harness/config", explicit_override=override)
+    assert len(ch) == 5
+    assert ch[0]["vendor"] == "agy" and ch[0]["model"] == "gemini-3.6-flash"
+    assert ch[1]["vendor"] == "hermes"
+    assert ch[4]["vendor"] == "agy" and ch[4]["model"] == "gemini-3.6-pro"
+
+
+def test_parse_channel_override() -> None:
+    from harness.core.invoke import parse_channel_override
+    import pytest
+
+    ch = parse_channel_override("agy:2,hermes:3")
+    assert len(ch) == 5
+    assert [c["vendor"] for c in ch] == ["agy", "agy", "hermes", "hermes", "hermes"]
+    ch = parse_channel_override("claude")
+    assert len(ch) == 1 and ch[0]["vendor"] == "claude"
+    with pytest.raises(ValueError):
+        parse_channel_override("agy:notanumber")
+    with pytest.raises(ValueError):
+        parse_channel_override("")

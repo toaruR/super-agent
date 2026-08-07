@@ -297,6 +297,14 @@ def cmd_drive(args: argparse.Namespace) -> int:
     """
     seq = ensure_ledger()
     seq.start()
+    implement_channels = None
+    if args.implement_vendors:
+        from harness.core.invoke import parse_channel_override
+        try:
+            implement_channels = parse_channel_override(args.implement_vendors)
+        except ValueError as e:
+            print(f"error: --implement-vendors: {e}", file=sys.stderr)
+            return 2
     out = drive(
         args.requirement or "",
         args.spec,
@@ -306,6 +314,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         implement_vendor=args.vendor,
         reviewer_vendor=args.reviewer,
+        implement_channels=implement_channels,
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -506,6 +515,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="integration target branch (default: main)")
     dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")
     dr.add_argument("--reviewer", default=None, help="reviewer vendor (default: roles.review)")
+    dr.add_argument("--implement-vendors", default=None,
+                    help='multi-channel override, e.g. "agy:2,hermes:3" '
+                         '(each entry becomes one parallel implement channel)')
     dr.add_argument("--dry-run", action="store_true",
                     help="assemble plans and run CVE, but skip vendor calls and git changes")
     dr.set_defaults(func=cmd_drive)

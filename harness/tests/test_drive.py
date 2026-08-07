@@ -69,3 +69,37 @@ def test_drive_skips_integrate_when_review_fails() -> None:
     assert out["ok"] is True
     m_int.assert_not_called()
     assert out["tasks"][0]["integrate"]["skipped"] is True
+
+
+def test_drive_multichannel_fanout_and_winner_integration() -> None:
+    # Stage B parallel (b): implement を複数チャンネルで並列実行し、
+    # 最初に review を通したチャンネルを統合する。
+    channels = [
+        {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high"},
+        {"vendor": "hermes", "model": "hy3:Free", "effort": "high"},
+        {"vendor": "hermes", "model": "hy3:Free", "effort": "high"},
+    ]
+    with mock.patch.object(drive, "structural_check", return_value=[]),          mock.patch.object(drive, "implement") as m_impl,          mock.patch.object(drive, "run_pipeline") as m_rev,          mock.patch.object(drive, "integrate") as m_int,          mock.patch.object(drive, "create_worktree") as m_wt,          mock.patch.object(drive, "schedule"):
+        # channel 0 (agy) passes review; the rest fail
+        m_impl.return_value = {"ok": True, "commit": "cX"}
+        def _rev(*a, **k):
+            tid = a[0]
+            return {"verdict": "pass" if "agy_0" in tid else "fail"}
+        m_rev.side_effect = _rev
+        m_int.return_value = {"ok": True, "commit": "cInt"}
+
+        out = drive.drive("", None, SAMPLE_TASKS, seq=None, dry_run=False,
+                          implement_channels=channels)
+
+    assert out["ok"] is True
+    t1 = next(t for t in out["tasks"] if t["task_id"] == "T1")
+    # 3 channels implemented in parallel (one impl call per channel)
+    assert len(t1["implement"]["channels"]) == 3
+    # review ran per channel
+    assert len(t1["review"]["channels"]) == 3
+    # winner is the agy channel (first to pass)
+    assert t1["integrate"]["winner"] == "agy"
+    # integrate called once, with the winning composite task id
+    assert m_int.call_count == 2  # T1 + T2
+    winner_tid = m_int.call_args_list[0].args[0]
+    assert "agy_0" in winner_tid

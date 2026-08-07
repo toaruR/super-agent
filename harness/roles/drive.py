@@ -2,15 +2,16 @@
 """Drive role (Stage B): run the full one-task pipeline for every task in a DAG.
 
 Orchestrates plan -> implement -> review -> integrate, reusing the existing
-role functions. Starts serial (one task at a time); parallel execution is a
-later extension that swaps the loop for a thread/process pool over the same
-per-task function.
+role functions. Stage B parallel (b) fans the `implement` role out into multiple
+channels (multi-vendor / multi-model): each channel runs in its own worktree and
+branch in parallel, and the first channel whose review passes is integrated.
 
-All ledger events flow through the shared Sequencer.
+All ledger events flow through the shared Sequencer (single writer, thread-safe).
 """
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -21,17 +22,22 @@ from harness.roles.decomposer import (
     render_tasks_md,
     structural_check,
 )
-from harness.roles.scheduler import schedule, topo_order
+from harness.roles.scheduler import create_worktree, schedule, topo_order
 from harness.roles.implementer import implement
 from harness.roles.review_flow import run_pipeline
 from harness.roles.integrator import integrate
 from harness.core.verifiers import VerifierRegistry
-from harness.core.invoke import resolve_role
+from harness.core.invoke import resolve_role, resolve_role_channels
 
 def _resolve_acceptance(task: dict, tasks_text: str | None = None) -> list[dict]:
     acc = task.get("acceptance") or []
     return [{"verb": a.get("verb", ""), "args": a.get("args", []),
              "expect_exit": a.get("expect_exit", 0)} for a in acc]
+
+
+def _channel_worktree_id(task_id: str, vendor: str, idx: int) -> str:
+    """Composite id so each (task, channel) owns an isolated worktree/branch."""
+    return f"{task_id}__{vendor}_{idx}"
 
 
 def drive(
@@ -43,8 +49,20 @@ def drive(
     dry_run: bool = False,
     implement_vendor: str | None = None,
     reviewer_vendor: str | None = None,
+    implement_channels: list[dict] | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
+
+    Stage B parallel (b): the `implement` role fans out into multiple channels
+    (multi-vendor / multi-model). Each channel runs in its own worktree/branch in
+    parallel (ThreadPoolExecutor); the first channel whose review passes is
+    integrated, the rest are discarded.
+
+    Channel declaration (precedence):
+      1. `implement_channels` arg (parsed from CLI `--implement-vendors "agy:2,hermes:3"`)
+      2. `roles.implement` list in vendors.yaml
+         (e.g. `[{vendor:agy,...},{vendor:hermes,...},{vendor:hermes,...}]`)
+      3. legacy single dict `roles.implement: {vendor, model, effort}` (1 channel)
 
     If `tasks_path` does not exist, decompose from `requirement`+`spec_path` first
     (creating worktrees via schedule) and write the DAG to `tasks_path`.
@@ -78,10 +96,8 @@ def drive(
     if errs:
         return {"ok": False, "error": "structural_check failed", "errors": errs}
 
-    # Always ensure worktrees exist (idempotent: reuses the task/<id> branch and
-    # recreates the directory if pruned). This makes CVE have a real dir to verify.
-    # schedule's own dry_run is NOT passed — we always materialize worktrees; drive's
-    # --dry-run only skips vendor calls and the integrate git step.
+    # Always ensure worktrees exist (idempotent). drive's --dry-run only skips
+    # vendor calls and the integrate git step.
     schedule("T-drive" if seq is None else f"T-{uuid_short()}", tasks,
              root="workspaces", dry_run=False, seq=seq)
 
@@ -89,35 +105,94 @@ def drive(
     by_id = {t["task_id"]: t for t in tasks}
     results: list[dict] = []
 
+    # Resolve the implement channel fan-out once (shared by all tasks).
+    if implement_vendor:
+        channels = [{"vendor": implement_vendor, "model": None, "effort": None}]
+    else:
+        channels = resolve_role_channels(
+            "implement", config_dir, explicit_override=implement_channels
+        )
+
     for tid in order:
         task = by_id.get(tid, {})
-        worktree = str(Path("workspaces").resolve() / tid)
         entry: dict[str, Any] = {"task_id": tid}
 
-        # ④ implement
-        impl_vendor = implement_vendor or resolve_role("implement", config_dir)["vendor"]
-        impl = implement(tid, task, worktree, vendor=impl_vendor,
-                         seq=seq, dry_run=dry_run)
-        entry["implement"] = {"ok": impl.get("ok"), "commit": impl.get("commit")}
+        # ④ implement — fan out across channels, run in parallel
+        ch_results: list[dict] = []
+        default_vendor = resolve_role("implement", config_dir)["vendor"]
+        single_path = (len(channels) == 1 and
+                       channels[0]["vendor"] == (implement_vendor or default_vendor))
+        if single_path:
+            # Backward-compatible single-channel path: use the plain worktree/branch.
+            ch = channels[0]
+            wt = str(Path("workspaces").resolve() / tid)
+            impl = implement(tid, task, wt, vendor=ch["vendor"],
+                             model=ch["model"], effort=ch["effort"],
+                             seq=seq, dry_run=dry_run)
+            ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
+                               "effort": ch["effort"], "worktree": wt,
+                               "task_id": tid, "impl": impl})
+        else:
+            # Multi-channel: one worktree/branch per (task, channel).
+            def _run_channel(i: int, ch: dict) -> dict:
+                cid = _channel_worktree_id(tid, ch["vendor"], i)
+                wt = str(Path("workspaces").resolve() / cid)
+                create_worktree(cid, root="workspaces", dry_run=dry_run)
+                impl = implement(cid, task, wt, vendor=ch["vendor"],
+                                 model=ch["model"], effort=ch["effort"],
+                                 seq=seq, dry_run=dry_run)
+                return {"vendor": ch["vendor"], "model": ch["model"],
+                        "effort": ch["effort"], "worktree": wt,
+                        "task_id": cid, "impl": impl}
 
-        # ⑤⑥⑦ review
+            with ThreadPoolExecutor(max_workers=len(channels)) as ex:
+                ch_results = list(ex.map(
+                    lambda kv: _run_channel(kv[0], kv[1]),
+                    list(enumerate(channels)),
+                ))
+
+        entry["implement"] = {
+            "channels": [
+                {"vendor": c["vendor"], "model": c["model"], "effort": c["effort"],
+                 "ok": c["impl"].get("ok"), "commit": c["impl"].get("commit")}
+                for c in ch_results
+            ]
+        }
+
+        # ⑤⑥⑦ review — each channel, pick the first that passes
         acc = _resolve_acceptance(task)
         rev_role = resolve_role("review", config_dir)
-        rev = run_pipeline(tid, worktree, acc,
-                           reviewer_vendor=reviewer_vendor or rev_role["vendor"],
-                           dry_run=dry_run, seq=seq,
-                           model=rev_role["model"], effort=rev_role["effort"])
-        entry["review"] = {"verdict": rev.get("verdict"),
-                            "judgment_unavailable": rev.get("judgment") == "judgment_unavailable"}
+        rev_vendor = reviewer_vendor or rev_role["vendor"]
+        winner: dict | None = None
+        reviews: list[dict] = []
+        for c in ch_results:
+            rev = run_pipeline(c["task_id"], c["worktree"], acc,
+                               reviewer_vendor=rev_vendor,
+                               dry_run=dry_run, seq=seq,
+                               model=rev_role["model"], effort=rev_role["effort"])
+            verdict = rev.get("verdict")
+            reviews.append({"vendor": c["vendor"], "verdict": verdict})
+            if winner is None and verdict in ("pass", "pass_with_findings"):
+                winner = c
+        entry["review"] = {
+            "channels": reviews,
+            "judgment_unavailable": any(
+                r.get("verdict") is None for r in reviews
+            ),
+        }
+        first_verdict = reviews[0]["verdict"] if reviews else None
+        entry["review"]["verdict"] = first_verdict  # mirror single-channel shape
 
-        # ⑧ integrate (only if review passed and not dry_run)
-        if not dry_run and rev.get("verdict") in ("pass", "pass_with_findings"):
-            integ = integrate(tid, task, worktree, target_branch=target_branch,
-                             seq=seq, dry_run=dry_run)
-            entry["integrate"] = {"ok": integ.get("ok"), "commit": integ.get("commit")}
+        # ⑧ integrate — only the winning channel (first that passed)
+        if not dry_run and winner is not None:
+            integ = integrate(winner["task_id"], task, winner["worktree"],
+                             target_branch=target_branch, seq=seq, dry_run=dry_run)
+            entry["integrate"] = {"ok": integ.get("ok"),
+                                  "commit": integ.get("commit"),
+                                  "winner": winner["vendor"]}
         else:
             entry["integrate"] = {"skipped": True,
-                                  "reason": "dry_run" if dry_run else "review not passed"}
+                                  "reason": "dry_run" if dry_run else "no passing channel"}
 
         results.append(entry)
 
