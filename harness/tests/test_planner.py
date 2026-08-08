@@ -134,10 +134,12 @@ def test_merge_oversplit_combines_shared_file_tasks() -> None:
     merged, notes = planner_role._merge_oversplit(tasks)
     ids = [t["task_id"] for t in merged]
     assert "other-task" in ids
-    # dashboard-model + dashboard-render-md merged into one
-    assert len([t for t in merged if t["task_id"].startswith("dashboard")]) == 1
+    # dashboard-model + dashboard-render-md merged into one (foundational = dashboard-model)
+    dash = [t for t in merged if t["task_id"].startswith("dashboard")]
+    assert len(dash) == 1
+    assert dash[0]["task_id"] == "dashboard-model", f"expected foundational root, got {dash[0]['task_id']}"
     assert any("過分割をマージ" in n for n in notes)
-    merged_dash = [t for t in merged if t["task_id"].startswith("dashboard")][0]
+    merged_dash = dash[0]
     assert "harness/roles/dashboard.py" in merged_dash["touch_allow"]
     # intra-group dep dropped, external deps kept
     assert "dashboard-model" not in merged_dash["depends_on"]

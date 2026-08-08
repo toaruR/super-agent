@@ -212,15 +212,23 @@ def _merge_oversplit(tasks: list[dict]) -> tuple[list[dict], list[str]]:
             touch.update(t.get("touch_allow", []) or [])
         # drop intra-group deps (they are now the same task)
         deps = {d for d in deps if d not in set(tids)}
+        # Choose the merge root: prefer the most *foundational* task in the
+        # group (one that does not depend on any other task in the group), so
+        # the merged task keeps a stable id and doesn't collide with an
+        # already-integrated leaf. Fall back to the group's union-find root.
+        group_set = set(tids)
+        candidates = [tid for tid in tids
+                      if not (set(by_id[tid].get("depends_on", []) or []) & group_set)]
+        merge_id = candidates[0] if candidates else root
         merged_task = {
-            "task_id": root,
+            "task_id": merge_id,
             "goal": " / ".join(goals),
             "acceptance": [],
             "depends_on": sorted(deps),
             "touch_allow": sorted(touch),
         }
         merged.append(merged_task)
-        notes.append(f"過分割をマージ: {', '.join(tids)} → {root}")
+        notes.append(f"過分割をマージ: {', '.join(tids)} → {merge_id}")
     return merged, notes
 
 
