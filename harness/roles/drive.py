@@ -137,24 +137,34 @@ def drive(
     # the repo root, so the root must already be at target_branch (create it if
     # missing). We restore the prior branch afterwards to avoid surprising the
     # caller's working tree.
+    #
+    # Under test (SUPER_AGENT_TEST=1) we skip the real checkout/stash entirely so
+    # a test invocation can never mutate the caller's working tree / branch.
+    import os as _os
     import subprocess as _sp
-    _prev_branch = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                           cwd=".", capture_output=True, text=True).stdout.strip()
+    _head = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=".", capture_output=True, text=True).stdout.strip()
+    _prev_branch = _head
     _stashed = False
-    _st = _sp.run(["git", "stash", "push", "-u", "-m", "drive-auto-stash"],
-                  cwd=".", capture_output=True, text=True)
-    if _st.returncode == 0 and "No local changes" not in _st.stdout:
-        _stashed = True
-    _co = _sp.run(["git", "checkout", target_branch], cwd=".",
-                  capture_output=True, text=True)
-    if _co.returncode != 0:
-        _cb = _sp.run(["git", "checkout", "-b", target_branch], cwd=".",
-                      capture_output=True, text=True)
-        if _cb.returncode != 0:
-            if _stashed:
-                _sp.run(["git", "stash", "pop"], cwd=".", capture_output=True, text=True)
-            return {"ok": False, "error": f"cannot checkout target_branch {target_branch}: "
-                    f"{_co.stderr or _cb.stderr}"}
+    if not _os.environ.get("SUPER_AGENT_TEST"):
+        try:
+            # If the repo root is ALREADY on the target branch, nothing to do.
+            if _head != target_branch:
+                _st = _sp.run(["git", "stash", "push", "-u", "-m", "drive-auto-stash"],
+                              cwd=".", capture_output=True, text=True)
+                if _st.returncode == 0 and "No local changes" not in _st.stdout:
+                    _stashed = True
+                _co = _sp.run(["git", "checkout", target_branch], cwd=".",
+                              capture_output=True, text=True)
+                if _co.returncode != 0:
+                    _cb = _sp.run(["git", "checkout", "-b", target_branch], cwd=".",
+                                  capture_output=True, text=True)
+                    if _cb.returncode != 0:
+                        return {"ok": False,
+                                "error": f"cannot checkout target_branch {target_branch}: "
+                                         f"{_co.stderr or _cb.stderr}"}
+        except Exception as _ex:  # pragma: no cover - defensive
+            return {"ok": False, "error": f"checkout target_branch failed: {_ex}"}
 
     order = topo_order(tasks)
     by_id = {t["task_id"]: t for t in tasks}
@@ -297,6 +307,10 @@ def drive(
                     tasks = rep["tasks"]
                     by_id = {t["task_id"]: t for t in tasks}
                     order = topo_order(tasks)
+                    # Re-derive layers from the revised tasks so the rest of the
+                    # loop uses the planner's (possibly merged/pruned) DAG, not
+                    # the stale initial one.
+                    layers = topo_layers(tasks)
                 # Investigation tasks run FIRST (before this layer's real work).
                 for it in rep.get("investigation_needed", []):
                     itid = it.get("task_id", "investigate")
@@ -347,7 +361,9 @@ def drive(
 
     # Restore the caller's branch so drive() doesn't leave the repo on the
     # target branch as a side effect. Also pop any auto-stash we created.
-    if not dry_run and _prev_branch:
+    # If we never left the target branch (caller was already on it), there is
+    # nothing to restore and no stash to pop.
+    if not dry_run and _prev_branch and _head != target_branch:
         _sp.run(["git", "checkout", _prev_branch], cwd=".",
                 capture_output=True, text=True)
         if _stashed:

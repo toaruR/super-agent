@@ -143,3 +143,27 @@ def test_merge_oversplit_combines_shared_file_tasks() -> None:
     assert "harness/roles/dashboard.py" in merged_dash["touch_allow"]
     # intra-group dep dropped, external deps kept
     assert "dashboard-model" not in merged_dash["depends_on"]
+
+
+def test_replan_drops_orphan_dependencies() -> None:
+    """If the vendor removes a task that others depend on, replan must drop
+    the now-orphan depends_on so the DAG stays implementable."""
+    fake = {
+        "ok": True,
+        "tasks": [
+            {"task_id": "dashboard-model", "goal": "g", "acceptance": [],
+             "depends_on": [], "touch_allow": ["harness/roles/dashboard.py"]},
+            {"task_id": "dashboard-cli", "goal": "g", "acceptance": [],
+             "depends_on": ["dashboard-write-entrypoint"],
+             "touch_allow": ["harness/cli.py"]},
+        ],
+        "investigation_needed": [],
+        "notes": "dropped entrypoint",
+    }
+    with mock.patch.object(planner_role, "invoke", return_value=fake), \
+         mock.patch.object(planner_role, "load_vendors", return_value={"claude": {}}):
+        rep = planner_role.replan("req", SAMPLE_TASKS, events=[],
+                                  vendor="claude", seq=None, dry_run=False)
+    cli = [t for t in rep["tasks"] if t["task_id"] == "dashboard-cli"][0]
+    assert "dashboard-write-entrypoint" not in cli["depends_on"], \
+        f"orphan dep not dropped: {cli['depends_on']}"

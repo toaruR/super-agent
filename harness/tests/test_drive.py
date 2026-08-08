@@ -259,7 +259,13 @@ def test_drive_adaptive_calls_planner_replan() -> None:
 def test_drive_checks_out_target_branch_before_integrate() -> None:
     """Regression: integrate() merges into the repo root's CURRENT branch, so
     drive must check out target_branch first (and restore the caller's branch
-    afterwards) to avoid merging onto the wrong branch / surprising side effects."""
+    afterwards) to avoid merging onto the wrong branch / surprising side effects.
+
+    This test verifies the REAL checkout path, so we temporarily disable the
+    SUPER_AGENT_TEST guard (conftest sets it to keep the other tests from
+    touching the dev's working tree).
+    """
+    import os as _os
     import subprocess as _sp
     captured = []
     real_run = _sp.run
@@ -281,24 +287,31 @@ def test_drive_checks_out_target_branch_before_integrate() -> None:
             return _R()
         return real_run(cmd, *a, **k)
 
-    with mock.patch.object(drive, "structural_check", return_value=[]), \
-         mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
-         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
-         mock.patch.object(drive, "integrate", return_value={"ok": True}), \
-         mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
-         mock.patch.object(drive, "schedule"), \
-         mock.patch.object(drive, "parse_tasks_md", return_value=[
-             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
-         ]), \
-         mock.patch.object(drive, "planner_role") as m_planner, \
-         mock.patch.object(drive, "Sequencer") as m_seq_cls, \
-         mock.patch.object(_sp, "run", side_effect=fake_run):
-        m_seq = m_seq_cls.return_value
-        m_seq.load.return_value = []
-        m_planner.replan.return_value = {"ok": True, "tasks": [
-            {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
-        ], "investigation_needed": [], "notes": ""}
-        drive.drive("", None, "probe/sample/my-design-tasks.md",
-                    seq=m_seq, dry_run=False, target_branch="feat/dashboard")
+    _old = _os.environ.pop("SUPER_AGENT_TEST", None)
+    try:
+        with mock.patch.object(drive, "structural_check", return_value=[]), \
+             mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+             mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+             mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+             mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
+             mock.patch.object(drive, "schedule"), \
+             mock.patch.object(drive, "parse_tasks_md", return_value=[
+                 {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+             ]), \
+             mock.patch.object(drive, "planner_role") as m_planner, \
+             mock.patch.object(drive, "Sequencer") as m_seq_cls, \
+             mock.patch.object(_sp, "run", side_effect=fake_run):
+            m_seq = m_seq_cls.return_value
+            m_seq.load.return_value = []
+            m_planner.replan.return_value = {"ok": True, "tasks": [
+                {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+            ], "investigation_needed": [], "notes": ""}
+            drive.drive("", None, "probe/sample/my-design-tasks.md",
+                        seq=m_seq, dry_run=False, target_branch="feat/dashboard")
+    finally:
+        if _old is not None:
+            _os.environ["SUPER_AGENT_TEST"] = _old
+        else:
+            _os.environ.pop("SUPER_AGENT_TEST", None)
     assert "feat/dashboard" in captured, f"expected checkout feat/dashboard, got {captured}"
     assert captured[-1] == "feat/planner", f"expected restore to feat/planner, got {captured}"

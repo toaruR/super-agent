@@ -307,6 +307,13 @@ def replan(
         tasks = merged_tasks
         notes = (notes + "\n" if notes else "") + "; ".join(merge_notes)
 
+    # Drop orphan dependencies: the vendor (or merge) may have removed a task
+    # that others still depend on. Keep depends_on referencing only tasks that
+    # still exist, so the resulting DAG is acyclic and implementable.
+    valid_ids = {t["task_id"] for t in tasks}
+    for t in tasks:
+        t["depends_on"] = [d for d in t.get("depends_on", []) if d in valid_ids]
+
     if seq is not None:
         seq.propose("replan", "plan.revised",
                     n_tasks=len(tasks),
