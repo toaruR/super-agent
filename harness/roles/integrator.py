@@ -35,6 +35,9 @@ def _git(args: list[str], cwd: str | Path, dry_run: bool = False) -> dict:
 
 def _changed_files(worktree_path: str | Path) -> list[str]:
     """Files with uncommitted or committed-since-merge-base changes in the worktree."""
+    # defensive: if the worktree dir is gone (already torn down), nothing to check
+    if not Path(worktree_path).is_dir():
+        return []
     # staged + unstaged + untracked (porcelain, one path per line)
     out = subprocess.run(
         ["git", "status", "--porcelain", "-uall"], cwd=str(worktree_path),

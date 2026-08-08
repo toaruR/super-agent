@@ -5,6 +5,7 @@
 # cli は --vendor/--reviewer が未指定のとき、ここから解決する。
 roles:
   design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
+  planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務）
   # implement はチャンネルリスト（Stage B 並列(b) のマルチチャンネル実装）。
   # 各エントリが1チャンネル = 独立 worktree で並列実行。チャンネル数 = リスト長。
   # model/effort はチャンネルごとに指定可。単一辞書 {vendor,model,effort} も後方互換。

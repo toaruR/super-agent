@@ -27,6 +27,7 @@ from harness.roles.decomposer import (
     render_tasks_md,
     structural_check,
 )
+from harness.roles import planner as planner_role
 from harness.roles.scheduler import (
     create_worktree,
     schedule,
@@ -64,6 +65,7 @@ def drive(
     parallel_tasks: bool = True,
     max_task_workers: int = 4,
     speculative: bool = False,
+    adaptive: bool = True,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
 
@@ -78,6 +80,13 @@ def drive(
     (multi-vendor / multi-model). Each channel runs in its own worktree/branch
     in parallel and the first channel whose review passes is integrated; the
     rest are discarded. This is an OPT-IN mode, not the default.
+
+    Adaptive re-planning (adaptive=True, default): between topo layers, the
+    `planner` role re-examines the DAG against what actually happened (ledger
+    events). It may carve out INVESTIGATION tasks (run first, before real work
+    fans out), merge over-split tasks that share a file (can't be parallel
+    worktrees), or re-order so interface-defining tasks run before consumers.
+    Set adaptive=False to stick to the static initial DAG.
 
     Channel declaration (precedence):
       1. `implement_channels` arg (parsed from CLI `--implement-vendors "agy:2,hermes:3"`)
@@ -122,6 +131,23 @@ def drive(
     # do NOT create a parent worktree that nothing would tear down.
     schedule("T-drive" if seq is None else f"T-{uuid_short()}", tasks,
              root="workspaces", dry_run=False, create_worktrees=False, seq=seq)
+
+    # Ensure the shared repo root is on the target branch before any integrate
+    # merges into it. integrate() merges task/<id> into the *current* branch of
+    # the repo root, so the root must already be at target_branch (create it if
+    # missing). We restore the prior branch afterwards to avoid surprising the
+    # caller's working tree.
+    import subprocess as _sp
+    _prev_branch = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                           cwd=".", capture_output=True, text=True).stdout.strip()
+    _co = _sp.run(["git", "checkout", target_branch], cwd=".",
+                  capture_output=True, text=True)
+    if _co.returncode != 0:
+        _cb = _sp.run(["git", "checkout", "-b", target_branch], cwd=".",
+                      capture_output=True, text=True)
+        if _cb.returncode != 0:
+            return {"ok": False, "error": f"cannot checkout target_branch {target_branch}: "
+                    f"{_co.stderr or _cb.stderr}"}
 
     order = topo_order(tasks)
     by_id = {t["task_id"]: t for t in tasks}
@@ -250,6 +276,25 @@ def drive(
     if parallel_tasks:
         layers = topo_layers(tasks)
         for layer in layers:
+            # --- Adaptive re-planning (planner) BEFORE this layer ---
+            if adaptive and seq is not None:
+                events = seq.load()
+                rep = planner_role.replan(
+                    requirement, tasks, events=events,
+                    vendor=resolve_role("planner", config_dir)["vendor"],
+                    existing_design=spec_path or "",
+                    model=resolve_role("planner", config_dir).get("model"),
+                    seq=seq, dry_run=dry_run,
+                )
+                if rep.get("ok") and rep.get("tasks"):
+                    tasks = rep["tasks"]
+                    by_id = {t["task_id"]: t for t in tasks}
+                    order = topo_order(tasks)
+                # Investigation tasks run FIRST (before this layer's real work).
+                for it in rep.get("investigation_needed", []):
+                    itid = it.get("task_id", "investigate")
+                    if itid in by_id and itid not in layer:
+                        results_by_id[itid] = _run_task_pipeline(itid)
             with ThreadPoolExecutor(max_workers=max_task_workers) as ex:
                 for entry in ex.map(_run_task_pipeline, layer):
                     results_by_id[entry["task_id"]] = entry
@@ -269,11 +314,21 @@ def drive(
         winner = entry.pop("_winner", None)
         channel_ids = entry.pop("_channel_ids", [tid])
         if not dry_run and winner is not None:
-            integ = integrate(winner["task_id"], task, winner["worktree"],
-                             target_branch=target_branch, seq=seq, dry_run=dry_run)
-            entry["integrate"] = {"ok": integ.get("ok"),
-                                  "commit": integ.get("commit"),
-                                  "winner": winner["vendor"]}
+            try:
+                integ = integrate(winner["task_id"], task, winner["worktree"],
+                                 target_branch=target_branch, seq=seq, dry_run=dry_run)
+                entry["integrate"] = {"ok": integ.get("ok"),
+                                      "commit": integ.get("commit"),
+                                      "winner": winner["vendor"]}
+                if not integ.get("ok"):
+                    entry["integrate"]["error"] = integ.get("error")
+            except Exception as ex:
+                # integrate must never abort the whole drive; record and move on
+                entry["integrate"] = {"ok": False, "winner": winner["vendor"],
+                                      "error": str(ex)}
+                if seq is not None:
+                    seq.propose(winner["task_id"], "integrate.error",
+                                error=str(ex)[:300])
         else:
             entry["integrate"] = {"skipped": True,
                                   "reason": "dry_run" if dry_run else "no passing channel"}
@@ -282,6 +337,12 @@ def drive(
             for cid in channel_ids:
                 teardown_worktree(cid, root="workspaces", dry_run=dry_run)
         results.append(entry)
+
+    # Restore the caller's branch so drive() doesn't leave the repo on the
+    # target branch as a side effect.
+    if not dry_run and _prev_branch:
+        _sp.run(["git", "checkout", _prev_branch], cwd=".",
+                capture_output=True, text=True)
 
     return {"ok": True, "reused_tasks_file": reused, "tasks": results}
 

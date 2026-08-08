@@ -221,3 +221,84 @@ def test_drive_default_single_channel_creates_worktree() -> None:
     assert any("T1" in (c.args[0] if c.args else "") for c in m_cw.call_args_list)
     # implement runs inside the created worktree
     assert m_impl.called
+
+
+def test_drive_adaptive_calls_planner_replan() -> None:
+    """With adaptive=True (default), drive invokes the planner role between
+    layers to re-examine the DAG. The planner's revisit is what lets us carve
+    out investigation tasks / merge over-split tasks at execution time."""
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+         mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+         mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+             {"task_id": "T2", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+         ]), \
+         mock.patch.object(drive, "planner_role") as m_planner, \
+         mock.patch.object(drive, "resolve_role", return_value={"vendor": "claude", "model": None}), \
+         mock.patch.object(drive, "Sequencer") as m_seq_cls:
+        m_seq = m_seq_cls.return_value
+        m_seq.load.return_value = []
+        m_planner.replan.return_value = {
+            "ok": True,
+            "tasks": [
+                {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+                {"task_id": "T2", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+            ],
+            "investigation_needed": [],
+            "notes": "",
+        }
+        drive.drive("", None, "probe/sample/my-design-tasks.md",
+                    seq=m_seq, dry_run=False, adaptive=True)
+    assert m_planner.replan.called, "planner.replan must be called in adaptive mode"
+
+
+def test_drive_checks_out_target_branch_before_integrate() -> None:
+    """Regression: integrate() merges into the repo root's CURRENT branch, so
+    drive must check out target_branch first (and restore the caller's branch
+    afterwards) to avoid merging onto the wrong branch / surprising side effects."""
+    import subprocess as _sp
+    captured = []
+    real_run = _sp.run
+
+    def fake_run(cmd, *a, **k):
+        if cmd[:2] == ["git", "rev-parse"] and "--abbrev-ref" in cmd:
+            # pretend we are on feat/planner before drive touches anything
+            class _R:
+                returncode = 0
+                stdout = "feat/planner\n"
+                stderr = ""
+            return _R()
+        if cmd[:2] == ["git", "checkout"]:
+            captured.append(cmd[2])
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+        return real_run(cmd, *a, **k)
+
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+         mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+         mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+         ]), \
+         mock.patch.object(drive, "planner_role") as m_planner, \
+         mock.patch.object(drive, "Sequencer") as m_seq_cls, \
+         mock.patch.object(_sp, "run", side_effect=fake_run):
+        m_seq = m_seq_cls.return_value
+        m_seq.load.return_value = []
+        m_planner.replan.return_value = {"ok": True, "tasks": [
+            {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+        ], "investigation_needed": [], "notes": ""}
+        drive.drive("", None, "probe/sample/my-design-tasks.md",
+                    seq=m_seq, dry_run=False, target_branch="feat/dashboard")
+    assert "feat/dashboard" in captured, f"expected checkout feat/dashboard, got {captured}"
+    assert captured[-1] == "feat/planner", f"expected restore to feat/planner, got {captured}"

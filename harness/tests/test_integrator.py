@@ -98,3 +98,9 @@ def test_integrate_acceptance_failure_after_merge() -> None:
     seq.stop()
     assert out["ok"] is False
     assert "integrated.failed" in _types(path)
+
+
+def test_changed_files_returns_empty_when_worktree_missing() -> None:
+    """Regression: _changed_files must not raise [WinError 267] when the
+    worktree dir is already gone (e.g. integrate called after teardown)."""
+    assert integrator._changed_files("workspaces/does-not-exist-xyz") == []
