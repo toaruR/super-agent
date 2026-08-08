@@ -140,12 +140,19 @@ def drive(
     import subprocess as _sp
     _prev_branch = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                            cwd=".", capture_output=True, text=True).stdout.strip()
+    _stashed = False
+    _st = _sp.run(["git", "stash", "push", "-u", "-m", "drive-auto-stash"],
+                  cwd=".", capture_output=True, text=True)
+    if _st.returncode == 0 and "No local changes" not in _st.stdout:
+        _stashed = True
     _co = _sp.run(["git", "checkout", target_branch], cwd=".",
                   capture_output=True, text=True)
     if _co.returncode != 0:
         _cb = _sp.run(["git", "checkout", "-b", target_branch], cwd=".",
                       capture_output=True, text=True)
         if _cb.returncode != 0:
+            if _stashed:
+                _sp.run(["git", "stash", "pop"], cwd=".", capture_output=True, text=True)
             return {"ok": False, "error": f"cannot checkout target_branch {target_branch}: "
                     f"{_co.stderr or _cb.stderr}"}
 
@@ -339,10 +346,12 @@ def drive(
         results.append(entry)
 
     # Restore the caller's branch so drive() doesn't leave the repo on the
-    # target branch as a side effect.
+    # target branch as a side effect. Also pop any auto-stash we created.
     if not dry_run and _prev_branch:
         _sp.run(["git", "checkout", _prev_branch], cwd=".",
                 capture_output=True, text=True)
+        if _stashed:
+            _sp.run(["git", "stash", "pop"], cwd=".", capture_output=True, text=True)
 
     return {"ok": True, "reused_tasks_file": reused, "tasks": results}
 
