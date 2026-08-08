@@ -1,0 +1,24 @@
+[
+  {
+    "task_id": "dashboard-model",
+    "goal": "[dashboard-model] 台帳イベントを構造化モデルに変換する build_model(events) を実装する。task_id -> status の辞書を返す。 / [dashboard-render-md] モデルから Markdown テーブルを出力する render_markdown(model) を実装する。 / [dashboard-render-html] モデルから単体 HTML を出力する render_html(model) を実装する。",
+    "acceptance": [],
+    "depends_on": [],
+    "touch_allow": [
+      "harness/roles/dashboard.py",
+      "harness/tests/test_dashboard.py"
+    ]
+  },
+  {
+    "task_id": "dashboard-write-entrypoint",
+    "goal": "[dashboard-write-entrypoint] harness/cli.py に dashboard サブコマンドを追加し、--format で md/html/both を選択できるようにする。 / [dashboard-cli] cli の引数パースとフォーマット分岐を整備する（dashboard コマンドの受け口）。",
+    "acceptance": [],
+    "depends_on": [
+      "dashboard-model"
+    ],
+    "touch_allow": [
+      "harness/cli.py",
+      "harness/tests/test_cli.py"
+    ]
+  }
+]

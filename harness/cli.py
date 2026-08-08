@@ -328,6 +328,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         parallel_tasks=args.parallel_tasks,
         max_task_workers=args.max_task_workers,
         speculative=speculative,
+        adaptive=getattr(args, "adaptive", True),
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -550,6 +551,13 @@ def main(argv: list[str] | None = None) -> int:
                          "all declared implement channels (roles.implement) and "
                          "integrate only the first reviewer-approved one. Off by "
                          "default (each task implemented in a single channel).")
+    dr.add_argument("--adaptive", action="store_true", default=True,
+                    help="adaptive re-planning (planner role): between topo layers, "
+                         "re-examine the DAG against ledger events, carve out "
+                         "investigation tasks, and merge/re-order over-split tasks. "
+                         "On by default. Use --no-adaptive to stick to the static DAG.")
+    dr.add_argument("--no-adaptive", dest="adaptive", action="store_false",
+                    help="disable adaptive re-planning (use the initial static DAG).")
     dr.add_argument("--max-task-workers", type=int, default=4,
                     help="max concurrent tasks (used when tasks are independent)")
     dr.add_argument("--dry-run", action="store_true",
