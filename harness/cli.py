@@ -459,44 +459,10 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     lg = Ledger(str(LEDGER_PATH))
     events = lg.load()
 
-    try:
-        from harness.roles.dashboard import build_model, render_markdown, render_html
-    except ImportError:
-        def build_model(evs: list[dict]) -> dict:
-            tasks = {}
-            for ev in evs:
-                eid = ev.get("event_id", "")
-                task_id = eid.split(":")[0] if ":" in eid else eid
-                if not task_id:
-                    continue
-                if task_id not in tasks:
-                    tasks[task_id] = {"task_id": task_id, "status": "unknown", "last_event": ev.get("type", "")}
-                ev_type = ev.get("type", "")
-                tasks[task_id]["last_event"] = ev_type
-                if ev_type in ("integrate.ok", "review.pass", "implement.ok", "task.created"):
-                    tasks[task_id]["status"] = ev_type
-            return tasks
-
-        def render_markdown(model: dict) -> str:
-            lines = ["# Dashboard", "", "| Task ID | Status |", "| --- | --- |"]
-            for task_id, info in model.items():
-                status = info.get("status", "unknown") if isinstance(info, dict) else str(info)
-                lines.append(f"| {task_id} | {status} |")
-            return "\n".join(lines) + "\n"
-
-        def render_html(model: dict) -> str:
-            rows = ""
-            for task_id, info in model.items():
-                status = info.get("status", "unknown") if isinstance(info, dict) else str(info)
-                rows += f"<tr><td>{task_id}</td><td>{status}</td></tr>\n"
-            return (
-                "<!DOCTYPE html>\n"
-                "<html>\n<head><title>Dashboard</title></head>\n"
-                "<body>\n<h1>Dashboard</h1>\n"
-                "<table>\n<thead><tr><th>Task ID</th><th>Status</th></tr></thead>\n"
-                f"<tbody>\n{rows}</tbody>\n</table>\n"
-                "</body>\n</html>\n"
-            )
+    # The model builder + renderers live in harness.roles.dashboard (this is the
+    # single source of truth; no inline fallbacks — if the import fails the CLI
+    # surfaces the error instead of silently diverging from the role module).
+    from harness.roles.dashboard import build_model, render_markdown, render_html
 
     model = build_model(events)
     fmt = args.format

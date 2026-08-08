@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Dashboard model builder and renderer.
 
-Converts ledger events into a structured task status model.
+Converts ledger events into a structured task status model, then renders that
+model as Markdown or HTML.
 """
 from __future__ import annotations
 
@@ -29,6 +30,25 @@ STATUS_MAP = {
 }
 
 
+def _task_id_of(ev: dict[str, Any]) -> str | None:
+    """Extract the canonical task id from a ledger event.
+
+    The canonical field is ``task_id``. For legacy / vendor-produced events
+    that only carry ``event_id`` (``{task_id}:{seq}``), the id is derived by
+    stripping the ``:<seq>`` suffix so we don't end up with redundant
+    ``task-1:3`` keys in the dashboard model.
+    """
+    task_id = ev.get("task_id")
+    if task_id:
+        return str(task_id)
+    event_id = ev.get("event_id")
+    if event_id and ":" in event_id:
+        return event_id.split(":", 1)[0]
+    if event_id:
+        return str(event_id)
+    return None
+
+
 def build_model(events: list[dict[str, Any]]) -> dict[str, str]:
     """Convert ledger events into a structured model mapping task_id -> status.
 
@@ -45,7 +65,7 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, str]:
     for ev in events:
         if not isinstance(ev, dict):
             continue
-        task_id = ev.get("task_id")
+        task_id = _task_id_of(ev)
         if not task_id:
             continue
 
@@ -71,3 +91,26 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, str]:
                 model[task_id] = type_
 
     return model
+
+
+def render_markdown(model: dict[str, str]) -> str:
+    """Render the task status model as a Markdown table."""
+    lines = ["# Dashboard", "", "| Task ID | Status |", "| --- | --- |"]
+    for task_id, status in sorted(model.items()):
+        lines.append(f"| {task_id} | {status} |")
+    return "\n".join(lines) + "\n"
+
+
+def render_html(model: dict[str, str]) -> str:
+    """Render the task status model as an HTML table."""
+    rows = ""
+    for task_id, status in sorted(model.items()):
+        rows += f"<tr><td>{task_id}</td><td>{status}</td></tr>\n"
+    return (
+        "<!DOCTYPE html>\n"
+        "<html>\n<head><title>Dashboard</title></head>\n"
+        "<body>\n<h1>Dashboard</h1>\n"
+        "<table>\n<thead><tr><th>Task ID</th><th>Status</th></tr></thead>\n"
+        f"<tbody>\n{rows}</tbody>\n</table>\n"
+        "</body>\n</html>\n"
+    )

@@ -141,3 +141,38 @@ def test_cli_dashboard_both_writes_two_files(tmp_path, monkeypatch):
     assert len(md_file.read_text(encoding="utf-8")) > 0
     assert len(html_file.read_text(encoding="utf-8")) > 0
 
+
+def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
+    """Regression: cmd_dashboard must import build_model/render_markdown/
+    render_html from harness.roles.dashboard (single source of truth) rather
+    than falling back to an inline duplicate definition in cli.py.
+    We verify by feeding a synthetic ledger and checking the rendered output
+    reflects the role module's canonical status mapping + markdown shape."""
+    monkeypatch.chdir(REPO)
+    ledger = REPO / "harness" / "ledger" / "events.jsonl"
+    had = ledger.exists()
+    backup = ledger.read_text(encoding="utf-8") if had else None
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        "\n".join([
+            '{"event_id":"T1:1","task_id":"T1","seq":1,"type":"task.created"}',
+            '{"event_id":"T1:5","task_id":"T1","seq":5,"type":"integrate.ok"}',
+            '{"event_id":"T2:2","task_id":"T2","seq":2,"type":"implementer.error","error":"boom"}',
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        res = _run("dashboard", "--format", "md")
+        assert res.returncode == 0
+        out = res.stdout
+        # role module keys by task_id (not event_id) and maps statuses
+        assert "| T1 | integrated |" in out
+        assert "| T2 | failed |" in out
+        # role module's markdown header
+        assert out.startswith("# Dashboard")
+    finally:
+        if backup is not None:
+            ledger.write_text(backup, encoding="utf-8")
+        elif had:
+            ledger.unlink()
+
