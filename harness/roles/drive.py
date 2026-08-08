@@ -107,7 +107,7 @@ def drive(
             return {"ok": False, "error": "decompose failed", "detail": out}
         tasks = out.get("tasks", [])
         schedule(tid if seq is not None else "T-drive", tasks, root="workspaces",
-                 dry_run=dry_run, seq=seq)
+                 dry_run=dry_run, create_worktrees=False, seq=seq)
         render_tasks_md_safe(tasks, requirement, tasks_file)
         reused = False
 
@@ -115,10 +115,11 @@ def drive(
     if errs:
         return {"ok": False, "error": "structural_check failed", "errors": errs}
 
-    # Always ensure worktrees exist (idempotent). drive's --dry-run only skips
-    # vendor calls and the integrate git step.
+    # Channel worktrees are created per-channel inside _run_task_pipeline
+    # (and torn down after integrate), so schedule here only issues leases —
+    # do NOT create a parent worktree that nothing would tear down.
     schedule("T-drive" if seq is None else f"T-{uuid_short()}", tasks,
-             root="workspaces", dry_run=False, seq=seq)
+             root="workspaces", dry_run=False, create_worktrees=False, seq=seq)
 
     order = topo_order(tasks)
     by_id = {t["task_id"]: t for t in tasks}

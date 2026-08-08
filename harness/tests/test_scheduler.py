@@ -138,6 +138,36 @@ def test_create_worktree_plan(monkeypatch):
     assert wt["cmd"][:3] == ["git", "worktree", "add"]
 
 
+def test_create_worktree_does_not_reuse_stale_worktree_on_different_path(tmp_path):
+    # bug3 regression: a composite channel id (T1__agy_0) must NOT reuse a
+    # stale single-channel worktree (T1) that happens to share the branch
+    # prefix. It must create its own isolated path.
+    from harness.roles.scheduler import create_worktree
+
+    def fake_git(*a, **k):
+        cmd = a[0]
+        class R:
+            pass
+        r = R()
+        r.returncode = 0
+        if cmd[1] == "list":
+            # a stale worktree on a DIFFERENT path (task/T1 checked out at T1)
+            r.stdout = f"worktree {tmp_path}/T1\nbranch refs/heads/task/T1\n"
+        elif cmd[1] == "prune":
+            r.stdout = ""
+        else:  # worktree add
+            r.stdout = ""
+        r.stderr = ""
+        return r
+
+    # the stale path exists but is NOT the path we are asking for
+    (tmp_path / "T1").mkdir()
+    wt = create_worktree("T1__agy_0", root=str(tmp_path), git=fake_git)
+    assert wt["ok"] is True
+    assert wt.get("reused") is not True
+    assert wt["path"].replace("\\", "/") == f"{tmp_path.as_posix()}/T1__agy_0"
+
+
 def test_schedule_dry_run_records_planned_worktree(monkeypatch):
     from harness.roles.scheduler import schedule
     from harness.core.ledger import Sequencer
