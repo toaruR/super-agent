@@ -268,7 +268,7 @@ def drive(
             for c in ch_results:
                 if not c.get("ok"):
                     # channel worktree failed to create/run — record and skip
-                    reviews.append({"vendor": c.get("vendor"), "verdict": None,
+                    reviews.append({"vendor": rev_vendor, "verdict": None,
                                     "error": c.get("error")})
                     continue
                 rev = run_pipeline(c["task_id"], c["worktree"], acc,
@@ -276,7 +276,10 @@ def drive(
                                    dry_run=dry_run, seq=seq,
                                    model=rev_role["model"], effort=rev_role["effort"])
                 verdict = rev.get("verdict")
-                reviews.append({"vendor": c["vendor"], "verdict": verdict})
+                # Record the REVIEWER vendor (rev_vendor), not the implementer's
+                # vendor — this entry is the review phase, and the actual
+                # reviewer.invoked event uses rev_vendor (e.g. agy from yaml).
+                reviews.append({"vendor": rev_vendor, "verdict": verdict})
                 if winner is None and verdict in ("pass", "pass_with_findings"):
                     winner = c
             entry["review"] = {
