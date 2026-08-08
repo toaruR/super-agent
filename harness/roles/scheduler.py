@@ -92,10 +92,14 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
 
     if git is None:
         # clean stale/prunable worktree metadata so branches are not left
-        # "checked out" at a deleted path (Windows + repeated runs)
-        subprocess.run(["git", "worktree", "prune"],
+        # "checked out" at a deleted path (Windows + repeated runs). Use an
+        # immediate expiry so any orphaned .git/worktrees/<id> from a previous
+        # run is gone before we create a new one (keeps Git GUIs like Fork clean).
+        subprocess.run(["git", "worktree", "prune", "--expire", "now"],
                        capture_output=True, text=True,
                        encoding="utf-8", errors="replace", shell=False)
+        # also wipe any orphaned metadata dir for this exact task id
+        _prune_worktree_meta(branch)
 
     # 1) this exact path is already a live worktree -> reuse it
     lst = run(["git", "worktree", "list", "--porcelain"]).stdout or ""
@@ -152,16 +156,17 @@ def teardown_worktree(task_id: str, root: str = "workspaces",
     Used to clean up per-task/per-channel worktrees after integration so loser
     channels don't linger. Safe to call when the worktree was already removed
     (e.g. by the integrator) — it no-ops in that case.
+
+    On Windows, `git worktree remove` can leave orphaned metadata under
+    `.git/worktrees/<id>` (which makes Git GUIs like Fork report
+    "Invalid refs"). We prune before/after and, as a last resort, delete the
+    stale metadata directory directly so the repo stays GUI-clean.
     """
     path = str(Path(root, task_id).as_posix())
     branch = f"task/{task_id}"
     if dry_run:
         return {"ok": True, "cmd": ["git", "worktree", "remove", "--force", path],
                 "dry_run": True}
-    if git is None:
-        subprocess.run(["git", "worktree", "prune"],
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", shell=False)
 
     def run(c):
         if git is not None:
@@ -169,18 +174,56 @@ def teardown_worktree(task_id: str, root: str = "workspaces",
         return subprocess.run(c, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", shell=False)
 
+    # 1) prune any orphaned worktree metadata up front (GUI tools hate leftovers)
+    if git is None:
+        subprocess.run(["git", "worktree", "prune", "--expire", "now"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=False)
+
     if not Path(path).exists():
         # already gone (integrator may have removed the winner); just drop branch
         b = run(["git", "branch", "-D", branch])
+        _prune_worktree_meta(branch)
         return {"ok": True, "removed": False, "branch_deleted": b.returncode == 0,
                 "path": path}
+
     r = run(["git", "worktree", "remove", "--force", path])
     if r.returncode != 0:
-        return {"ok": False, "path": path,
-                "error": (r.stderr or r.stdout).strip()}
+        # fall back to prune + manual metadata removal so GUI tools stay clean
+        _prune_worktree_meta(branch)
+        b = run(["git", "branch", "-D", branch])
+        return {"ok": r.returncode == 0, "path": path,
+                "error": (r.stderr or r.stdout).strip(),
+                "branch_deleted": b.returncode == 0}
     b = run(["git", "branch", "-D", branch])
+    _prune_worktree_meta(branch)
     return {"ok": True, "removed": True, "branch_deleted": b.returncode == 0,
             "path": path}
+
+
+def _prune_worktree_meta(branch: str) -> None:
+    """Best-effort removal of orphaned `.git/worktrees/<id>` metadata so Git
+    GUI clients (Fork, etc.) don't report 'Invalid refs' for stale worktrees."""
+    try:
+        # git's own prune, aggressive
+        subprocess.run(["git", "worktree", "prune", "--expire", "now"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=False)
+        # direct metadata cleanup keyed by the task id embedded in the branch
+        wt_root = Path(".git", "worktrees")
+        if not wt_root.is_dir():
+            return
+        for d in wt_root.iterdir():
+            gitdir = d / "gitdir"
+            try:
+                if gitdir.exists() and branch.split("/")[-1] in gitdir.read_text(encoding="utf-8", errors="replace"):
+                    import shutil
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 
 def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
