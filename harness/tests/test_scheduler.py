@@ -162,3 +162,21 @@ def test_plan_cli_dry_run(monkeypatch, tmp_path):
     out = json.loads(res.stdout)
     assert "decompose" in out and "schedule" in out
     assert out["schedule"]["ok"] is True
+
+
+def test_teardown_worktree_idempotent() -> None:
+    # create then teardown; second teardown must no-op (not error).
+    from harness.roles.scheduler import create_worktree, teardown_worktree
+    import subprocess, tempfile, os
+    d = tempfile.mkdtemp()
+    repo = os.path.join(d, "r")
+    subprocess.run(["git", "init", "-q", repo], check=True)
+    subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    os.makedirs(os.path.join(repo, "workspaces"))
+    r1 = create_worktree("TW", root=os.path.join(repo, "workspaces"))
+    assert r1["ok"] is True
+    t1 = teardown_worktree("TW", root=os.path.join(repo, "workspaces"))
+    assert t1["ok"] is True and t1["removed"] is True
+    # idempotent: worktree path gone -> branch deletion path only
+    t2 = teardown_worktree("TW", root=os.path.join(repo, "workspaces"))
+    assert t2["ok"] is True

@@ -8,14 +8,8 @@ roles:
   # implement はチャンネルリスト（Stage B 並列(b) のマルチチャンネル実装）。
   # 各エントリが1チャンネル = 独立 worktree で並列実行。チャンネル数 = リスト長。
   # model/effort はチャンネルごとに指定可。単一辞書 {vendor,model,effort} も後方互換。
-  # デフォルトは agy 単一チャンネル（軽量）。マルチチャンネル例（agy×2 + hermes×3）:
-  #   implement:
-  #     - { vendor: agy,    model: gemini-3.6-flash, effort: high }
-  #     - { vendor: hermes, model: hy3:Free,         effort: high }
-  #     - { vendor: hermes, model: hy3:Free,         effort: high }
-  #     - { vendor: hermes, model: hy3:Free,         effort: high }
-  #     - { vendor: agy,    model: gemini-3.6-pro,   effort: high }
-  # CLI --implement-vendors "agy:2,hermes:3" でも一時的なマルチチャンネル指定が可能。
+  # 既定は agy×2 + hermes×3 の5チャンネル並列。CLI --implement-vendors "agy:1" 等で
+  # 一時的に絞り込み可。
   implement:
     - { vendor: agy,    model: gemini-3.6-flash, effort: high }
     - { vendor: hermes, model: hy3:Free,         effort: high }

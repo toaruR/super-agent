@@ -30,6 +30,7 @@ from harness.roles.decomposer import (
 from harness.roles.scheduler import (
     create_worktree,
     schedule,
+    teardown_worktree,
     topo_layers,
     topo_order,
 )
@@ -140,6 +141,7 @@ def drive(
 
         # ④ implement — fan out across channels, run in parallel
         ch_results: list[dict] = []
+        channel_ids: list[str] = []
         default_vendor = resolve_role("implement", config_dir)["vendor"]
         single_path = (len(channels) == 1 and
                        channels[0]["vendor"] == (implement_vendor or default_vendor))
@@ -153,6 +155,7 @@ def drive(
             ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
                                "effort": ch["effort"], "worktree": wt,
                                "task_id": tid, "impl": impl})
+            channel_ids.append(tid)
         else:
             # Multi-channel: one worktree/branch per (task, channel).
             def _run_channel(i: int, ch: dict) -> dict:
@@ -171,6 +174,8 @@ def drive(
                     lambda kv: _run_channel(kv[0], kv[1]),
                     list(enumerate(channels)),
                 ))
+            channel_ids = [_channel_worktree_id(tid, c["vendor"], i)
+                           for i, c in enumerate(channels)]
 
         entry["implement"] = {
             "channels": [
@@ -204,6 +209,7 @@ def drive(
         first_verdict = reviews[0]["verdict"] if reviews else None
         entry["review"]["verdict"] = first_verdict  # mirror single-channel shape
         entry["_winner"] = winner  # internal: used by the serial integrate phase
+        entry["_channel_ids"] = channel_ids  # internal: teardown after integrate
         return entry
 
     # Phase A: run task pipelines. Independent tasks (topo layers) run in parallel;
@@ -221,13 +227,15 @@ def drive(
 
     # Phase B: integrate winners serially (git checkout/merge on the shared repo
     # root must not run concurrently). Ordered by topo_order so a child is merged
-    # after its parents.
+    # after its parents. Then tear down every channel worktree so loser channels
+    # don't linger.
     for tid in order:
         entry = results_by_id.get(tid)
         if entry is None:
             continue
         task = by_id.get(tid, {})
         winner = entry.pop("_winner", None)
+        channel_ids = entry.pop("_channel_ids", [tid])
         if not dry_run and winner is not None:
             integ = integrate(winner["task_id"], task, winner["worktree"],
                              target_branch=target_branch, seq=seq, dry_run=dry_run)
@@ -237,6 +245,10 @@ def drive(
         else:
             entry["integrate"] = {"skipped": True,
                                   "reason": "dry_run" if dry_run else "no passing channel"}
+        # cleanup: remove all channel worktrees/branches for this task
+        if not dry_run:
+            for cid in channel_ids:
+                teardown_worktree(cid, root="workspaces", dry_run=dry_run)
         results.append(entry)
 
     return {"ok": True, "reused_tasks_file": reused, "tasks": results}

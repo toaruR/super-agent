@@ -131,6 +131,44 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
             "error": (proc.stderr or proc.stdout).strip()}
 
 
+def teardown_worktree(task_id: str, root: str = "workspaces",
+                       git=None, dry_run: bool = False) -> dict:
+    """Remove a task's worktree (and its branch) if present. Idempotent.
+
+    Used to clean up per-task/per-channel worktrees after integration so loser
+    channels don't linger. Safe to call when the worktree was already removed
+    (e.g. by the integrator) — it no-ops in that case.
+    """
+    path = str(Path(root, task_id).as_posix())
+    branch = f"task/{task_id}"
+    if dry_run:
+        return {"ok": True, "cmd": ["git", "worktree", "remove", "--force", path],
+                "dry_run": True}
+    if git is None:
+        subprocess.run(["git", "worktree", "prune"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=False)
+
+    def run(c):
+        if git is not None:
+            return git(c)
+        return subprocess.run(c, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", shell=False)
+
+    if not Path(path).exists():
+        # already gone (integrator may have removed the winner); just drop branch
+        b = run(["git", "branch", "-D", branch])
+        return {"ok": True, "removed": False, "branch_deleted": b.returncode == 0,
+                "path": path}
+    r = run(["git", "worktree", "remove", "--force", path])
+    if r.returncode != 0:
+        return {"ok": False, "path": path,
+                "error": (r.stderr or r.stdout).strip()}
+    b = run(["git", "branch", "-D", branch])
+    return {"ok": True, "removed": True, "branch_deleted": b.returncode == 0,
+            "path": path}
+
+
 def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
              role: str = "implementer", lease_seconds: int = 3600,
              root: str = "workspaces", dry_run: bool = False,
