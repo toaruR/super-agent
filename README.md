@@ -18,6 +18,7 @@
 - **台帳（証拠の束縛）** — 全イベントをクラッシュセーフな JSONL に記録。`tree_hash` で「どの成果物の証拠か」を保証。
 - **worktree 隔離** — 各タスク/チャンネルは独立 git worktree で実行され、統合後に自動で片付く（敗者チャンネルも残らない）。
 - **read-only レビュア** — レビュアは実装者と別ベンダーかつ読み取り専用。独立性は権限ではなく裁定器で担保。
+- **自己改良（Stage 6: evolve）** — 台帳から失敗パターンを拾い、同種が3回以上继续したら `acceptance` テンプレまたは憲法への昇格を提案。`evolve --dry-run` で確認、実行で `design.proposed` を台帳に記録。
 
 ---
 
@@ -78,6 +79,7 @@ super-agent review   probe/n3/caseGreen            # 検証パイプライン（
 super-agent status                                # 台帳の最近のイベント
 super-agent log T-XXXX                            # 指定タスクの全イベント
 super-agent show design | plan                    # 設計／計画の read-only 表示
+super-agent evolve --dry-run                      # 台帳から失敗パターンを拾い自己改良を提案
 ```
 
 その他のコマンドと詳細な手順は [`docs/usage.md`](docs/usage.md) を参照。
@@ -85,7 +87,7 @@ super-agent show design | plan                    # 設計／計画の read-only
 ```bash
 # テストを通す（動作の証明）
 .cve-venv/Scripts/python.exe -m pytest harness/tests/ -q
-# 59 passed
+# 65 passed
 ```
 
 ---
