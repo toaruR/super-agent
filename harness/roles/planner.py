@@ -299,6 +299,15 @@ def replan(
     investigation = res.get("investigation_needed", [])
     notes = res.get("notes", "")
 
+    # The vendor often returns tasks WITHOUT touch_allow (it reasons about
+    # dependencies, not file ownership). But _merge_oversplit needs touch_allow
+    # to detect over-splitting. Backfill any missing touch_allow from the
+    # original tasks so the hard rule still fires on file-sharing groups.
+    _allow_by_id = {t["task_id"]: t.get("touch_allow", []) for t in existing_tasks}
+    for t in tasks:
+        if not t.get("touch_allow"):
+            t["touch_allow"] = _allow_by_id.get(t["task_id"], [])
+
     # Hard rule: never let over-split tasks (sharing a touch_allow file) run as
     # parallel worktrees — merge them so the failure mode (silent broken merge)
     # can't happen. Applied AFTER the vendor so its output is also sanitized.

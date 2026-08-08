@@ -145,6 +145,43 @@ def test_merge_oversplit_combines_shared_file_tasks() -> None:
     assert "dashboard-model" not in merged_dash["depends_on"]
 
 
+def test_replan_backfills_touch_allow_from_existing() -> None:
+    """The vendor frequently returns tasks WITHOUT touch_allow (it reasons about
+    dependencies, not file ownership). replan must backfill touch_allow from the
+    original tasks so _merge_oversplit still detects over-split file-sharing
+    groups and merges them."""
+    fake = {
+        "ok": True,
+        # vendor drops touch_allow entirely, keeps only ids + deps
+        "tasks": [
+            {"task_id": "dashboard-model", "goal": "g", "acceptance": [], "depends_on": []},
+            {"task_id": "dashboard-render-md", "goal": "g", "acceptance": [],
+             "depends_on": ["dashboard-model"]},
+            {"task_id": "dashboard-cli", "goal": "g", "acceptance": [],
+             "depends_on": ["dashboard-model"]},
+        ],
+        "investigation_needed": [],
+        "notes": "",
+    }
+    existing = [
+        {"task_id": "dashboard-model", "goal": "g", "acceptance": [],
+         "depends_on": [], "touch_allow": ["harness/roles/dashboard.py"]},
+        {"task_id": "dashboard-render-md", "goal": "g", "acceptance": [],
+         "depends_on": ["dashboard-model"], "touch_allow": ["harness/roles/dashboard.py"]},
+        {"task_id": "dashboard-cli", "goal": "g", "acceptance": [],
+         "depends_on": ["dashboard-model"], "touch_allow": ["harness/cli.py"]},
+    ]
+    with mock.patch.object(planner_role, "invoke", return_value=fake), \
+         mock.patch.object(planner_role, "load_vendors", return_value={"claude": {}}):
+        rep = planner_role.replan("req", existing, events=[],
+                                  vendor="claude", seq=None, dry_run=False)
+    ids = [t["task_id"] for t in rep["tasks"]]
+    # dashboard-model + dashboard-render-md share dashboard.py -> merged into one
+    dash = [t for t in rep["tasks"] if t["task_id"].startswith("dashboard-model")]
+    assert len(dash) == 1, f"expected over-split merge, got {ids}"
+    assert "harness/roles/dashboard.py" in dash[0]["touch_allow"]
+
+
 def test_replan_drops_orphan_dependencies() -> None:
     """If the vendor removes a task that others depend on, replan must drop
     the now-orphan depends_on so the DAG stays implementable."""
