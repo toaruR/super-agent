@@ -95,7 +95,7 @@ cve:
   interpreters:
     # Windows git-bash は「C:/...」表記をそのまま解釈する。
     # このパスは実行環境ごとに書き換えること（ホストが変われば動かない）。
-    python: "C:/Users/toaru/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe"
+    python: "<home>/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe"
   probe:            # 起動時セルフチェック。ここが落ちたら全タスクを止める
     - "python -c 'import sys;print(sys.version)'"
     - "git --version"

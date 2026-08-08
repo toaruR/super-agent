@@ -42,7 +42,7 @@ VSCode の Python 拡張が `.cve-venv` を自動検出し、ターミナル起�
 手動で Activate する必要はありません。
 
 ```powershell
-cd D:/vagrant/harnesses/super-agent/src
+cd src  # リポジトリ内の src/ ディレクトリ
 super-agent status          # venv の python が使われる
 ```
 
@@ -52,14 +52,14 @@ super-agent status          # venv の python が使われる
 （Activate 経由より確実）。コマンド内の題材パス等は相対表記のままで可。
 
 ```powershell
-cd D:/vagrant/harnesses/super-agent/src
-D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -m harness.cli status
+cd src  # リポジトリ内の src/ ディレクトリ
+.cve-venv/Scripts/python.exe -m harness.cli status
 ```
 
 ### 1.3 git-bash
 
 ```bash
-cd D:/vagrant/harnesses/super-agent/src
+cd src  # リポジトリ内の src/ ディレクトリ
 ./.cve-venv/Scripts/python.exe -m harness.cli status
 ```
 
@@ -70,12 +70,12 @@ venv の python が使われているか：
 ```bash
 python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 # または
-D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe -c "import yaml, pytest; print('ok')"
+.cve-venv/Scripts/python.exe -c "import yaml, pytest; print('ok')"
 ```
 
 > `.cve-venv` が無い／壊れている場合は作り直します（PyYAML と pytest が必要）：
 > ```powershell
-> cd D:/vagrant/harnesses/super-agent
+> cd <repo-root>  # super-agent リポジトリのルート
 > python -m venv .cve-venv
 > .cve-venv/Scripts/python.exe -m pip install pyyaml pytest
 > ```
@@ -446,9 +446,9 @@ super-agent log T-XXXX
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック | マシンが変わった時 |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） | 新しい検証種別を足す時 |
 
-> **`verification_env.yaml` の python パスは環境依存です。**
-> このマシンでは `D:/vagrant/harnesses/super-agent/.cve-venv/...` を指しています。
-> 別マシンでは書き換えてください（Windows git-bash は `C:/...` 表記を解釈します）。
+> **`verification_env.yaml` の python パスは環境依存です。** 各環境の venv
+> （例: `.cve-venv/Scripts/python.exe`）を指すよう設定してください。
+> サンプルは `verification_env_sample.yaml` を参照。
 
 ---
 

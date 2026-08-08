@@ -1,0 +1,17 @@
+# §3.2 唯一の検証環境 (Canonical Verification Environment; CVE)
+# テスト・ビルド・lint・実行はこの環境でのみ走る。
+#
+# このファイルはサンプルです。実際の運用では、環境に合わせた
+# `verification_env.yaml` を作成してください（このサンプルをコピーし、
+# 以下の python パスを各環境の venv に置き換える）。
+cve:
+  id: "local-default"
+  shell: bash
+  interpreters:
+    # この環境で pytest が入っている venv の python を指定する。
+    # 例: .cve-venv/Scripts/python.exe  （Windows）
+    #      .cve-venv/bin/python          （Linux/macOS）
+    python: ".cve-venv/Scripts/python.exe"
+  probe:            # 起動時セルフチェック。ここが落ちたら全タスクを止める
+    - [".cve-venv/Scripts/python.exe", "-c", "import sys; print(sys.version)"]
+    - ["git", "--version"]

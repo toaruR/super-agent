@@ -31,7 +31,6 @@
 | Git | worktree 操作に使用（2.26 以降推奨） |
 
 > ベンダー CLI の認証・課金設定は各ベンダーの手順で事前に済ませておくこと。
-> 既定の review ベンダーは `codex`（v0.147.0 で `gpt-5.6-luna` が実測で通る、25倍安価）。
 
 ---
 
@@ -100,13 +99,14 @@ super-agent show design | plan                    # 設計／計画の read-only
 |---|---|
 | `roles.design` | 設計起案ベンダー（既定 `claude`） |
 | `roles.implement` | **実装チャンネルのリスト**。各エントリ `{vendor, model, effort}` が1チャンネル＝独立 worktree で並列実装。既定は `agy×2 + hermes×3` |
-| `roles.review` | レビュアベンダー（既定 `codex` / `gpt-5.6-luna`） |
+| `roles.review` | レビュアベンダー（既定 `codex`） |
 | `<vendor>.headless` | ヘッドレス呼び出しコマンド。`{worktree}` `{prompt}` が置換される |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） |
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック |
 
-> `verification_env.yaml` の python パスは環境依存。このマシンでは
-> `D:/vagrant/harnesses/super-agent/.cve-venv/...` を指す。別マシンでは書き換えること。
+> `verification_env.yaml` の python パスは環境依存。`.cve-venv/Scripts/python.exe`
+> （または各環境の venv）を指すよう、環境に合わせて設定すること。
+> サンプルは `verification_env_sample.yaml` を参照。
 
 環境変数（`.env`）は現在使用していない。ベンダー CLI の認証情報は各 CLI の仕組み
 （ネイティブな認証キャッシュ等）に委ねる。
@@ -115,4 +115,15 @@ super-agent show design | plan                    # 設計／計画の read-only
 
 ## License
 
-**未定。** 公開前に決定する（MIT / Apache 2.0 等を想定）。
+**MIT License** — 詳細は [`LICENSE`](LICENSE) を参照。
+
+```
+Copyright (c) 2026 toaruR
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the conditions of the MIT License.
+```

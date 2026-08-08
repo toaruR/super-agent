@@ -37,6 +37,18 @@ class CVE:
     def __init__(self, cfg_path: str | Path, verifiers_path: str | Path) -> None:
         import yaml
 
+        cfg_path = Path(cfg_path)
+        if not cfg_path.exists():
+            # 実環境用の verification_env.yaml が無い場合はサンプルへフォールバック。
+            # （サンプルはパスを一般化しているため、環境に合わせた実ファイルを
+            #  `verification_env_sample.yaml` からコピーして作成することを推奨）
+            sample = cfg_path.with_name("verification_env_sample.yaml")
+            if sample.exists():
+                import sys
+                print(f"[warn] {cfg_path.name} not found; using {sample.name} "
+                      f"(copy it to {cfg_path.name} and set your venv python path)",
+                      file=sys.stderr)
+                cfg_path = sample
         with open(cfg_path, "r", encoding="utf-8") as fh:
             self.cfg = yaml.safe_load(fh)
         self._verifiers = VerifierRegistry(verifiers_path)

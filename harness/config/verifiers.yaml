@@ -1,10 +1,10 @@
 # H2 fix: verb -> (executable, fixed prefix args)
 # verb はここに登録されたもののみ許可。args はシェル展開せず逐次引数で渡す。
-# 実行は CVE の python 経由（verification_env.yaml と同じ venv）。
+# 実行は CVE の python 経由（verification_env.yaml と同じ venv。パスは環境に合わせて調整）。
 verifiers:
-  pytest: ["D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe", "-m", "pytest", "-q"]
-  unittest: ["D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe", "-m", "unittest"]
-  mypy: ["D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe", "-m", "mypy"]
-  ruff: ["D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe", "-m", "ruff", "check"]
+  pytest: [".cve-venv/Scripts/python.exe", "-m", "pytest", "-q"]
+  unittest: [".cve-venv/Scripts/python.exe", "-m", "unittest"]
+  mypy: [".cve-venv/Scripts/python.exe", "-m", "mypy"]
+  ruff: [".cve-venv/Scripts/python.exe", "-m", "ruff", "check"]
   node-test: ["node", "--test"]
   go-test: ["go", "test", "./..."]

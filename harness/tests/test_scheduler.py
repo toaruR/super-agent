@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-CVE = r"D:/vagrant/harnesses/super-agent/.cve-venv/Scripts/python.exe"
+import os
+from pathlib import Path
+CVE = os.environ.get(
+    "CVE_PYTHON",
+    str(Path(__file__).resolve().parents[2] / ".cve-venv" / "Scripts" / "python.exe"),
+)
 CLI = ["-m", "harness.cli"]
 
 

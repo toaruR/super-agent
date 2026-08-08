@@ -273,7 +273,7 @@ agy -p "$(prompt_path)" --mode plan
 
 ```bash
 agy -p "$(prompt_path)" --mode plan \
-  --add-dir "D:/vagrant/harnesses/super-agent/probe/n3/caseC" \
+  --add-dir "<repo>/probe/n3/caseC" \
   --output-format json --json-schema rev_schema.json
 # status: SUCCESS, opinion_verdict: fail, cites: ['E-1','util/retry.py:12','util/retry.py:19']
 

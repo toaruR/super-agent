@@ -26,7 +26,7 @@ def test_load_vendors() -> None:
 
 def test_claude_command_shape() -> None:
     d = load_vendors("harness/config")["claude"]
-    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt", role="review")
+    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="./wt", role="review")
     assert cmd[0] == "claude"
     # A-7: claude has no `structured` key (rejects --json-schema), so NO schema flag
     assert "--json-schema" not in cmd
@@ -41,7 +41,7 @@ def test_claude_command_shape() -> None:
 
 def test_codex_command_shape() -> None:
     d = load_vendors("harness/config")["codex"]
-    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt", role="review")
+    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="./wt", role="review")
     assert cmd[0].endswith("node.exe")
     assert "codex.js" in cmd[1]
     assert cmd[2] == "exec"
@@ -60,10 +60,10 @@ def test_agy_command_shape() -> None:
     d = load_vendors("harness/config")["agy"]
     # review role: readonly `--mode plan` applied; worktree path is injected via
     # headless `--add-dir {worktree}` (implementer needs it too, reviewer sees it).
-    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="D:/wt", role="review")
+    cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="./wt", role="review")
     assert cmd[0] == "agy"
     assert "--mode" in cmd and "plan" in cmd
-    assert "--add-dir" in cmd and "D:/wt" in cmd
+    assert "--add-dir" in cmd and "./wt" in cmd
     # --mode plan appears once (from permission), --add-dir once (from headless)
     assert cmd.count("--mode") == 1
     assert cmd.count("--add-dir") == 1

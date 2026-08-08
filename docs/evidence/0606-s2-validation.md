@@ -155,7 +155,7 @@ reviewer down                                 -> judgment_unavailable
 ## 7. 再現方法
 
 ```bash
-cd D:/vagrant/harnesses/super-agent/probe/ws
+cd <repo>/probe/ws
 python fizz.py > evidence_E991.txt 2>&1; echo "exit_code=$?" >> evidence_E991.txt   # ①
 codex exec --json --output-schema reviewer_schema.json -s read-only "$(cat briefing.txt)"  # ②
 python adjudicate.py reviewer_out.json 0                                             # ③

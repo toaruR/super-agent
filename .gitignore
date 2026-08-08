@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 workspaces/
 harness/ledger/
+# 実環境依存の設定（サンプルは verification_env_sample.yaml）。各環境で作成する。
+harness/config/verification_env.yaml

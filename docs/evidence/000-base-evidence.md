@@ -181,7 +181,7 @@ claude に実装させ、**codex にレビューさせる**引き継ぎを実測
 ## 再現方法
 
 ```bash
-cd D:/vagrant/harnesses/super-agent/probe
+cd <repo>/probe
 # 構造化出力
 claude -p "..." --output-format json --json-schema "$(cat schema.json)" --tools ""
 codex exec --json --output-schema schema.json --skip-git-repo-check -s read-only "..."

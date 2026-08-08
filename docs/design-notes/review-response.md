@@ -112,7 +112,7 @@ severity=high の8件のうち、とくに効くもの:
 **実機で確認したところ、動いた。**
 
 ```console
-$ "C:/Users/toaru/AppData/Local/hermes/.../python.exe" -c "import sys;print('OK',sys.version.split()[0])"
+$ "<home>/AppData/Local/hermes/.../python.exe" -c "import sys;print('OK',sys.version.split()[0])"
 OK 3.11.11
 $ git --version
 git version 2.41.0.windows.1
