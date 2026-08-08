@@ -118,19 +118,31 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
     proc = run(cmd)
     if proc.returncode == 0:
         return {"path": path, "branch": branch, "ok": True, "cmd": cmd}
+    stderr = (proc.stderr or proc.stdout or "")
     # branch already exists / already checked out -> prune then retry once
-    if "already exists" in (proc.stderr or proc.stdout) or "already checked out" in (proc.stderr or proc.stdout):
+    if "already exists" in stderr or "already checked out" in stderr:
         if git is None:
             subprocess.run(["git", "worktree", "prune"],
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace", shell=False)
+        # retry without -b (reuse the existing branch)
         proc2 = run(["git", "worktree", "add", path, branch])
         if proc2.returncode == 0:
-            return {"path": path, "branch": branch, "ok": True, "cmd": ["git", "worktree", "add", path, branch]}
+            return {"path": path, "branch": branch, "ok": True,
+                    "cmd": ["git", "worktree", "add", path, branch]}
+        # existing branch is checked out at a *different* path (orphaned):
+        # generate a fresh unique branch name so the worktree can be created.
+        if "already checked out" in (proc2.stderr or proc2.stdout or ""):
+            import time as _time
+            suffix = int(_time.time() * 1000) % 100000
+            new_branch = f"{branch}__{suffix}"
+            proc3 = run(["git", "worktree", "add", path, "-b", new_branch])
+            if proc3.returncode == 0:
+                return {"path": path, "branch": new_branch, "ok": True,
+                        "cmd": ["git", "worktree", "add", path, "-b", new_branch]}
         return {"path": path, "branch": branch, "ok": False,
                 "error": (proc2.stderr or proc2.stdout).strip()}
-    return {"path": path, "branch": branch, "ok": False,
-            "error": (proc.stderr or proc.stdout).strip()}
+    return {"path": path, "branch": branch, "ok": False, "error": stderr.strip()}
 
 
 def teardown_worktree(task_id: str, root: str = "workspaces",
