@@ -292,7 +292,16 @@ def drive(
     # is implemented. Each task's channels are already parallel inside _run_task.
     if parallel_tasks:
         layers = topo_layers(tasks)
-        for layer in layers:
+        # Use a while-loop (not `for layer in layers`) because the planner may
+        # REVISE `tasks` mid-flight (merge over-split tasks, carve investigation
+        # tasks). We re-derive `layers` after each replan and restart the loop
+        # from the front so the revised DAG is actually executed — a `for`
+        # loop would keep iterating the stale original `layers` and silently
+        # ignore the planner's merge.
+        idx = 0
+        while idx < len(layers):
+            layer = layers[idx]
+            idx += 1
             # --- Adaptive re-planning (planner) BEFORE this layer ---
             if adaptive and seq is not None:
                 events = seq.load()
@@ -304,13 +313,19 @@ def drive(
                     seq=seq, dry_run=dry_run,
                 )
                 if rep.get("ok") and rep.get("tasks"):
-                    tasks = rep["tasks"]
+                    new_tasks = rep["tasks"]
+                    if [t["task_id"] for t in new_tasks] != [t["task_id"] for t in tasks]:
+                        # DAG changed: adopt it and RESTART the layer loop from
+                        # the front with the revised layers so nothing stale runs.
+                        tasks = new_tasks
+                        by_id = {t["task_id"]: t for t in tasks}
+                        order = topo_order(tasks)
+                        layers = topo_layers(tasks)
+                        idx = 0
+                        continue
+                    tasks = new_tasks
                     by_id = {t["task_id"]: t for t in tasks}
                     order = topo_order(tasks)
-                    # Re-derive layers from the revised tasks so the rest of the
-                    # loop uses the planner's (possibly merged/pruned) DAG, not
-                    # the stale initial one.
-                    layers = topo_layers(tasks)
                 # Investigation tasks run FIRST (before this layer's real work).
                 for it in rep.get("investigation_needed", []):
                     itid = it.get("task_id", "investigate")

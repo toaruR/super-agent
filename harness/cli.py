@@ -541,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--implement-vendors", default=None,
                     help='multi-channel override, e.g. "agy:2,hermes:3" '
                          '(each entry becomes one parallel implement channel)')
-    dr.add_argument("--parallel-tasks", action="store_true",
+    dr.add_argument("--parallel-tasks", action="store_true", default=True,
                     help="run independent tasks (topo layers) concurrently during "
                          "implement+review (integrate stays serial). "
                          "NOTE: task-level parallelism is ON by default; this flag "
