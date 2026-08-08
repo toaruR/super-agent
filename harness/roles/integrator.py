@@ -88,7 +88,12 @@ def integrate(
     # ensure we are on the target branch inside the main repo (use repo root)
     repo_root = wt.parent.parent if str(wt).endswith(task_id) else wt
     # the worktree is checked out at branch; merge into target from the main checkout
-    r = _git(["checkout", target_branch], cwd=str(wt.parent.parent), dry_run=dry_run)
+    # auto-create the target branch if it does not exist yet (e.g. a fresh
+    # feature branch): try to check out the existing branch first; if that
+    # fails (branch missing), create it with -b.
+    r = _git(["checkout", target_branch], cwd=str(repo_root), dry_run=dry_run)
+    if r["returncode"] != 0 and not dry_run:
+        r = _git(["checkout", "-b", target_branch], cwd=str(repo_root), dry_run=dry_run)
     if r["returncode"] != 0 and not dry_run:
         emit(task_id, "integration.failed", step="checkout", detail=r["stderr"][:300])
         return {"ok": False, "task_id": task_id, "error": r["stderr"]}

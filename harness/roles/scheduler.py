@@ -97,15 +97,17 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
                        capture_output=True, text=True,
                        encoding="utf-8", errors="replace", shell=False)
 
-    # 1) branch already checked out in an existing (live) worktree -> reuse it
+    # 1) this exact path is already a live worktree -> reuse it
     lst = run(["git", "worktree", "list", "--porcelain"]).stdout or ""
     current_path = None
     for line in lst.splitlines():
         if line.startswith("worktree "):
             current_path = line[len("worktree "):].strip()
         elif line.startswith("branch refs/heads/") and current_path:
-            existing = line[len("branch refs/heads/"):].strip()
-            if existing == branch and Path(current_path).exists():
+            # match by path (not just branch name) so a stale worktree on a
+            # different path (e.g. a previous single-channel task/T1) is never
+            # reused for a composite id like T1__agy_0.
+            if current_path == path and Path(current_path).exists():
                 return {"path": current_path, "branch": branch, "ok": True,
                         "reused": True, "cmd": cmd}
 
@@ -172,11 +174,15 @@ def teardown_worktree(task_id: str, root: str = "workspaces",
 def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
              role: str = "implementer", lease_seconds: int = 3600,
              root: str = "workspaces", dry_run: bool = False,
-             seq=None) -> dict:
+             create_worktrees: bool = True, seq=None) -> dict:
     """Schedule the given task DAG: serial worktree creation + lease issuance.
 
     ledger events per task: worktree.created (or worktree.error) + task.leased.
     Returns {"ok": True, "order": [...]} or {"ok": False, "errors": [...]}.
+
+    When create_worktrees is False, only leases are issued (the actual worktree
+    is created later by the channel pipeline, e.g. in drive's multi-channel mode)
+    so we don't leave a parent worktree behind that nothing tears down.
     """
     order = topo_order(tasks)
     by_id = {t["task_id"]: t for t in tasks}
@@ -189,15 +195,16 @@ def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
                 seq.propose(tid, "task.scheduled", dry_run=True,
                             worktree_cmd=create_worktree(tid, root, dry_run=True)["cmd"])
             continue
-        wt = create_worktree(tid, root)
-        if wt["ok"]:
-            if seq is not None:
-                seq.propose(tid, "worktree.created", path=wt["path"], branch=wt["branch"])
-        else:
-            errors.append(f"{tid}: worktree creation failed: {wt['error']}")
-            if seq is not None:
-                seq.propose(tid, "worktree.error", error=wt["error"])
-            continue
+        if create_worktrees:
+            wt = create_worktree(tid, root)
+            if wt["ok"]:
+                if seq is not None:
+                    seq.propose(tid, "worktree.created", path=wt["path"], branch=wt["branch"])
+            else:
+                errors.append(f"{tid}: worktree creation failed: {wt['error']}")
+                if seq is not None:
+                    seq.propose(tid, "worktree.error", error=wt["error"])
+                continue
         lease_until = time.time() + lease_seconds
         if seq is not None:
             seq.propose(tid, "task.leased", vendor=vendor, role=role,
