@@ -1,802 +1,334 @@
-# 異ベンダー・エージェントチーム — 大枠設計 (v3)
+# 仕様（spec）
 
-- 版: v3（v1→v2→v3 の反復結果。採点は `design-notes/scoring.md`）
-- 前提の実測: `evidence/000-base-evidence.md` / ゴールと評価基準: `design-goals.md`
-- 対象: Claude Code / Codex / Antigravity(agy) / Hermes ほか
+super-agent ハーネスの**全仕様**をまとめる。使い方（コマンドの実行例）は `usage.md` を、システムの設計思想（なぜこうなっているか）は `design-notes/architecture-v3.md` を参照。
 
 ---
 
-## 0. 設計の中心命題
+## 1. システム概要
 
-実測 E-4 が本設計の出発点である。
+super-agent は、複数ベンダー（Claude Code / Codex / Antigravity(agy) / Hermes 等）のエージェントを「交換可能な作業員」として扱い、要件→設計→分解→実装→レビュー→統合→自己改良のパイプラインを駆動するハーネス。
 
-> claude が書いた**論理的に正しい**コードを codex がレビューし、**fail** と判定した。
-> 原因は成果物ではなく、**レビュア側の実行環境**（python が見つからない）だった。
+- **実行と判定の分離**: 決定的な検証はハーネスが唯一の環境（CVE: Controlled Verification Environment）で実行し、エージェントは「証拠を読む」だけ。
+- **ベンダー抽象化**: ベンダー呼び出しは `config/vendors.yaml` の宣言のみで行う（新ベンダー追加は yaml 編集のみ、コード変更なし）。
+- **台帳（ledger）**: 全イベントを append-only の `harness/ledger/events.jsonl` に記録。ダッシュボード・evolve がこれを読む。
+- **検証ホワイトリスト（H2）**: 受入基準（acceptance）は `verifiers.yaml` に登録された verb のみ実行可能。シェル展開なし。
 
-ここから導かれる命題:
+### 用語: DAG（タスク依存グラフ）
 
-> **マルチエージェントの難所は「連携」に留まらず、「判定の信用」が独立の難所となる。**
-> エージェントに「動かして確かめて合否を言え」と頼む限り、我々が測っているのは
-> 成果物の品質ではなく**そのエージェントの環境**である。（N=1 の実測に基づく）
+本システムの中心データ構造。**DAG = Directed Acyclic Graph（有向非巡回グラフ）**。
 
-したがって本設計の背骨は次の一点に置く。
+- **Directed（有向）**: タスク間に「依存」の向きがある。タスク A がタスク B に依存するなら、A → B（B は A が終わらないと始められない）。
+- **Acyclic（非巡回）**: 循環依存がない。A→B→C→A のようなループは作れない（作るとデッドロック）。
+- これを **トポロジカル順序（topo order）** で層（レイヤー）に分解し、同じレイヤー内のタスクは互いに依存がないため**並行実行**できる。
 
-> ## 実行と判定を分離する。
-> **決定的な検証はハーネスが唯一の環境で実行し、エージェントは「証拠を読む」だけにする。**
+super-agent では、設計書（spec）から `decomposer` がタスクを分解して DAG を作り、`plan` / `drive` がその DAG に従って実行する。タスク定義ファイル（Markdown）の `依存:` フィールドがこの辺のエッジを記述する（詳細は §8）。
 
-エージェントは賢い個人ではなく、**交換可能な作業員**として扱う。
-信頼は人格ではなく、**証拠と手続き**に置く。
+パッケージ構成:
+
+```
+harness/
+  cli.py                 # 全サブコマンドのエントリ
+  core/
+    invoke.py            # ベンダー呼び出しアダプタ（コマンド組み立て・リトライ・結果抽出）
+    ledger.py            # 台帳（append-only + Sequencer）
+    verifiers.py         # verb -> argv 解決（ホワイトリスト）
+    cve.py               # CVE ラッパ（検証環境での実行）
+    adjudicate.py        # 判定（CVE 証拠から合否を分類）
+    brief.py             # 簡報構築
+  roles/
+    architect.py         # design（ADR 記録）
+    decomposer.py        # タスク分解（DAG）
+    planner.py           # 再計画（adaptive）
+    implementer.py       # 実装（worktree 隔離）
+    review_flow.py       # レビュー（読み取り専用）
+    integrator.py        # 統合
+    improver.py          # evolve（自己改良）
+    drive.py             # パイプライン一括駆動
+    dashboard.py         # 台帳 -> モデル -> 描画
+    scheduler.py         # タスク並行スケジューラ
+  config/
+    vendors.yaml         # ベンダー宣言 + ロール既定
+    verifiers.yaml       # 検証 verb ホワイトリスト
+    verification_env_sample.yaml  # CVE 設定サンプル
+```
 
 ---
 
-## 1. 全体像
+## 2. 台帳（ledger）仕様
 
-```
-        ┌──────────────────────────────────────────────┐
- 人間    │ L5 承認ゲート  approvals/ (要判断だけが上がる) │
- ↕      ├──────────────────────────────────────────────┤
-        │ L4 検証と信用                                  │
-        │   決定的検証器(唯一環境) → 証拠 → 判定 → 分類器 │
-        ├──────────────────────────────────────────────┤
-        │ L3 統制  タスクDAG・役割割当・予算・リース       │
-        ├──────────────────────────────────────────────┤
-        │ L2 台帳(単一真実源)  append-only JSONL + 派生状態│
-        ├──────────────────────────────────────────────┤
-        │ L1 アダプタ  能力宣言(宣言データ)・呼出正規化    │
-        ├──────────────────────────────────────────────┤
-        │ L0 基盤  git worktree 隔離 / 唯一の検証環境      │
-        └──────────────────────────────────────────────┘
-              ↓ 呼び出しは常に「一発実行」
-        claude -p / codex exec / agy -p   （常駐しない）
+**ファイル**: `harness/ledger/events.jsonl`（1イベント = 1行 = 1 append 書き込み、改行終端）
+
+**イベントスキーマ**:
+
+```json
+{"event_id": "<task_id>:<seq>", "task_id": "<id>", "seq": <int>, "type": "<type>", ...fields}
 ```
 
-**情報の流れの鉄則**: エージェント同士は直接会話しない。
-すべての伝播は **L2 台帳を経由**する。エージェントの入力は台帳から生成した簡報(briefing)、
-出力は型付きJSON。散文の受け渡しは存在しない。
+- `event_id`: `{task_id}:{seq}` で一意。重複する event_id はべき等に無視される。
+- `seq`: 各 task_id ごとに単調増加。
+- `type`: イベント種別（後述）。
+
+**原子性規則（ARCHITECTURE §5.1, H3）**:
+
+- 1イベント = 1行 = 1 append 書き込み（OS が行サイズでアトミック保証）。
+- ロード時、改行で終わらない末尾行は破棄（クラッシュ復旧）。
+- 追加は `Sequencer` プロセスのみが行う。他は提案（propose）をキューに渡す。
+
+**主なイベント type**:
+
+| type | 意味 |
+|---|---|
+| `task.created` | タスク定義 |
+| `task.implemented` | 実装完了（implementer） |
+| `verification.run` | 検証（CVE）実行 |
+| `reviewer.invoked` | レビュア呼び出し（vendor 記録） |
+| `judgment` | 裁定（verdict: pass/fail/reject/blocked 等） |
+| `integrated` / `integrated.failed` | 統合結果 |
+| `integration.touch_violation` | 許可外ファイル変更の差し戻し |
+| `conflict` | 統合時のコンフリクト |
+| `design.proposed` | evolve 提案 |
+
+**実装**: `harness/core/ledger.py`（`Ledger` / `Sequencer`）。
 
 ---
 
-## 2. 基本方針（5つ）
+## 3. ベンダー抽象化（vendors.yaml）仕様
 
-| # | 方針 | 根拠 |
-|---|---|---|
-| P1 | **一発実行、常駐なし** | 本機に `inotifywait` 無し(E-1)。常駐は復旧を難しくする。プロセスは落ちて当然のものとして扱う |
-| P2 | **実行と判定の分離** | E-4。合否の根拠は唯一環境の実行結果のみ |
-| P3 | **証拠なき判定は無効** | E-4 / A-3。判定は必ず証拠IDを引用する |
-| P4 | **状態は台帳にのみ在る** | プロセス内状態は落ちたら消える。台帳は append-only |
-| P5 | **能力は宣言、分岐は禁止** | ベンダー差はデータで表現し、コードに `if vendor ==` を書かない |
+**ファイル**: `harness/config/vendors.yaml`
 
----
-
-## 3. L0 基盤 — 隔離と「唯一の検証環境」
-
-### 3.1 作業隔離: タスク1件 = git worktree 1本
-
-```
-workspaces/<task_id>/     ← git worktree（ブランチ task/<task_id>）
-```
-
-並列実装が同一ファイルを壊し合う事故を、設計段階で不可能にする。
-統合は L4 通過後に Integrator がまとめて行う。
-
-### 3.2 ★唯一の検証環境 (Canonical Verification Environment; CVE)
-
-**本設計で最も重要な構成要素。**
-
-- テスト・ビルド・lint・実行は **CVE でのみ** 走る。
-- CVE は1つだけ定義され、そのバージョンは台帳に記録される。
-- **エージェントのサンドボックス内での実行結果は、合否の根拠として採用しない。**
+### 3.1 トップレベル `roles:`（ロール既定の単一ソース）
 
 ```yaml
-# config/verification_env.yaml
-cve:
-  id: "local-win-py311"
-  shell: bash
-  interpreters:
-    # Windows git-bash は「C:/...」表記をそのまま解釈する。
-    # このパスは実行環境ごとに書き換えること（ホストが変われば動かない）。
-    python: "<home>/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe"
-  probe:            # 起動時セルフチェック。ここが落ちたら全タスクを止める
-    - "python -c 'import sys;print(sys.version)'"
-    - "git --version"
+roles:
+  design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
+  planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }
+  implement:                # チャンネルリスト（各エントリ = 1チャンネル = 独立 worktree）
+    - { vendor: hermes, model: hy3:Free, effort: high }
+    - { vendor: hermes, model: hy3:Free, effort: high }
+  review:    { vendor: agy, model: gemini-3.6-flash, effort: high }
 ```
 
-> **★実測で確認済み**: このサンプルは git-bash 上でそのまま動く（`python 3.11.11` / `git 2.41.0` を出力）。
-> 初期レビューで「`shell: bash` なのに Windows 絶対パスはおかしい」と指摘されたが、
-> **誤検出だった**（EVIDENCE A-? / 詳細は `evidence/0606-permission-control.md` と `design-notes/review-response.md` §3.1）。
-> ただしパスは環境依存であり、**別マシンでは書き換えが必要**。
+- `implement` は**リスト**。各エントリが1チャンネル（独立 worktree で並列）。単一辞書 `{vendor,model,effort}` も後方互換（1チャンネル化）。
+- cli は `--vendor`/`--model`/`--effort` が未指定のとき、ここから解決する。
+- 現在の既定: `implement` = hermes(hy3:Free)×5、`review` = agy(gemini-3.6-flash)。
 
-E-4 の偽fail は、この一枚で構造的に消える。
-codex の環境に python が無くても、CVE に在れば検証は通る。
+### 3.2 ベンダー宣言スキーマ
 
-> ### ★H4 解決: 証拠は「成果物のハッシュ」に束縛する（独立レビューの最重要指摘）
-> 実測前は stdout/exit_code しか固定しておらず、「どの成果物の証拠か」が保証されていなかった。
-> 以下を証拠レコードに**必須**とする（実装: `probe/n3/cve.py` で `tree_hash` を束縛済み）:
-> ```jsonc
-> {"evidence_id":"E-991",
->  "tree_hash":"8dcf0f997d4e07b1",   // ★worktree の git tree ハッシュ（成果物の内容束縛）
->  "cve":"local-win-py311",
->  "cmd":"python -m pytest -q tests/",
->  "exit_code":0, "stdout":"...", "stderr":"..."}
-> ```
-> **`tree_hash` が一致しない証拠は、裁定時に `advisory` 扱い（採用しない）**。
-> これにより「証拠と成果物の対応」が保証され、中心命題（証拠に基づく裁定）の前提が成立する。
-> 実測: 同一 worktree を**別パスへ再帰コピー**した上で `tree_hash` を再計算しても一致した
->（`7b8f8ae90f23dce4`、evidence/0606-n3-large-diff.md §0）。証拠の再現性が確認された。
-> **根拠**: H4 は C2（判定信頼性）の満点根拠を補完する。
-逆に CVE のプローブが落ちていれば、**タスクを開始せずに人間へ上げる**（環境障害をタスク失敗として記録しない）。
+各ベンダー（claude / codex / agy / hermes）は以下のキーを持つ:
+
+| キー | 意味 |
+|---|---|
+| `model_flag` | モデル指定フラグ（例: `--model`, `-m`） |
+| `effort_style` | `flag`（`--effort <lvl>`）/ `config`（`-c key=lvl`）/ `model_suffix`（モデル名に付与） |
+| `effort_flag` | effort_style=flag 時のフラグ名（例: `--effort`, `--reasoning`） |
+| `effort_key` | effort_style=config 時のキー名 |
+| `headless` | 非対話実行コマンドテンプレート。`{prompt}` / `{worktree}` が置換される |
+| `prompt_stdin` | true のときプロンプトを stdin 経由で渡す（codex 等） |
+| `structured` | 構造化出力フラグ（`flag` + `form: inline|file`）。ないベンダーは prompt 内指示 |
+| `result_path` | 応答 JSON から取り出すパス（claude は `result`、他は空=全体） |
+| `session.id_origin` | `caller`（呼び側が UUID 採番）/ `callee`（ベンダーが出力） |
+| `session.resume_flag` | セッション再開フラグ（例: `--resume`, `--resume-session-id`） |
+| `session.resume_extra` | 再開時に追加する引数（codex は `--full-auto`） |
+| `permission.readonly` | 読み取り専用ロール（design/review）に付与するフラグ |
+| `brief_mode` | 簡報の渡し方（`path`） |
+
+### 3.3 モデル名の正規化（normalize_model）
+
+yaml に書かれたモデル名はコード側で実名に正規化される（yaml は書き換えない）:
+
+- `hy3:Free` → `tencent/hy3:free`
+- `hy3` → `tencent/hy3:free`
+- リストにない名前はそのまま通す（サイレントな書き換えなし）
+
+**実装**: `harness/core/invoke.py` の `MODEL_ALIASES` / `normalize_model()`。
 
 ---
 
-## 4. L1 アダプタ — 能力宣言（コード分岐を書かない）
+## 4. 検証（verifiers.yaml + CVE）仕様
 
-ベンダー差は **YAMLの宣言**として表現する。新ベンダー追加＝ブロック1つ追加。
+### 4.1 verb ホワイトリスト（H2）
+
+**ファイル**: `harness/config/verifiers.yaml`
 
 ```yaml
-# config/vendors.yaml
-claude:
-  headless:  ["claude","-p","{prompt}"]
-  structured: {flag: "--json-schema", form: inline}      # 実測: インライン文字列
-  session:
-    id_origin: caller                                     # ★呼び側がUUIDを決められる
-    start: ["--session-id","{sid}"]
-    resume: ["--resume","{sid}"]
-  permission:
-    # ★実測(PERMISSION_CONTROL §4): "--allowedTools Read,Grep,Glob" は読み取りは通るが
-    #   実行は防げない(暗黙の PowerShell/Bash が残る)。プロンプトには「実行するな」を併記。
-    #   実行を完全に止めるには "--permission-mode plan" だが、これは Write を使う。
-    readonly:  ["--allowedTools","Read,Grep,Glob"]
-    write:     ["--permission-mode","acceptEdits"]
-  result_path: ".structured_output"
-  cost_path:   ".total_cost_usd"                          # 実測: USD直値を返す唯一の存在
-  reliable_exit_code: true
-  brief_mode: path                                        # ★パス渡しが既定(§5.6)
-
-codex:
-  headless:  ["codex","exec","{prompt}","--skip-git-repo-check"]
-  structured: {flag: "--output-schema", form: file}       # ★ファイル渡しのみ
-  session:
-    id_origin: callee                                     # ★ツール側が採番
-    id_capture: {stream_event: "thread.started", field: "thread_id"}
-    resume: ["exec","resume","{sid}"]
-  permission:
-    # ★実測(PERMISSION_CONTROL §4): "--sandbox read-only" は書込は防ぐが実行は防がない。
-    #   ただし read-only は多層防御の一枚として必ず付ける。
-    readonly:  ["--sandbox","read-only"]
-    write:     ["--sandbox","workspace-write"]
-    # ★実測A-2: resume では -s が使えない。再開時はこちらを使う
-    resume_readonly: ["-c",'sandbox_mode="read-only"']
-    resume_write:    ["-c",'sandbox_mode="workspace-write"']
-  result_path: "last(.item.type==agent_message).text"     # ★実測A-3: 必ず最後を採る
-  cost_path:   null                                       # トークンのみ
-  reliable_exit_code: true
-  brief_mode: path
-
-agy:
-  headless:  ["agy","-p","{prompt}"]
-  structured: {flag: "--json-schema", form: file_or_string}
-  session:
-    id_origin: callee
-    id_capture: {json_field: "conversation_id"}
-    resume: ["--conversation","{sid}"]
-  permission:
-    # ★実測(PERMISSION_CONTROL §7.4): "--mode plan --add-dir {worktree}" が最適。
-    #   "--sandbox" 単体では read_file も拒否される(レビュー不能)。
-    #   "--mode plan" のみだと workspace 外を読めない。"--add-dir {worktree}" で解決。
-    #   {worktree} はアダプタが動的に差し込む。実行は完全に阻止される。
-    readonly:  ["--mode","plan","--add-dir","{worktree}"]
-    write:     ["--dangerously-skip-permissions"]
-  result_path: ".structured_output"
-  cost_path:   null
-  brief_mode: path
+verifiers:
+  pytest:     [".cve-venv/Scripts/python.exe", "-m", "pytest", "-q"]
+  unittest:   [".cve-venv/Scripts/python.exe", "-m", "unittest"]
+  mypy:       [".cve-venv/Scripts/python.exe", "-m", "mypy"]
+  ruff:       [".cve-venv/Scripts/python.exe", "-m", "ruff", "check"]
+  node-test:  ["node", "--test"]
+  go-test:    ["go", "test", "./..."]
 ```
 
-### 4.1 宣言が吸収する実測差分（すべて evidence/000-base-evidence.md 由来）
+- 受入基準は `{"verb": <登録済み verb>, "args": [...], "expect_exit": <int>}` のみ許可。
+- 未登録 verb は構造検査で拒否（実行前に弾かれる）。
+- args はシェル展開せず逐次引数で渡す（`shell=False`）。`rm -rf /` のような悪意ある引数も文字列として扱われ、決して実行されない。
 
-| 実測 | 素朴な設計だとどうなるか | 本設計の吸収先 |
-|---|---|---|
-| A-1 セッションID採番主体が違う | 統制側で事前採番 → codex/agy で破綻 | `id_origin` + **ハンドル間接化**（§5.3） |
-| A-2 `codex exec resume` が `-s` を拒否 | 再開時に権限がドリフト、または落ちる | `resume_*` を別宣言し、**毎回再宣言** |
-| A-3 `agent_message` が複数出る | 空の先頭JSONを拾い誤判定 | `result_path: last(...)` |
-| A-4 コスト単位が違う | 予算制御が claude でしか効かない | トークンへ正規化、価格表はハーネス側 |
-| 構造化の渡し方が inline/file で違う | 文字列連結が破綻 | `structured.form` |
-| **A-5 同じ `--json-schema` でも渡し方が逆** | claude=本文/codex=ファイルパス。逆だとエラー | `structured.form`（claude: inline, codex: file） |
-| **A-6 権限フラグの意味がベンダーで違う** | 「read-only」と書いたつもりが挙動がバラバラ | `permission.readonly` をベンダーごとに正しく宣言 |
-| **★「read-only」は実行を止めない** | `--sandbox read-only` / `--allowedTools` でもコマンドは走る | 裁定器のみで独立性を担保（§7.2）。権限は多層防御の一枚 |
+### 4.2 CVE（Controlled Verification Environment）
 
-> **A-6 の詳細（致命的）**: 実測（`evidence/0606-permission-control.md` §4, §7）で、
-> 権限フラグは**実行を阻止しない**ことが判明した。
-> - claude `--disallowedTools "Bash"` → **`PowerShell` ツールで実行された**
-> - claude `--allowedTools` のみ → **許可外の `Bash` が使われた**（強制力なし）
-> - codex `--sandbox read-only` → **コマンド実行される**。防ぐのは書込のみ
-> - agy `--mode plan --add-dir` → **実行を完全阻止**（3者中最も厳格）
->
-> 検証は「実行しなければ答えられない値」（ランダムファイルの SHA-256）で行い、
-> claude/codex は正解を返した＝実際に実行していた。
-> **したがって判定独立性は権限ではなく §7.2 の裁定器でのみ担保される。**
+- 検証は CVE（ハーネス側が管理する唯一の環境）で実行される。
+- 環境設定: `verification_env.yaml`（存在しない場合は `verification_env_sample.yaml` にフォールバック、警告出力）。
+- 実行は `probe/n3/cve.py` の `verify` を再利用（pass/fail の判定はしない。判定は adjudicator の責務）。
+- 検証フロー: 許可リスト検証 → CVE で probe+acceptance 実行 → 証拠を台帳に記録 → レビュアが証拠を読んで裁定。
 
-**不変条件**: `if vendor == "codex"` をハーネス本体に書いた時点で設計違反。分岐は必ず宣言に置く。
+**実装**: `harness/core/verifiers.py`（`VerifierRegistry`）、`harness/core/cve.py`（`CVE`）。
 
 ---
 
-## 5. L2 台帳 — 単一真実源
+## 5. コマンド仕様
 
-### 5.1 形式: append-only の JSONL
+全コマンドは `harness/cli.py` のサブコマンド。共通: `--dry-run` は実行をスキップして計画のみ出力。
 
-```
-ledger/events.jsonl        # 追記専用。過去は書き換えない
-ledger/state/              # events から再構成される派生ビュー（消しても再再生可）
-```
-
-「上書き」を排することで、並行書き込みの競合と、状態の履歴喪失を同時に解決する。
-**派生ビューはキャッシュに過ぎず、真実は常にイベント列**にある。
-
-> ### ★H3 解決: 追記の原子性（独立レビューで指摘された未定義箇所）
-> append-only だけでは不十分。同時追記のインターリーブ・クラッシュ途中書込み・
-> 重複を防ぐため、以下を規定する（実装: `probe/n3/ledger.py` を参照）:
-> - **1イベント = 1行 = 1 `write(append)`**。行は改行で区切り、部分書込みは無い前提で書く。
-> - **イベントID の一意性**: 各イベントに `{task_id}:{seq}` または UUIDv7（時系列順）を付与。
->   同一IDの再出現は**冪等として無視**（重複排除）。
-> - **クラッシュ復旧**: 読み込み時に「末尾が改行で終わらない不完全行」を棄却してから解析。
->   fsync はイベントの重要度に応じて選択（judgment 等は fsync、heartbeat は非同期）。
-> - **並行書き込み**: 単一プロセス（Scheduler）だけが `events.jsonl` に追記する。
->   他エージェントは「イベントの提案」を Scheduler へ送り、Scheduler が連番を振って追記。
->   → 複数プロセスが同時にファイルを開く競合を構造的に排除（採番の集中化）。
-> - **検証**: `probe/n3/ledger_test.py` で、Nプロセス同時追記→再構成で順序・重複が保たれることを確認予定（※現時点は設計のみ、未実装コードは未追加）。
->
-> **根拠**: H3 は「クラッシュ耐性の基盤」として指摘された。上記により C4（障害時回復）の満点根拠が補完される。
-
-### 5.2 イベントの型（抜粋）
-
-```jsonc
-{"ts":"...","type":"task.created","task_id":"T-012","parent":"T-003","spec_id":"S-004"}
-{"ts":"...","type":"task.leased","task_id":"T-012","role":"implementer",
- "agent":"claude","lease_until":"...","budget_tokens":120000}
-{"ts":"...","type":"agent.invoked","task_id":"T-012","handle":"H-77",
- "vendor_session":"7a13795a-...","permission":"write"}
-{"ts":"...","type":"artifact.produced","task_id":"T-012","paths":["fizz.py"],"commit":"a1b2c3d"}
-{"ts":"...","type":"verification.run","task_id":"T-012","evidence_id":"E-991",
- "cve":"local-win-py311","exit_code":0}
-{"ts":"...","type":"judgment","task_id":"T-012","verdict":"pass","cites":["E-991"]}
-{"ts":"...","type":"escalation","task_id":"T-012","reason":"budget_exceeded"}
-```
-
-### 5.3 ★ハンドル間接化（A-1 への回答）
-
-統制側は**論理ハンドル `H-77`** だけを扱い、ベンダーの実IDは対応表に隠す。
+### 5.1 `run` — 要件記録 + ベンダー呼び出し（Stage A）
 
 ```
-H-77 → {vendor: claude, session: "7a13795a-...", id_origin: caller}
-H-78 → {vendor: codex,  session: "019fd69e-...", id_origin: callee}
+super-agent run <requirement> [--vendor V] [--model M] [--effort E] [--dry-run]
 ```
 
-`id_origin: callee` の場合、ハンドルは初回実行**後**に実IDで埋まる。
-上層は「ハンドルに向かって喋る」だけでよく、採番主体の差を知らない。
-
-### 5.4 記憶の四層と役割分担（「全部共有」を明確に否定する）
-
-実測 E-2b の通り、各ベンダーは**自前のセッション記憶を持つ**。これは共有できない。
-共有しようとすれば、全文脈を毎回転写することになり、E-5 のコストで破綻する。
-したがって**共有するものと、しないものを分ける**。
-
-| 層 | 実体 | 共有 | 寿命 | 用途 |
-|---|---|---|---|---|
-| **憲法** | `constitution.md` | 全員に毎回注入 | 恒久 | 禁止事項・出力契約・安全規則。短く保つ |
-| **台帳** | `ledger/events.jsonl` | 全員が**簡報経由**で読む | 恒久 | 決定・判定・証拠。★これが唯一の真実源 |
-| **作業文脈** | `workspaces/<task>/` | そのタスクの担当のみ | タスク中 | コードと中間生成物 |
-| **ベンダー内記憶** | 各CLIのセッション | **共有しない（できない）** | セッション中 | そのエージェントの思考の連続性 |
-
-**設計判断**: ベンダー内記憶は「あれば速い、無くても正しい」ものとしてのみ使う。
-セッションが失われても、簡報を作り直せば別のエージェントが仕事を継げる。
-**記憶は最適化であって、正しさの前提にしない。**
-
-> **★C5 補完: ベンダー内記憶の失効検出**. 独立レビューで「失効検出が未設計」と指摘された。
-> 解決: ベンダー内記憶の有効性を **リース heartbeat（§6.3）に従属させる**。
-> リースが切れた（= heartbeat が止まった）時点で、そのセッションの記憶は
-> 「無効」とみなし、次回は簡報から再構築する。記憶を「正しさの前提」にしない方針と整合。
-
-### 5.5 簡報（briefing）— 文脈予算の実装
-
-台帳全体を渡さない。役割ごとに**必要な断面だけ**を組み立てて渡す。
-
-| 役割 | 受け取る簡報 | 予算 |
-|---|---|---|
-| Architect | 要求 + 制約 + 既存の決定一覧 | 中 |
-| Decomposer | 仕様 + 能力表 + 依存関係 | 小 |
-| Implementer | 自タスクの仕様 + 受入基準 + 触ってよいパス | 中 |
-| Reviewer | 差分 + **証拠ログ** + 受入基準（★ソース全体は渡さない） | 小 |
-| Integrator | 判定済み一覧 + 衝突情報 | 小 |
-
-E-5 の実測（16行のレビューに13.8万トークン）が示す通り、
-**渡す文脈を絞ることは節約ではなく、成立条件**である。
-
-> **★C6 補完: 価格表の更新運用**. A-4 で「価格表はハーネス側」としたが、
-> 更新運用が未定義だった。解決: 価格表を `config/prices.yaml` に外部化し、
-> (a) 起動時に読み込み、(b) **週1回の自動 fetch + 人間承認ゲート**（§8.1）で更新、
-> (c) 旧価格は N バージョン保持（コスト再計算の再現性）。
-> ベンダーがトークン数のみ返す（A-4）前提は崩さず、USDへの換算根拠を運用込みで定義。
-
-### 5.6 簡報の渡し方 — ★パス渡しが既定（旧「埋め込み必須」は撤回）
-
-> **⚠ 本節は 2026-08-06 に全面改訂した。**
-> 旧版は「簡報は中身の埋め込みでなければならない」と書いていたが、
-> これは **read-only の実装を1通りしか試さずに出した誤った一般化**だった。
-> 実測の詳細は [`evidence/0606-permission-control.md`](evidence/0606-permission-control.md)。
-
-**既定はパス渡し**（証拠＋ファイルパスのみ渡し、ソース本文は渡さない）。
-レビュアには読み取りツールの権限を明示的に与える。
-**ただしベンダーによって可否が違う**ため、アダプタ宣言に `brief_mode` を持たせる:
-
-```yaml
-claude: { brief_mode: path,  review_flags: ["--allowedTools","Read,Grep,Glob"] }
-codex:  { brief_mode: path,  review_flags: ["--sandbox","read-only"] }
-agy:    { brief_mode: path,  review_flags: ["--mode","plan","--add-dir","{worktree}"] }
-```
-
-```bash
-claude -p "$BRIEF" --allowedTools "Read,Grep,Glob" --output-format json --json-schema "$(cat s.json)"
-codex exec --sandbox read-only -C "$WORKTREE" --json --output-schema s.json "$BRIEF"
-```
-
-**なぜパス渡しが優れるか**（Case C の同一バグでの比較）:
-
-| 方式 | 指摘数 | 波及の指摘 |
-|---|---|---|
-| 埋め込み（729tok） | 1件 | ❌ |
-| **パス渡し** | **3件** | ✅ **`cache.py` への波及と、`retry_on` が無影響であることの限定** |
-
-埋め込みは「渡した分しか見えない」。パス渡しは**レビュアが必要な範囲を自分で辿れる**。
-§5.7 の「シグネチャに落とすと本体の欠陥が見えない」という限界は、**パス渡しなら発生しない**。
-
-> **旧版が失敗した理由**: 「実行するな」という**自然言語だけ**で制御しようとしたため、
-> レビュアが「読むこともできない」と解釈した。
-> **ツール権限を明示的に与えれば起きない**。禁止は自然言語ではなくフラグで表現する。
-
-**埋め込みは代替手段に降格**: レビュアにツール権限を渡せない場合や、
-worktree にアクセスできない環境でのみ使う（§5.7 の階層化はその場合の最適化）。
-
-**パス渡しの簡報の形**（ソース本文は入れない）:
+### 5.2 `architect` — 設計決定を ADR として記録（Stage 1）
 
 ```
-ROLE: reviewer (read-only). Verification was ALREADY performed by the CVE.
-Do NOT execute anything. Use your Read/Grep/Glob tools to read the source.
-
-Code under review: <worktree絶対パス>
-  - <変更ファイルのパス列挙>
-
-=== EVIDENCE (CVE-executed) ===
-[E-1] cmd=... exit_code=... <出力末尾>
+super-agent architect <requirement> [--spec FILE] [--vendor V] [--model M] [--effort E] [--dry-run]
 ```
 
-> **★重要な訂正: 「レビュアは実行しない」を前提にしてはならない。**
-> 実測（`evidence/0606-permission-control.md` §4）で、`--disallowedTools "Bash"` を指定しても
-> **`PowerShell` ツールで実行され**、`codex --sandbox read-only` でも
-> **コマンドは実行される**ことが判明した（read-only が防ぐのは**書き込みだけ**）。
->
-> したがって判定独立性は簡報でも権限でも担保できない。
-> **担保できるのは §7.2 の裁定器だけ**である（「証拠IDを持たない主張は裁定に使わない」）。
-> 権限フラグは**多層防御の一枚**として必ず付けるが、それに依存した設計にはしない。
+### 5.3 `plan` — 分解 + スケジュール（Stage 3）
 
-### 5.7 大きな差分への対処 — 決定関連性による順序付き劣化（埋め込み時のみ）
+```
+super-agent plan [<requirement>] [--spec FILE] [--tasks FILE] [--vendor V] [--model M] [--effort E] [--lease N] [--root DIR] [--dry-run]
+```
 
-> **適用範囲**: §5.6 の通り**既定はパス渡し**であり、その場合この節は不要
-> （レビュアが必要な範囲だけ読むので、簡報は差分の大きさに比例しない）。
-> 本節は**埋め込みを使わざるを得ない場合**の最適化である。
+- `--tasks`: タスク DAG 定義ファイル（存在しない場合は `--spec` から分解して書き出す）。
+- `--lease`: リース時間（秒、既定 3600）。
+- `--root`: worktree ルート（既定 `workspaces`）。
 
-差分が大きいとき、埋め込み方式は C6（経済性）と正面衝突する。
-対処は「圧縮」ではなく **「落とす順番を固定すること」**。実装は `probe/n3/brief.py`。
+### 5.4 `implement` — タスク実装 + コミット（Stage 4）
 
-| 階層 | 内容 | 落とす順 |
-|---|---|---|
-| **T0** | **証拠の末尾**（CVE の実行結果） | **絶対に落とさない**（無いと裁定不能） |
-| **T1** | 変更されたファイルの本体 | 2番目に守る |
-| **T2** | 未変更ファイルの**シグネチャのみ**（`ast` 抽出、本体なし） | 3番目 |
-| T3 | 未変更ファイルの全文 | **最初に捨てる** |
+```
+super-agent implement --task <id> [--tasks FILE] [--worktree DIR] [--vendor V] [--model M] [--effort E] [--dry-run]
+```
 
-落としたものは `=== OMITTED (budget) ===` として簡報に**明記**し、
-「省略部分について推測するな」と指示する。**黙って隠さないことが安全性の要**。
+- 指定タスクを worktree で実装（書き込み可）。`touch_allow` 外の変更は検出される。
+- 成功でコミットし、台帳に `task.implemented` を記録。
+- 実装者には `--mode plan` 等の読み取り専用フラグは付与**しない**（編集をブロックするため）。
 
-**実測**（42ファイル・38,450字、`evidence/0606-n3-large-diff.md` §4）:
+### 5.5 `review` — 検証パイプライン実行（Stage 0/5）
 
-| 方式 | トークン | 裁定 | 根本原因の特定 |
-|---|---|---|---|
-| 素朴（全文投入） | ~9,612 | — | — |
-| 予算2000 | **1,836（-81%）** | `fail` | ✅ 正確 |
-| 予算700（34ファイル省略） | **820（-91%）** | `fail` | ✅ 正確 |
+```
+super-agent review [<dir>] [--task ID] [--tasks FILE] [--worktree DIR] [--accept EXPR] [--expect-exit N] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
+```
 
-**原理**: 判定に効くのは「何が失敗したか（証拠）」と「何を変えたか（差分）」であり、
-前者は差分の大きさとほぼ無関係。未変更コードは「呼び出し先の形」が分かればよく、
-本体は要らない。**正しく階層化すれば C6 と C2 はトレードオフではない。**
+- 読み取り専用ロール。ベンダーには `--mode plan`（agy）等の読み取り専用フラグを付与。
+- 台帳に `verification.run` / `reviewer.invoked`（vendor 記録）/ `judgment`（verdict）を記録。
+- 裁定は CVE の証拠のみで下す。
 
-> ⚠ **限界**: T2 をシグネチャに落とすと、**本体にしかない欠陥は見えなくなる**。
-> Case B の「Money が可変で履歴を書き換えられる」は本体を読んで初めて分かる指摘であり、
-> T2 に落ちていれば検出できなかった。
-> 解消したのは「大きな差分では判定不能になる」問題であって、
-> **「レビューの網羅性が予算に依存する」問題は残る。**
+### 5.6 `integrate` — 実装済みタスクの統合（Stage 5）
+
+```
+super-agent integrate --task <id> [--tasks FILE] [--worktree DIR] [--target BRANCH] [--dry-run]
+```
+
+- `task/<id>` を `--target`（既定 `main`）へ `--no-ff` マージ。コンフリクトは `--abort` して検知。
+- マージ後、CVE で acceptance を再実行（失敗は `integrated.failed`）。
+- 成功で `integrated` 記録、`git worktree remove --force` で後片付け。
+- **注意**: 実行（dry-run なし）すると worktree が削除される。
+
+### 5.7 `drive` — DAG 全タスク一括駆動（Stage B）
+
+```
+super-agent drive [--requirement TEXT] [--spec FILE] [--tasks FILE] [--target BRANCH]
+                  [--vendor V] [--reviewer R] [--model M] [--effort E]
+                  [--implement-vendors "agy:2,hermes:3"] [--parallel-tasks] [--speculative]
+                  [--adaptive|--no-adaptive] [--max-task-workers N] [--dry-run]
+```
+
+- `plan`→`implement`→`review`→`integrate` を **DAG（§1「用語: DAG」参照）全タスク**に実行。
+- `--speculative` または `--implement-vendors` で複数チャンネル指定時のみ投機的モード（複数チャンネルが同じタスクを競い、最初に review を通した勝者を統合、他は破棄）。
+- `--parallel-tasks`（既定 ON）: 独立タスクを topo レイヤー単位で並行。
+- `--adaptive` / `--no-adaptive`: 駆動中の再計画スイッチ（§6）。
+- `--max-task-workers N`: 同時タスク数上限（既定 4）。
+- 既定（非投機的）: 各タスクを `roles.implement` の最初の1チャンネルのみで実装。
+
+### 5.8 `evolve` — 自己改良（Stage 6）
+
+```
+super-agent evolve [--dry-run]
+```
+
+- 台帳の失敗パターン（同じ `pattern` が 3回以上）から `acceptance` テンプレまたは憲法への昇格案を提案。
+- `--dry-run`: 提案表示のみ。実行時は `design.proposed` event を記録し対象ファイルへ追記。
+
+### 5.9 `dashboard` — 台帳可視化
+
+```
+super-agent dashboard [--format md|html|both] [--out DIR]
+```
+
+- 台帳イベントを `build_model()` で task_id → status に集約し、`render_markdown()` / `render_html()` で描画。
+- `--out` 指定時はファイル書き出し、未指定時は標準出力。
+- 詳細は §9。
+
+### 5.10 その他
+
+- `status`: 最近の台帳イベントを表示。
+- `log <task>`: 指定タスクprefix の台帳イベントを表示。
+- `show`: 詳細表示。
 
 ---
 
-## 6. L3 統制 — 役割・分解・割当
+## 6. adaptive モード
 
-### 6.1 役割は「席」であって「人」ではない
+**フラグ**: `--adaptive` / `--no-adaptive`（既定 ON）
 
-役割はベンダーに固定しない。**席に誰を座らせるかは設定1行**（ゴールG1）。
+**正体**: `drive` の「再計画スイッチ」。topo レイヤー間で planner ロールがタスク DAG を再計画（re-plan）するかどうか。
 
-| 席 | 責務 | 権限 | 既定の座り手 |
-|---|---|---|---|
-| Architect | 設計・アーキ設計・方式選定 | read-only | 推論の強いもの |
-| Decomposer | タスク分解・DAG構築・割当案 | read-only | 安価なもの |
-| Implementer × N | 実装 | write（自worktreeのみ） | 並列数を稼げるもの |
-| Reviewer | **証拠を読んで**判定 | **read-only（強制）** | Implementer と**別ベンダー**（強制） |
-| Integrator | 統合・衝突解消 | write（統合ブランチ） | 任意 |
+- `--adaptive`（ON）: topo レイヤー境目で、実行結果（event ログ）を踏まえて planner がタスク分解を再考。
+- `--no-adaptive`（OFF）: 初期の静的 DAG に従う。
 
-**強制制約2つ**
-- `Reviewer.permission == read-only`: レビュアに実行させない。実行はCVEの仕事（§7）。
-- `Reviewer.vendor != Implementer.vendor`: 同一ベンダーの自己甘受を防ぐ。同一モデルは同一の盲点を持つ。
+**誤解に注意**: 回数指定ではない。「再計画する / しない」のみ。タスク数やリトライ回数とは無関係。
 
-### 6.2 タスク分解の受入契約
-
-分解の良し悪しは主観になりやすいので、**機械検査できる条件**を課す。
-Decomposer の出力は下記を満たさなければ差し戻す（LLMに再考させる前に、まず構造検査）。
-
-```jsonc
-{"task_id":"T-012",
- "goal":"...",
- "acceptance":[                       // ★必須: 空なら即差し戻し
-   {"verb":"pytest","args":["tests/test_fizz.py"],"expect_exit":0}   // ★生コマンド文字列ではなく動詞+引数
- ],
- "touch_allow":["src/fizz.py","tests/test_fizz.py"],  // ★触ってよい範囲を宣言
- "depends_on":["T-011"],
- "est_tokens":40000}
-```
-
-| 検査 | 落ちたら |
-|---|---|
-| `acceptance` が空でない | 差し戻し（検証不能なタスクを作らせない） |
-| `acceptance[].run` がCVEで**実行可能**な形式 | 差し戻し |
-| DAGに循環が無い | 差し戻し |
-| `touch_allow` が他の並行タスクと重複しない | 直列化するか分解し直す |
-| `acceptance[].verb` が `config/verifiers.yaml` に無い | 差し戻し（H2: インジェクション排除） |
-
-> ### ★H2 解決: `acceptance[].run` は「動詞+引数」の許可リスト（独立レビューの最重要指摘その2）
-> 旧スキーマは `{"run":"python -m pytest ..."}` という**任意コマンド文字列**を許しており、
-> LLM 出力がそのまま `os.exec` される経路＝**コマンドインジェクション**だった。
-> §8.3「定義済みコマンドのみ実行」と矛盾していた。
-> **解決**: `run` を `verb + args[]` に改め、`verb` は `config/verifiers.yaml` に登録された
-> ホワイトリストのみ許可する。ハーネスは `verb` を**静的マッピング**でコマンドに変換し、
-> `args` はシェル展開せず逐次引数として渡す。登録外の `verb` は受入時に**構造検査で差し戻し**。
-> これで「LLM が任意コマンドを実行できる」経路を構造的に排除する（CVE の実行コマンドも同様）。
-
-**設計意図**: 「検証方法を書けないタスクは、そもそもタスクとして未定義である」という規律を、
-人間のレビューでなく構造検査で強制する。
-
-### 6.3 リース方式の割当（クラッシュ耐性）
-
-割当は「代入」ではなく**期限付きリース**にする。
-
-```
-task.leased(T-012, agent=claude, lease_until=T+15min, budget_tokens=120000)
-```
-
-- リース期限切れ = 自動的に再割当可能。エージェントが落ちても**放置されたタスクが生まれない**。
-- 再割当時は**別ベンダー**を優先（同じ環境要因で再び詰まるのを避ける）。
-- リース更新はハートビートでなく、**進捗イベントの追記**で行う（常駐不要 = P1）。
+**実装**: `harness/roles/drive.py`（adaptive 引数）、`harness/cli.py`（フラグ宣言、既定 True）。
 
 ---
 
-## 7. ★L4 検証と信用 — 本設計の心臓部
+## 7. ベンダー呼び出しの自動リトライ（content-policy ブロック対策）
 
-### 7.1 判定を3段に分ける
-
-素朴な設計は「レビュアが合否を言う」の1段。これが E-4 を生んだ。本設計は3段に分ける。
+**動機**: hermes（Tencent Hunyuan `hy3:free`）はたまにコンテンツポリシーでブロックし、
 
 ```
- ①事実収集(機械)      ②解釈(エージェント)      ③裁定(機械)
- CVEで実行           証拠を読んで所見を述べる    規則で合否を確定
- ↓                   ↓                        ↓
- 証拠E-991           findings[] + cites[]      verdict
- (誰の意見でもない)   (実行はしない)            (規則。意見ではない)
+你好，我无法给到相关内容。
 ```
 
-- **①事実収集**: `acceptance[].run` を **CVEで**実行し、exit code・stdout・stderr を証拠として台帳に固定する。
-  ここにLLMは一切関与しない。**再現可能で、誰の環境にも依存しない。**
-- **②解釈**: Reviewer は read-only で、**証拠と差分だけ**を読む。
-  「動かして確かめろ」とは**決して指示しない**。所見には必ず証拠IDを引用させる。
-- **③裁定**: 下の規則表で機械的に確定する。エージェントの `verdict` 文字列は**そのままでは採用しない**。
+（「すみません、関連する内容をお出しできません」）を返して停止する。インタラクティブでは人間が「続けて」と入力すれば回復するが、ワンショット実行ではそのまま失敗していた。
 
-### 7.2 裁定規則（E-4 の偽fail がここで消える）
+**仕様**:
 
-| ①CVEの証拠 | ②レビュアの所見 | ③確定判定 | 根拠 |
-|---|---|---|---|
-| 全て exit 0 | 指摘なし | **pass** | |
-| 全て exit 0 | 指摘あり(証拠ID付き) | **pass_with_findings** → 指摘は新タスク化 | 動くものは止めない |
-| 全て exit 0 | 指摘あり(**証拠IDなし**) | **pass。ただし指摘は `advisory` として保持**し人間へ | 裁定には使わないが捨てない |
-| 失敗あり | — | **fail** | 事実が優先 |
-| **CVEプローブが失敗** | — | **environment_error**（タスクは無傷で保留、人間へ） | ★G2 |
-| レビュア呼出が失敗 | — | **judgment_unavailable**（再割当。成果物はfailにしない） | ★G2 |
+1. `invoke()` が stdout/stderr を調べ、content-policy ブロックを検出。
+2. ブロック検出時、同一セッションを `--resume <session_id>` で再開してリトライ（人間の「続けて」と等価）。
+3. リトライ上限 `max_retries`（既定 **3**）。上限到達でもブロックが続く場合は最後の応答に `content_blocked: true` を付与して返す。
+4. ブロックしない場合は1回で終わる（正常系は遅くならない）。
 
-> **`advisory` は独立レビューの指摘を受けた修正**（実装: `probe/n3/adjudicate2.py`）。
-> 当初は「証拠なき指摘は破棄」だったが、それでは設計上の懸念やセキュリティの匂いを
-> 機械的に握りつぶす。**裁定には使わない／ただし失わない**が正しい落とし所。
->
-> **実測**（`evidence/0606-n3-large-diff.md` §2）: 同一成果物に対しレビュア2者の意見が
-> `fail`(codex) と `pass`(claude) に**割れたが、機械裁定はどちらも `pass` で一致**し、
-> 4件の指摘は1件も失われず advisory に保持された。
+**検出指標**（`_is_content_blocked()`）: `content_policy_blocked` / `无法给到相关内容` / `你好，我无法` / `unable to provide`。
 
-> ### ⚠ この規則の既知の欠陥（未解決・独立レビューと人間レビューが共に指摘）
->
-> **欠陥1: `exit 0` は正しさを意味しない。**
-> 空のテスト・常に成功するテスト・要件を検証しないテストも exit 0 を返す。
-> 本設計の「正しさ」の天井は、**Decomposer が書く `acceptance` の質**に規定される。
-> **CVE はこの問題を一切解決していない**。判定を環境から独立させただけで、
-> 「何を検証すべきか」の妥当性は未解決のまま残っている。
->
-> **★実例が出た**（`evidence/0606-n3-large-diff.md` §2）: Case B は `4 passed`（exit 0）だったが、
-> 実際には (a) Money が可変で**post 後に履歴を書き換えられる**、
-> (b) `is_balanced()` が**恒真でテストとして無意味**、という欠陥が残っていた。
-> 両方とも CVE では検出できず、**レビュアが読んで初めて分かった**。
-> → **CVE とレビュアは代替ではなく補完関係**である。これは設計の前提として明示すべき。
->
-> **欠陥2: 証拠なき指摘の破棄は、正当な指摘も殺す。**
-> 設計上の懸念・セキュリティの匂い・保守性の問題は、**acceptance テストの exit code に現れない**。
-> P3 を機械的に適用すると、これらを握りつぶす。
-> 現状は「判定の環境独立性」と「指摘の網羅性」のトレードオフを、前者に全振りしている。
->
-> **暫定の緩和策（未実装）**: `cites` が無い finding も破棄せず `advisory` として別枠で保持し、
-> 裁定には使わないが人間の承認キューへ回す。ただし §8.1 の「人間の負荷を増やさない」と
-> 衝突するため、閾値設計が必要。**この2点が未解決である限り、本設計は「判定の信用」問題を
-> 部分的にしか解いていない。**
+**セッションID抽出**（`_extract_session_id()`）: hermes は出力末尾に `session_id: <id>` を出す。resume 非対応ベンダーは次試行で同じ prompt を新セッションで再発行。
 
-**E-4 を本設計に通すとどうなるか**（設計の妥当性の自己検証）:
-
-| 段 | 実際に起きること |
-|---|---|
-| ① | CVE で `python fizz.py` を実行 → **exit 0**（実測で確認済み: 正常出力を得た） |
-| ② | codex は read-only で証拠を読む。実行しないので「python が無い」は**そもそも発生しない** |
-| ③ | 証拠が exit 0 → **pass** |
-
-**結論（範囲を限定して述べる）**: この経路では、**レビュアの実行環境は判定に影響しない**。
-仮に codex 自体が起動不能でも、結果は `judgment_unavailable` であって `fail` ではない。
-**「成果物が悪い」と「判定できなかった」を混同しない**——これが G2 の実装である。
-
-> ⚠ **主張の限界（独立レビューでの指摘を反映）**
-> 「偽fail が構造的に発生しない」とは言えない。CVE 自体の故障・依存の欠落・証拠の取り違え・
-> 出力解析の失敗・裁定規則のバグなど、**別経路の偽fail が残る**。
-> ここで消えたのは **「レビュアの実行環境に起因する偽fail」という1経路だけ**であり、
-> それも 16行のファイル1本（N=1）で確認したにすぎない。
-> **CVE は環境依存を無くしたのではなく、依存先を1箇所に集約した**。集約先が壊れれば全タスクが止まる。
-
-> ### ★追記（evidence/0606-permission-control.md 実測を受けて）: 権限制御も判定独立性を担保しない
-> 上の「② codex は read-only で…実行しない」は、**read-only という意図に依存している**。
-> しかし実測では、権限フラグは**実行を阻止しない**ことが判明した
-> （claude は `PowerShell` 経由で、codex は `--sandbox read-only` でも実行された）。
-> レビュアが**実行してしまっても**、裁定は③の規則に従い**CVE の証拠だけを見る**ため、
-> レビュアが自分で走らせた結果は `judgment_unavailable` や `fail` に**一切影響しない**。
-> **判定独立性を担保するのは「read-only にする」ことではなく、「裁定がレビュアの実行結果を読まない」ことである。**
-> 権限フラグは多層防御の一枚として必ず付けるが、それに依存した設計にはしない。
-
-### 7.3 レビュアへの出力契約（A-3 対策込み）
-
-```jsonc
-// 必ず --json-schema / --output-schema で強制する
-{"findings":[{"severity":"high|med|low","claim":"...","cites":["E-991"],"path":"src/x.py:42"}],
- "unverifiable":["..."],          // 証拠が足りず判断できなかった点（正直に言わせる）
- "opinion_verdict":"pass|fail"}   // ★参考値。裁定には使わない
-```
-
-- 出力の取り出しは `result_path` に従い、**最後の agent_message** を採る（実測A-3）。
-- `cites` が空の finding は §7.2 により破棄される。**レビュアに「証拠を引け」と構造で強制する。**
-- `opinion_verdict` という名前にしてあるのは、**それが意見に過ぎないことを設計上明示する**ため。
+**実装**: `harness/core/invoke.py`（`invoke(max_retries=3)` / `_is_content_blocked()` / `_extract_session_id()`）。
+**テスト**: `harness/tests/test_invoke.py`（`test_is_content_blocked_markers` / `test_extract_session_id` / `test_invoke_retries_on_content_block`）。
 
 ---
 
-## 8. L5 人間の位置 — 承認者・かつ操作可能な参加者
+## 8. ワークツリー分離・受入基準パース
 
-### 8.1 人間に上がるものだけを上げる（上げる側）
-
-```
-approvals/pending/<id>.md     # ここに入ったものだけが人間の仕事
-```
-
-| 人間へ上げる | 上げない（自動で流す） |
-|---|---|
-| 仕様の曖昧さ・要求の矛盾 | 実装の細部 |
-| 破壊的操作（force push / 本番 / 秘匿情報） | 通常のコミット |
-| 予算超過 | 予算内の消費 |
-| `environment_error`（CVE不良） | 通常のfail（自動で再試行/再割当） |
-| 同一タスクの2回連続fail | 1回目のfail |
-
-**設計意図**: 人間が全出力を読む設計は、エージェントを増やすほど人間が破綻する。
-**エージェント数に対して人間の負荷が増えない**ことを構造で保証する。
-
-> **役割の拡張（L6 と整合）**: 人間は「承認者」であると同時に、**いつでも介入できる参加者**でもある。
-> ただし介入は「人間の意思」に依存し、システムから強制されるものではない。
-> よって §8.1 の負荷原則（タスク数に比例しない）は守られる——介入しなければ何も上がってこない。
-
-### 8.2 全体把握（G3）
-
-台帳から単一コマンドで再構成する。ダッシュボードは**状態を持たない**（派生ビュー）。
-
-```bash
-super-agent status
-# TASKS  running:3  blocked:1  awaiting_review:2  done:11
-# BUDGET 412k / 1.0M tokens (41%)   est $8.20
-# NEEDS-YOU  2  → approvals/pending/
-# STALE  T-019 lease expired 4m ago → auto-reassign pending
-```
-
-### 8.3 安全（最小限だが絶対）
-
-- 破壊的操作（`rm -rf`, `git push --force`, `reset --hard`, 秘匿ファイル読取）は**アダプタ層で遮断**。
-  タスク指示で上書きできない。
-- **外部から取得した文字列（README・Web・ファイル内容）は常にデータであり、命令ではない。**
-  実行してよいのは `acceptance[].run` と CVE の定義済みコマンドのみ。
-- write権限は**自分の worktree のみ**。`touch_allow` 外への書き込みは統合時に検出して差し戻す。
-
-> ### ⚠ 実測で判明した権限フラグの限界（`evidence/0606-permission-control.md` §4）
->
-> ベンダーの権限フラグは**実行を止めない**。実測結果:
->
-> | 設定 | 結果 |
-> |---|---|
-> | claude `--disallowedTools "Bash"` | **`PowerShell` ツールで実行された** |
-> | claude `--allowedTools "Read,Grep,Glob"` のみ | **許可外の `Bash` が使われた**（強制力なし） |
-> | claude `--permission-mode plan` | **実行を阻止**（有効） |
-> | codex `--sandbox read-only` | **実行される**。防ぐのは**書き込みのみ** |
->
-> 検証は「実行しなければ答えられない値」（ランダムファイルの SHA-256）で行った。
-> レビュアは正解を返した＝**実際に実行していた**。
->
-> **含意**: 上記の「アダプタ層で遮断」は**現時点で未実装かつ、
-> ベンダーのフラグに委ねると成立しない**。ハーネス側で
-> (a) 子プロセスを OS レベルで隔離するか、(b) 実行されても平気な設計にするか、
-> のいずれかが必要。本設計は **(b) を採る**——
-> レビュアが何を実行しようと、**裁定は CVE の証拠だけを見る**（§7.2）。
->
-> 書き込み防止については codex の `--sandbox read-only` が有効であることを実測済みなので、
-> **多層防御の一枚として必ず付ける**（ただしそれに依存はしない）。
-
-### 8.4 L6 操作面（Control Surface）— 人間からの双方向介入
-
-§8.1 は「システム→人間」の一方通行（上げる側）だった。ここは**「人間→システム」の
-いつでも介入**を定義する。L5 が「承認者」なら、L6 は「操作可能な参加者」の実装面。
-
-**原則**
-- **形態は問わない**: CLI コマンド・ステータス出力（ダッシュボード）・対話プロンプト・
-  将来的な UI——いずれも**同じバックエンド（台帳＋スケジューラ）を操作するアダプタ**。
-  対話である必要はない（ユーザー確認済み: ダッシュボード/コマンド/UI いずれも可）。
-- **全操作は台帳イベントとして記録**: 誰が・いつ・何を変えたか。E-4 の精神
-  （人間の介入も証拠として残る）を守る。
-- **負荷は強制されない**: 介入は人間の意思次第。放置すれば L5 の自動フローが流れる。
-
-**操作面が満たすべき能力**
-
-| 能力 | 操作例 | 台帳イベント |
-|---|---|---|
-| 設計・方針の確認 | `super-agent show design` / `show plan` | （読み取り。イベント無し） |
-| 進行状態の確認 | `super-agent status` | （読み取り） |
-| 中断・再開・中止 | `pause <task>` / `resume <task>` / `abort <task>` | `task.paused` / `task.resumed` / `task.aborted` |
-| 実装中の計画変更 | `amend <task> --spec <file>` | `task.amended` |
-| 実装後の設計変更 | `evolve --from <fail>` | `design.proposed`（§9.1 承認ゲートと接続） |
-
-> **要求の曖昧さはここに吸収される**: 「要求が曖昧→人間に確認」は独立レイヤではなく、
-> `amend` の特例（機械検査で `acceptance[].verb` が導出できない要求を `amend` で確定させる）
-> として扱う。条件付き発動（曖昧検出時のみ人間へ）——ユーザー確認済みの方針。
-> 非対話モード（`--yes` または spec ファイル指定）では L6 はバイパスされる。
-
-**実装位置**: Stage A の `cli.py` を拡張（Sequencer へイベントを書くだけ）。中止・変更は
-スケジューラが走らせているエージェントへシグナルを渡す（§6.3 のリース機構を再利用）。
+- 各タスク/チャンネルは独立 worktree（`workspaces/<task>__<vendor>_<i>`）で実行。レビュー結果は本流へ書き戻さない（worktree 隔離で読み取り専用の担保を補完）。
+- タスク定義（DAG、§1「用語: DAG」参照）は Markdown: `## <id>` 見出しの下に `目標` / `依存` / `触ってよい範囲` / `受入基準 (N)`（verb リスト）を記述。`依存:` フィールドが DAG のエッジ（他タスクへの依存）を指定する。
+- 受入基準の verb は §4.1 のホワイトリストに限定。
+- 構造検査（`decomposer.structural_check`）が未登録 verb を弾く。
 
 ---
 
-## 9. 一周の流れ（要求 → 改良）
+## 9. ダッシュボード（dashboard）
 
-ご要望の9項目が、どこで満たされるか。
+`harness/roles/dashboard.py`:
 
-```
-[要求]
-  ↓ ① Architect(read-only) …………………………… 設計・アーキ設計
-  ↓    → 決定を台帳へ (ADR形式)
-  ↓ ② Decomposer(read-only) ………………………… タスク分解
-  ↓    → DAG + acceptance + touch_allow
-  ↓    → §6.2 構造検査（機械）。落ちたら差し戻し
-  ↓ ③ Scheduler(機械) ……………………… チーム編成・役割/タスク割当
-  ↓    → 席に座り手を割当、worktree 作成、リース発行
-  ↓ ④ Implementer × N(write) ……………………………… 実装（並列）
-  ↓    → 成果物 + commit
-  ↓ ⑤ CVE(機械) …………………………………………… 事実収集
-  ↓    → 証拠（誰の環境にも依存しない）
-  ↓ ⑥ Reviewer(read-only, 別ベンダー) ………………… レビュー
-  ↓    → 証拠を読んだ所見（**原則実行しない。実行しても裁定には使われない**）
-  ↓    → A-6 実測: 権限下でも実行されうる。だから裁定は③でCVE証拠のみを見る
-  ↓ ⑦ Adjudicator(機械) ……………………………………… 裁定
-  ↓    → pass / fail / environment_error / judgment_unavailable
-  ↓ ⑧ Integrator(write) …………………………………… 統合
-  ↓ ⑨ 台帳へ記録 ……………………………… 全体把握 / メモリ共有
-  ↓ ⑩ 失敗パターンを憲法へ昇格 ……………………………… 改良
-[完成]
-```
-
-### 9.1 改良ループ（G6 自己改良）
-
-同じ失敗を二度させないための仕組みを、**人間の記憶ではなく構造**に置く。
-
-| 観測 | 自動で起こすこと |
-|---|---|
-| 同種の fail が3回 | その検査を `acceptance` の**既定テンプレ**に昇格 |
-| ある席で `judgment_unavailable` 多発 | その席の既定ベンダーを差し替え候補として提示 |
-| `environment_error` 発生 | CVE定義の不備として人間へ（タスクの失敗にはしない） |
-| 特定ベンダーのコスト超過が常態化 | 席の割当方針を提示（例: Decomposer を安価側へ） |
-
-**本システム自身の改良も、同じ①〜⑩を通す。** 特別扱いしない。
-
----
-
-## 10. 実装順序（小さく始める）
-
-各段階は**それ単体で価値が出る**ように切ってある。
-
-| 段 | 作るもの | これで得られること | 検証状況 |
-|---|---|---|---|
-| **S1** | 台帳(JSONL) + アダプタ宣言 + `invoke` 1本 | 3ベンダーを同一IFで叩ける | ✅ **実装済み**（`harness/core/ledger.py`, `invoke.py`, アダプタ宣言は `config/vendors.yaml`） |
-| **S2** | CVE + 証拠固定 + 簡報（パス渡し） | 判定が環境非依存になる | ✅ **`cve.py`/`brief.py` として実装。N=4 で確認**（16行/2/3/42ファイル） |
-| **S3** | 席 + リース + worktree | 並列実装が壊れない | ✅ **実装済み**（`harness/roles/scheduler.py` + `drive.py`: worktree隔離・マルチチャンネル・タスク並列） |
-| **S4** | 3段判定 + 裁定規則 | 信用できる合否 | ✅ **`adjudicate2.py` として実装。実CVE+実LLMで確認**（意見が割れても裁定一致・advisory保持） |
-| **S2+S4 統合** | 検証パイプライン（CVE→簡報→レビュー→裁定） | 一台で end-to-end に検証・裁定 | ✅ **`harness/roles/review_flow.py` として実装。caseGreen/caseB で実CVE実行＋tree_hash束縛＋裁定を確認（11 test passed）。レビュア不能時は judgment_unavailable（偽failなし）** |
-| **S5** | 予算 + 承認キュー + status | 人間の負荷が一定になる | ⚠ **status/log/showは実装済み**（`cli.py`）。承認キューは未実施。予算は `brief.py`（-81%〜-91%） |
-| **S6** | 改良ループ | 同じ失敗を繰り返さない | ❌ **未実施** |
-| **S7** | **OSレベル隔離 + `acceptance[].run` 許可リスト化** | 実行の副作用・インジェクションを封じる | ⚠ **許可リスト化は実装済み**（`verifiers.py`。H2解決）。OS隔離(network/fs namespace)は未実施(U6) |
-
-> **§S3 実装（並列実装の基盤）**: `harness/roles/scheduler.py` の `create_worktree`
-> がタスクごとに `git worktree add workspaces/<id> -b task/<id>` を作成し、独立作業領域を
-> 隔離。これにより Implementer × N の並列実装が同一ファイルを壊し合う事故が防止される。
-> 並列の駆動は `harness/roles/drive.py` で実現:
-> - **チャンネル並列（Stage B 並列(b)）**: `roles.implement` をチャンネルリストで宣言。
->   各エントリが1チャンネル（vendor/model/effort 自由指定可）＝独立 worktree で並列実装。
->   リスト長がチャンネル数。review を通した最初のチャンネルだけを統合し、他は破棄。
-> - **タスク並列**: 依存のないタスクを topo レイヤー単位で並行駆動（`--parallel-tasks`）。
->   integrate（git checkout/merge）は共有リポジトリのため直列に実行。
-> - **cleanup**: 統合後に各タスクの全チャンネル worktree を `teardown_worktree` で破棄。
->
-> **凡例**: ✅実証済 / ⚠限定的（N=1 または部分）/ ❌未実施
-> 動くコードは `probe/n3/`（`cve.py` `brief.py` `adjudicate2.py`）。
-> ただしこれは**実験の証跡であって製品コードではない**（台帳・席・リース・並列・隔離は未着手）。
-
-**S2 は実装済み。** 次の優先は **S7（OSレベル隔離）** である:
-実測 A-6 で、権限フラグでは実行を止められないことが判明した。
-「実行されても平気な設計」(裁定がCVE証拠のみを見る) で独立性は保てるが、
-**レビュアが悪意ある/間違ったコマンドを走らせる副作用**（外部通信・worktree外書込）は
-未防護である。子プロセス隔離と `acceptance[].run` の許可リスト(H2) が必須になる。
-S1(台帳)→S3(並列) は実装済み。残る優先順は S5(承認キュー)→S6(改良)→S7(OS隔離) の順。
-
----
-
-## 11. 本設計が明示的に否定する「よくある設計」
-
-| よくある案 | なぜ否定するか |
-|---|---|
-| エージェント同士を会話させる | 高コスト・非決定的・検証不能。証拠の受け渡しで足りる |
-| レビュアに「動かして確認して」と頼む | **E-4 で実測した通り、レビュアの環境を測ってしまう** |
-| 全エージェントで巨大メモリを共有 | ベンダー内記憶は共有不能(E-2b)。転写はE-5のコストで破綻 |
-| 常駐プロセス＋inotifyで起こす | 本機に inotifywait 無し(E-1)。落ちたときの復旧が難しい |
-| 多数決で合意形成 | 同一の盲点を持つモデル同士の多数決は精度を上げない。事実(CVE)が優先 |
-| オーケストレータを賢いLLMにする | 単一障害点かつ非決定的。統制は機械（規則）で足りる |
-| **「read-only / sandbox にすればレビュアは実行しない」と信じる** | **実測(PERMISSION_CONTROL §4)で誤りと判明。claude/codex は権限下でも実行された。独立性は権限ではなく裁定器で担保** |
-| **「簡報はファイル本文を埋め込まねばならない」と信じる** | **§5.6 で撤回**。パス渡しのほうが指摘の質が高い。埋め込みは代替手段 |
-
----
-
-## 12. 未解決の論点（正直に残す）
-
-| # | 論点 | 現状の扱い |
-|---|---|---|
-| U1 | CVEが複数必要な場合（例: Windows/Linux両検証） | 現設計はCVE単一。複数化は `cve: [...]` への拡張で対応予定 |
-| U2 | 「設計」自体の良否は機械検証できない | 設計成果物は §7 の対象外。人間承認（§8.1）に残す |
-| U3 | ベンダーのCLI仕様変更 | 宣言YAMLに集約済みだが、**起動時プローブで検出**する仕組みが必要 |
-| U4 | 長時間タスクのリース期限の妥当値 | 実運用データが無い。初期値15分、実測で調整 |
-| ~~U5~~ | ~~agy の権限粒度が粗い（`--sandbox` か全許可）~~ | **✅ 解決**: `--mode plan --add-dir {worktree}` で読取可・実行阻止（PERMISSION_CONTROL §7.4）。agy も `brief_mode: path` |
-| **U6** | **OSレベル分離** | 権限フラグは実行を止めない(A-6)。子プロセスを OS 側で隔離(network/fs namespace)する仕組みが未実装。**ただし H2 で許可リスト化済みのため、インジェクション経路は塞がれている**（衝突の余地は縮小） |
-| **U7** | **`brief_mode` の動的決定** | 全ベンダー `path` に決まったが、agy は `--add-dir` に worktree パスを動的に差し込む必要。アダプタ実装が未了 |
-| **U8** | **恒久設定（settings.json/config.toml）** | CLI フラグのみ実測。恒久設定や `--sandbox` と `--mode plan` の優先順位は未検証 |
-
-
+- `build_model(events)`: 台帳イベントを task_id → status に集約。**後勝ちではなく状態遷移の優先順位**（integrated > implemented > leased > created 等）で最終ステータスを決定。
+- `render_markdown(model)` / `render_html(model)`: 描画（dashboard.py に実装）。
+- テスト: `harness/tests/test_dashboard.py`。

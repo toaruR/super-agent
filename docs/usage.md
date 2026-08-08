@@ -1,7 +1,7 @@
 # Super Agent ハーネス — 使い方マニュアル
 
 このドキュメントは、**完成した設計・実装を実際にどう動かすか**を説明します。
-設計の意図（なぜこうなっているか）は `docs/spec.md` を参照。
+設計の意図（なぜこうなっているか）は `docs/design-notes/architecture-v3.md` を、挙動の仕様は `docs/spec.md` を参照。
 
 ---
 
@@ -344,6 +344,7 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
 - `--model` / `--effort`: **implement チャンネル全てのモデル / effort を一括上書き**（既定は `vendors.yaml` の `roles.implement` 各チャンネル値）。短名（例: `hy3:Free`）も可 — コード側 `normalize_model()` が実名（例: `tencent/hy3:free`）に自動正規化される。review ベンダーは影響しない。
 - `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override（投機的モードのトリガー）**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用）。**この指定自体が投機的モードを意味する** — 複数チャンネルが同じタスクを競って実装し、最初に review を通した勝者を統合する。
+- `--adaptive` / `--no-adaptive`: 駆動中の再計画を有効/無効にする（既定 ON）。タスク分解済みの静的 DAG を与える場合は `--no-adaptive` でもよい。詳細は `docs/spec.md` の「adaptive モード」参照。
 - `--speculative`: **投機的モードを明示的に有効化**。`roles.implement` の全チャンネル（既定 hermes×5 = 5）で各タスクを fan-out して競わせる。`--implement-vendors` で複数チャンネルを指定した場合も暗黙的に投機的モードになる。
 - `--parallel-tasks`: **タスクレベル並列（デフォルトで有効）**。依存のないタスクを topo レイヤー単位で並行駆動（implement+review を並列。integrate は git 操作のため直列）。このフラグは明示用で、省略しても独立タスクは自動で並行処理される。
 - `--max-task-workers N`: 同時タスク数の上限（既定 4）。
@@ -368,6 +369,8 @@ super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
 ```
 
 > 実行後は各タスクの全チャンネル worktree が自動で破棄される（敗者チャンネルも残らない）。
+
+> **ベンダー呼び出しの自動リトライ**: 実装者（hermes 等）がコンテンツポリシーでブロックされた場合、super-agent は同一セッションを再開して自動でリトライする（人間の「続けて」と等価）。ブロックしなければ1回で終わり、正常系は遅くならない。挙動の詳細は `docs/spec.md` の「ベンダー呼び出しの自動リトライ」参照。
 
 ### 2.12 `super-agent evolve` — 自己改良（⑩ Stage 6）
 

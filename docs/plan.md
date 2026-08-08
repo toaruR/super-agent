@@ -205,6 +205,8 @@ git worktree list
 > - `hy3:Free` は yaml にそのまま書くが、**コード側 `normalize_model()` が `tencent/hy3:free` に自動正規化**する（OpenRouter カタログ名との乖離を吸収）。yaml を `tencent/hy3:free` に書き換える必要はない。
 > - `roles.review` は現在 **agy（gemini-3.6-flash）**。drive の review 記録は実際の reviewer vendor（agy）を使うよう修正済み（`fix(drive): review フェーズの記録に実際の reviewer を表示する`）。
 > - drive 経由の hermes 5チャンネル並列 implement を実測: implement 4/5 成功（hy3:free 無料枠の不安定で 1 チャンネル失敗）、review(agy) を通した勝者を統合。
+> - **adaptive モード**（`--adaptive` / `--no-adaptive`、デフォルト ON）: 駆動中の再計画スイッチ。「回数指定ではない」点など仕様の詳細は `docs/spec.md` の「adaptive モード」参照。
+> - **hermes の content-policy ブロック自動リトライ**: hermes(hy3:free) がたまにブロックして止まるのを、`invoke()` が同一セッション `--resume` で最大3回リトライして回復する（人間の「続けて」と等価）。仕様詳細は `docs/spec.md` の「ベンダー呼び出しの自動リトライ」参照。実装コミット: `fix(invoke): hermes の content-policy ブロック時に --resume で自動リトライ`。
 
 ---
 
