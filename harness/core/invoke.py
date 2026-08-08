@@ -18,6 +18,28 @@ from typing import Any
 
 import yaml
 
+# Known-bad model-name aliases (CODE-side, intentionally NOT in vendors.yaml).
+#
+# vendors.yaml may carry a friendly/shorthand model name that our gateway /
+# OpenRouter rejects at call time (e.g. `hy3:Free` -> `HTTP 404: Model 'hy3:Free'
+# not found`). The yaml is hand-edited by the user and must not be rewritten, so
+# we normalize here instead: the yaml keeps its `hy3:Free`, but the CLI argv that
+# actually reaches `hermes chat -m` uses the canonical id `tencent/hy3:free`.
+#
+# Only explicit, known-wrong names are remapped — anything not listed passes
+# through untouched, so a legitimately different model is never silently changed.
+MODEL_ALIASES = {
+    "hy3:Free": "tencent/hy3:free",
+    "hy3": "tencent/hy3:free",
+}
+
+
+def normalize_model(model: str | None) -> str | None:
+    """Map a known-bad model name to its canonical id; pass others through."""
+    if model is None:
+        return None
+    return MODEL_ALIASES.get(model, model)
+
 
 class VendorDecl:
     def __init__(self, name: str, decl: dict[str, Any]) -> None:
@@ -295,7 +317,9 @@ def build_command(
     # model/effort are resolved by the caller (cli.resolve_role) and passed in.
     # (Role defaults now live in the top-level `roles:` mapping of vendors.yaml,
     #  not per-vendor, so build_command no longer looks them up here.)
-    m = model
+    # Normalize known-bad model names (e.g. yaml `hy3:Free` -> `tencent/hy3:free`)
+    # so the live vendor call never hits a 404. Code-side alias; yaml untouched.
+    m = normalize_model(model)
     eff = effort
     # model_suffix style (agy): fold effort into the model name, never emit --effort.
     # e.g. gemini-3.6-flash + high -> gemini-3.6-flash-high

@@ -66,6 +66,8 @@ def drive(
     max_task_workers: int = 4,
     speculative: bool = False,
     adaptive: bool = True,
+    implement_model: str | None = None,
+    implement_effort: str | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
 
@@ -183,6 +185,17 @@ def drive(
         if not speculative:
             # non-speculative default: implement each task in a single channel
             channels = channels[:1]
+
+    # Apply CLI --model/--effort overrides to every implement channel (they take
+    # precedence over the yaml/role defaults). implement() also runs a code-side
+    # normalize_model() over each channel's model, so a known alias in vendors.yaml
+    # (e.g. `hy3:Free` -> `tencent/hy3:free`) resolves to a live id even without an
+    # explicit override.
+    for ch in channels:
+        if implement_model is not None:
+            ch["model"] = implement_model
+        if implement_effort is not None:
+            ch["effort"] = implement_effort
 
     def _run_task_pipeline(tid: str) -> dict:
         """Phase A: implement (channels parallel) + review, pick winner.

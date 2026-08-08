@@ -228,7 +228,13 @@ def cmd_implement(args: argparse.Namespace) -> int:
                          ensure_ascii=False, indent=2))
         return 1
 
-    worktree = args.worktree or str(Path("workspaces") / args.task)
+    # Resolve to an absolute path. The implementer prompt advertises
+    # `worktree` as an ABSOLUTE path and instructs the vendor to write to
+    # `<worktree>/...`. A relative default would make cwd-relative vendors
+    # (hermes runs inside the worktree via subprocess cwd) nest the output
+    # under <worktree>/<worktree>/..., so `git -C <worktree> add` finds
+    # nothing. drive.py already resolves to absolute; keep this in sync.
+    worktree = args.worktree or str((Path("workspaces") / args.task).resolve())
     if not Path(worktree).exists():
         # recover a stale/missing worktree from its branch if possible
         recovered = ensure_worktree(args.task, str(Path("workspaces")))
@@ -329,6 +335,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
         max_task_workers=args.max_task_workers,
         speculative=speculative,
         adaptive=getattr(args, "adaptive", True),
+        implement_model=args.model,
+        implement_effort=args.effort,
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -538,6 +546,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="integration target branch (default: main)")
     dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")
     dr.add_argument("--reviewer", default=None, help="reviewer vendor (default: roles.review)")
+    dr.add_argument("--model", default=None,
+                    help="override the implementer model (and all implement channels); "
+                         "e.g. tencent/hy3:free. Normalized if a known alias is used.")
+    dr.add_argument("--effort", default=None,
+                    help="override the implementer effort (and all implement channels)")
     dr.add_argument("--implement-vendors", default=None,
                     help='multi-channel override, e.g. "agy:2,hermes:3" '
                          '(each entry becomes one parallel implement channel)')

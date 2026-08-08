@@ -231,3 +231,31 @@ def test_parse_channel_override() -> None:
         parse_channel_override("agy:notanumber")
     with pytest.raises(ValueError):
         parse_channel_override("")
+
+
+def test_normalize_model_aliases() -> None:
+    """Known-bad yaml model names map to live ids; unlisted models pass through.
+
+    Empirical basis: `hy3:Free` (as written in vendors.yaml) yields
+    `HTTP 404: Model 'hy3:Free' not found`; the canonical OpenRouter id is
+    `tencent/hy3:free`. We normalize in code so the hand-edited yaml is never
+    rewritten (the user forbids touching it).
+    """
+    from harness.core.invoke import normalize_model
+
+    assert normalize_model("hy3:Free") == "tencent/hy3:free"
+    assert normalize_model("hy3") == "tencent/hy3:free"
+    # anything not a known-bad alias is preserved verbatim (no silent rewrites)
+    assert normalize_model("claude-opus-4.8") == "claude-opus-4.8"
+    assert normalize_model(None) is None
+
+
+def test_build_command_normalizes_model() -> None:
+    """build_command must rewrite a known-bad model name in the emitted argv."""
+    from harness.core.invoke import build_command
+
+    d = load_vendors("harness/config")["hermes"]
+    cmd = build_command(d, "do it", model="hy3:Free", effort="high", role="implement")
+    # -m tencent/hy3:free (normalized), NOT -m hy3:Free
+    i = cmd.index("-m")
+    assert cmd[i + 1] == "tencent/hy3:free"

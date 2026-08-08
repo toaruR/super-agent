@@ -22,7 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from harness.core.invoke import invoke, load_vendors, build_command
+from harness.core.invoke import invoke, load_vendors, build_command, normalize_model
 from harness.core.ledger import Sequencer
 
 IMPLEMENT_PROMPT = """\
@@ -93,6 +93,9 @@ def implement(task_id: str, task: dict, worktree_path: str,
 
     decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
     decl = decls.get(vendor, decls["claude"])
+    # Normalize known-bad model names (e.g. yaml `hy3:Free` -> `tencent/hy3:free`)
+    # so the live vendor call never hits a 404. Code-side alias; yaml untouched.
+    model = normalize_model(model)
     cmd = build_command(decl, prompt, model=model, role="implement",
                         effort=effort, worktree=worktree_path)
 
