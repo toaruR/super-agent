@@ -111,3 +111,7 @@ class Sequencer:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
+
+    def load(self) -> list[dict[str, Any]]:
+        """Read the current event stream (delegates to the underlying Ledger)."""
+        return self._ledger.load()

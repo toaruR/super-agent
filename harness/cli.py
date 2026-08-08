@@ -10,6 +10,7 @@ Usage:
   python -m harness.cli status
   python -m harness.cli log <task>
   python -m harness.cli show design|plan
+  python -m harness.cli dashboard [--format md|html|both] [--out <path>]
 """
 from __future__ import annotations
 
@@ -445,6 +446,93 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Generate dashboard (md, html, or both) from ledger events."""
+    lg = Ledger(str(LEDGER_PATH))
+    events = lg.load()
+
+    try:
+        from harness.roles.dashboard import build_model, render_markdown, render_html
+    except ImportError:
+        def build_model(evs: list[dict]) -> dict:
+            tasks = {}
+            for ev in evs:
+                eid = ev.get("event_id", "")
+                task_id = eid.split(":")[0] if ":" in eid else eid
+                if not task_id:
+                    continue
+                if task_id not in tasks:
+                    tasks[task_id] = {"task_id": task_id, "status": "unknown", "last_event": ev.get("type", "")}
+                ev_type = ev.get("type", "")
+                tasks[task_id]["last_event"] = ev_type
+                if ev_type in ("integrate.ok", "review.pass", "implement.ok", "task.created"):
+                    tasks[task_id]["status"] = ev_type
+            return tasks
+
+        def render_markdown(model: dict) -> str:
+            lines = ["# Dashboard", "", "| Task ID | Status |", "| --- | --- |"]
+            for task_id, info in model.items():
+                status = info.get("status", "unknown") if isinstance(info, dict) else str(info)
+                lines.append(f"| {task_id} | {status} |")
+            return "\n".join(lines) + "\n"
+
+        def render_html(model: dict) -> str:
+            rows = ""
+            for task_id, info in model.items():
+                status = info.get("status", "unknown") if isinstance(info, dict) else str(info)
+                rows += f"<tr><td>{task_id}</td><td>{status}</td></tr>\n"
+            return (
+                "<!DOCTYPE html>\n"
+                "<html>\n<head><title>Dashboard</title></head>\n"
+                "<body>\n<h1>Dashboard</h1>\n"
+                "<table>\n<thead><tr><th>Task ID</th><th>Status</th></tr></thead>\n"
+                f"<tbody>\n{rows}</tbody>\n</table>\n"
+                "</body>\n</html>\n"
+            )
+
+    model = build_model(events)
+    fmt = args.format
+    out_path = getattr(args, "out", None) or getattr(args, "out_dir", None)
+
+    md_content = render_markdown(model)
+    html_content = render_html(model)
+
+    if out_path:
+        p = Path(out_path)
+        if fmt == "md":
+            if p.is_dir():
+                (p / "dashboard.md").write_text(md_content, encoding="utf-8")
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(md_content, encoding="utf-8")
+        elif fmt == "html":
+            if p.is_dir():
+                (p / "dashboard.html").write_text(html_content, encoding="utf-8")
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(html_content, encoding="utf-8")
+        elif fmt == "both":
+            if p.is_dir() or not p.suffix:
+                p.mkdir(parents=True, exist_ok=True)
+                (p / "dashboard.md").write_text(md_content, encoding="utf-8")
+                (p / "dashboard.html").write_text(html_content, encoding="utf-8")
+            else:
+                base = p.with_suffix("") if p.suffix in (".md", ".html") else p
+                base.parent.mkdir(parents=True, exist_ok=True)
+                Path(f"{base}.md").write_text(md_content, encoding="utf-8")
+                Path(f"{base}.html").write_text(html_content, encoding="utf-8")
+    else:
+        if fmt == "md":
+            sys.stdout.write(md_content)
+        elif fmt == "html":
+            sys.stdout.write(html_content)
+        elif fmt == "both":
+            sys.stdout.write(md_content)
+            sys.stdout.write(html_content)
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="super-agent")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -541,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--implement-vendors", default=None,
                     help='multi-channel override, e.g. "agy:2,hermes:3" '
                          '(each entry becomes one parallel implement channel)')
-    dr.add_argument("--parallel-tasks", action="store_true",
+    dr.add_argument("--parallel-tasks", action="store_true", default=True,
                     help="run independent tasks (topo layers) concurrently during "
                          "implement+review (integrate stays serial). "
                          "NOTE: task-level parallelism is ON by default; this flag "
@@ -579,6 +667,13 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--dry-run", action="store_true",
                     help="show proposed upgrades without recording them to the ledger")
     ev.set_defaults(func=cmd_evolve)
+
+    db = sub.add_parser("dashboard", help="generate dashboard (md/html/both)")
+    db.add_argument("--format", choices=["md", "html", "both"], default="md",
+                    help="output format: md, html, or both (default: md)")
+    db.add_argument("--out", "--out-dir", "--output", "-o", dest="out", default=None,
+                    help="output file or directory path")
+    db.set_defaults(func=cmd_dashboard)
 
     ns = p.parse_args(argv)
     return ns.func(ns)

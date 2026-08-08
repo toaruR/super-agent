@@ -248,6 +248,8 @@ def replan(
     Records ledger events when seq is given.
     """
     config_dir = Path(__file__).resolve().parent.parent / "config"
+    import sys as _sys2
+    print(f"DIAG replan ENTER: ids={[t['task_id'] for t in existing_tasks]} events_n={len(events or [])}", file=_sys2.stderr)
     registry = None
     try:
         from harness.core.verify import VerifierRegistry
@@ -259,19 +261,6 @@ def replan(
     current_tasks_md = render_tasks_md(existing_tasks, requirement)
     events_summary = _summarize_events(events or [])
     oversplit_hint = _detect_oversplit(existing_tasks)
-    # DIAG (temporary): record planner input + detected over-split to a file so
-    # we can see why over-split tasks survive into parallel worktrees.
-    from pathlib import Path as _P
-    _dbg = _P(__file__).resolve().parent.parent.parent / "probe" / "samples" / "_diag_planner.jsonl"
-    try:
-        with open(_dbg, "a", encoding="utf-8") as _fh:
-            _fh.write(json.dumps({
-                "events_n": len(events or []),
-                "in_ids": [t["task_id"] for t in existing_tasks],
-                "oversplit_hint": oversplit_hint,
-            }, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
     prompt = REPLAN_PROMPT.format(
         requirement=requirement,
         existing=existing_design,
@@ -335,17 +324,6 @@ def replan(
     valid_ids = {t["task_id"] for t in tasks}
     for t in tasks:
         t["depends_on"] = [d for d in t.get("depends_on", []) if d in valid_ids]
-
-    # DIAG (temporary): record planner output to correlate with input.
-    try:
-        with open(_dbg, "a", encoding="utf-8") as _fh:
-            _fh.write(json.dumps({
-                "OUT": True,
-                "out_ids": [t["task_id"] for t in tasks],
-                "notes": notes,
-            }, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
 
     if seq is not None:
         seq.propose("replan", "plan.revised",
