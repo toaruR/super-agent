@@ -6,7 +6,8 @@
   - **済**: Stage 0（review/log/show）／ Stage 1（architect）／ Stage 2（decomposer）／
          Stage 3（scheduler: worktree+リース）／ Stage 4（implementer）／
          **Stage 5（integrator: 統合+worktree後片付け）**
-  - **済**: Stage 6（evolve 改良）／ Stage 7（D/D'/F 運用成熟度）／ Stage B（並列駆動）
+  - **済**: Stage 6（evolve 改良: improver.py + `evolve` コマンド）／ Stage B（並列駆動）
+  - **未実装**: Stage 7（D 予算・D' 操作面・F OS隔離）
 - ゴール: `super-agent <サブコマンド>` で §9 の一周（要求→改良）を、**各段階が独立して動作確認できる**形で完成させる
 - 品質基準: 各段階で「実際にコマンドを叩いて結果を見る」ことを完了条件にする
 
@@ -24,8 +25,8 @@
 | ③ Scheduler | `plan <要求>` | 要求（分解済み） | `task.leased` + worktree 作成 |
 | ④ Implementer | `implement <task>` | task_id | `artifact.produced` + commit |
 | ⑤⑥⑦⑨ | `review <dir>` | ワークツリー | `verification.run` / `judgment`（**済**） |
-| ⑧ Integrator | `integrate <task>` | task_id | `integrated` |
-| ⑩ 改良 | `evolve` | 台帳 | `design.proposed` |
+| ⑧ Integrator | `integrate <task>` | task_id | `integrated`（**済**） |
+| ⑩ 改良 | `evolve` | 台帳 | `design.proposed`（**済**: improver.py + `evolve` コマンド） |
 
 **進め方の鉄則**: 各ステージは「そのステージだけで `super-agent <cmd>` を叩き、
 台帳にイベントが残り、ユーザーが結果を目で確認できる」ことを完了条件とする。
@@ -54,7 +55,7 @@ src/harness/
 > 凡例: ✅済 / 🔜今回 / ⏳後続
 > 各段に **動作確認コマンド** と **完了条件** を書く。
 
-### Stage 0 — 動かしやすくする小さな足場（🔜 最初に）
+### Stage 0 — 動かしやすくする小さな足場（✅ 完了）
 
 **目標**: 既に動く⑤⑥⑦⑨を1コマンドで試せるようにし、以降のステージも同じ形で差し込める。
 
@@ -73,7 +74,7 @@ super-agent status
 
 ---
 
-### Stage 1 — ① Architect（要求→設計の記録）（🔜）
+### Stage 1 — ① Architect（要求→設計の記録）（✅ 完了）
 
 **目標**: 要求に対する設計決定を ADR 形式で台帳に残す。まずは「人間が書いた設計を登録」
 から始め、その後 LLM に起案させる。
@@ -109,7 +110,7 @@ super-agent status          # task.created が増えている
 
 ---
 
-### Stage 3 — ③ Scheduler（編成・worktree・リース）（🔜）
+### Stage 3 — ③ Scheduler（編成・worktree・リース）（✅ 完了）
 
 **目標**: タスクに役割を割り当て、worktree を作り、リースを発行する。まずは**直列1タスク**から。
 
@@ -129,7 +130,7 @@ git worktree list                      # worktree ができている
 
 ---
 
-### Stage 4 — ④ Implementer（実装・commit）（🔜）
+### Stage 4 — ④ Implementer（実装・commit）（✅ 完了）
 
 **目標**: ベンダーに worktree で実装させ、commit させる。
 
@@ -197,21 +198,25 @@ git worktree list
 
 
 
+---
+
+### Stage 6 — ⑩ 改良（evolve: 自己改良）（✅ 完了）
+
 **目標**: 台帳から失敗パターンを拾い、憲法/テンプレへ昇格（G6 自己改良）。
 
-1. `roles/improver.py`: 台帳を読み、同種 fail 3回で `acceptance` テンプレへ昇格、または憲法へ書き込む（§9.1）。
-2. `super-agent evolve` で起動。
+1. `roles/improver.py`: 台帳を読み、同種 fail 3回で `acceptance` テンプレへ昇格、または憲法へ書き込む（§9.1）。実装: `cve_ok==False` / `verdict in (fail,reject,blocked)` / 非ゼロ returncode を失敗と判定、`pattern` でグループ化、しきい値3回で提案生成。
+2. `super-agent evolve` で起動（`--dry-run` で提案のみ表示、実行で `design.proposed` を台帳に記録＋対象ファイルへ追記）。
 
 **動作確認**:
 ```
 super-agent evolve --dry-run     # 提案される design.proposed を確認
 super-agent evolve              # 承認すると design.proposed が記録
 ```
-**完了条件**: 失敗パターンからの提案が台帳に残り、次回 decompose に反映される。
+**完了条件**: 失敗パターンからの提案が台帳に残る（harness/tests/test_improver.py: 5 passed）。
 
 ---
 
-### Stage 7 — D（予算・承認キュー）・D'（操作面）・F（OS隔離）（⏳ 運用成熟度）
+### Stage 7 — D（予算・承認キュー）・D'（操作面）・F（OS隔離）（⏳ 未実装・運用成熟度）
 
 - **D**: `budget.py` でトークン正規化＋価格換算。超過で停止。`status` に予算表示。
 - **D'**: `pause`/`resume`/`abort`/`amend` を cli に追加（L6）。
