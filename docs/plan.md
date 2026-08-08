@@ -1,6 +1,6 @@
 # 実装計画 — 大枠設計を動くハーネスにする
 
-- 作成日: 2026-08-06 ／ 改訂: 2026-08-06（「動かしながら確認できる順」へ再構成）
+- 作成日: 2026-08-06 ／ 改訂: 2026-08-08（「動かしながら確認できる順」へ再構成＋master 一本化）
 - 現在の状態: 設計 v4（89点/合格）
   - **済**: Stage A（台帳・アダプタ・invoke・CLI）／ Stage C（検証パイプライン ⑤⑥⑦⑨）
   - **済**: Stage 0（review/log/show）／ Stage 1（architect）／ Stage 2（decomposer）／
@@ -186,17 +186,25 @@ git worktree list            # worktree が消えている
 4. `harness/cli.py`: `--implement-vendors "agy:2,hermes:3"`（緊急オーバーライド）、`--parallel-tasks`（デフォルトで有効）、`--speculative`（投機的モードの opt-in）、`--max-task-workers N` を追加。
 
 **動作確認**:
-```
+```bash
 # デフォルト: 各タスクを単一チャンネルで実装、独立タスクは自動並行
 super-agent drive --tasks ./probe/sample/my-design-tasks.md
-# 投機的モード: 各タスクを roles.implement の全5チャンネルで競わせ、勝者を統合
+# 投機的モード: 各タスクを roles.implement の全チャンネルで競わせ、勝者を統合
 super-agent drive --tasks ./probe/sample/my-design-tasks.md --speculative
 # 明示的チャンネル数指定でも投機的になる（agy 1 + hermes 1 = 2チャンネル競争）
 super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
+# implement チャンネルのモデル/effort を CLI で上書き（全チャンネルに適用）
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --model tencent/hy3:free --effort high
 # worktree 確認: 実行中は各タスク/チャンネルの worktree が並び、終了後は綺麗に消える
 git worktree list
 ```
 **完了条件**: デフォルトの単一チャンネル実装＋タスクレベル並列が実ベンダーで完走し、敗者チャンネルの worktree が残らない。投機的モードは `--speculative` 時のみ複数チャンネルを起動（65 passed）。
+
+> **実測で判明した運用事実（2026-08-08）**:
+> - `vendors.yaml` の `roles.implement` は現在 **hermes(hy3:Free) ×5** に設定（agy/codex はコメントアウト）。
+> - `hy3:Free` は yaml にそのまま書くが、**コード側 `normalize_model()` が `tencent/hy3:free` に自動正規化**する（OpenRouter カタログ名との乖離を吸収）。yaml を `tencent/hy3:free` に書き換える必要はない。
+> - `roles.review` は現在 **agy（gemini-3.6-flash）**。drive の review 記録は実際の reviewer vendor（agy）を使うよう修正済み（`fix(drive): review フェーズの記録に実際の reviewer を表示する`）。
+> - drive 経由の hermes 5チャンネル並列 implement を実測: implement 4/5 成功（hy3:free 無料枠の不安定で 1 チャンネル失敗）、review(agy) を通した勝者を統合。
 
 ---
 
@@ -266,7 +274,14 @@ Stage 0（足場: review/log/show）     → 既存⑤⑥⑦⑨を1コマンド�
 
 ## 5. 次の一手
 
-**Stage 0（足場）を開始する。**
-1. `cli.py` に `review <dir>` / `log <task>` / `show design|plan` を追加。
-2. `super-agent review probe/n3/caseGreen` が通ることを確認（既存 review_flow を呼ぶだけ）。
-3. コミット。その後 Stage 1（architect）へ。
+**2026-08-08 時点の状態**: 全機能（Stage 0〜6 + Stage B）が `master` 一本に統合済み。
+`feat/dashboard` / `feat/planner` は `master` へマージして削除。`main` は事故生成物として削除。
+作業ツリーは clean、ローカル `master` と `origin/master` は一致（`cc9addb`）。
+
+**残課題（運用成熟・Stage 7）**:
+1. `budget.py`（D）の実装 — トークン正規化＋価格換算、超過停止、`status` への予算表示。
+2. `pause`/`resume`/`abort`/`amend`（D'）の cli への追加（L6）。
+3. レビュアの OS レベル隔離（F）の本実装（Windows ではベストエフォート）。
+
+**次に手を入れるなら**: Stage 7 の D（予算）から。現状は「動く一周」ができているので、
+運用でどこが辛いか（予算見えない／途中停止できない）を実測して優先順位を決める。

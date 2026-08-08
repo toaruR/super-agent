@@ -22,6 +22,8 @@ git-bash なら `./super-agent status` で実行できます。
 
 現在実装済み：Stage 0（足場）〜 Stage 6（evolve 自己改良）＋ Stage B（並列駆動：デフォルトは単一チャンネル実装＋タスクレベル並列、投機的マルチチャンネル実装は `--speculative` で opt-in）。
 
+**現在の既定ベンダー構成（2026-08-08、master 一本化後）**：`roles.implement` = hermes(hy3:Free) ×5、`roles.review` = agy（gemini-3.6-flash）。モデル名はコード側 `normalize_model()` で自動正規化される（例: `hy3:Free` → `tencent/hy3:free`）。
+
 ---
 
 ## 1. 前提環境
@@ -265,8 +267,10 @@ super-agent implement --task T1 --tasks my-design-tasks.md --dry-run
 |---|---|
 | `--task` | 実装するタスクID（必須） |
 | `--tasks` | タスク定義を探す DAG（既定 `probe/sample/my-design-tasks.md`） |
-| `--worktree` | worktree パス（既定 `workspaces/<task>`） |
-| `--vendor` | Implementer ベンダー（既定 `claude`） |
+| `--worktree` | worktree パス（既定 `workspaces/<task>`）。**省略時は `src/` からの絶対パスに解決される**（相対パスだとベンダーがカレントに出力をネストする不具合があったため） |
+| `--vendor` | Implementer ベンダー（既定 `vendors.yaml` の `roles.implement` 先頭チャンネル） |
+| `--model` | Implementer のモデルを上書き（既定は `roles.implement` のモデル）。`vendors.yaml` の `hy3:Free` のような短名も可 — コード側 `normalize_model()` が `tencent/hy3:free` 等の実名に自動正規化される |
+| `--effort` | Implementer の effort を上書き（既定は `roles.implement` の effort） |
 | `--dry-run` | プロンプト組み立てのみ（vendor/git は呼ばない） |
 
 **何をするか**：タスクの `goal`・`acceptance`・`touch_allow` をプロンプトに入れ、ベンダーを
@@ -316,7 +320,7 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
  |---|---|
  | `--task` | 統合するタスクID |
  | `--tasks` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
- | `--target` | 統合先ブランチ（既定 `main`） |
+ | `--target` | 統合先ブランチ（既定 `main`）。**現在の本流ブランチは `master`** なので、実運用では `--target master` を指定する（コードの既定値は `main` のまま） |
  | `--worktree` | worktree パス（既定 `workspaces/<task>`；無ければ `task/<id>` から再作成） |
  | `--dry-run` | マージ/後片付けを実行せず計画のみ表示 |
 
@@ -338,8 +342,9 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 - `--spec <md>`: 設計ファイル（`--tasks` が無い時に使用）。
 - `--target <branch>`: 統合先ブランチ（既定 `main`）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
+- `--model` / `--effort`: **implement チャンネル全てのモデル / effort を一括上書き**（既定は `vendors.yaml` の `roles.implement` 各チャンネル値）。短名（例: `hy3:Free`）も可 — コード側 `normalize_model()` が実名（例: `tencent/hy3:free`）に自動正規化される。review ベンダーは影響しない。
 - `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override（投機的モードのトリガー）**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用）。**この指定自体が投機的モードを意味する** — 複数チャンネルが同じタスクを競って実装し、最初に review を通した勝者を統合する。
-- `--speculative`: **投機的モードを明示的に有効化**。`roles.implement` の全チャンネル（既定 agy×2 + hermes×3 = 5）で各タスクを fan-out して競わせる。`--implement-vendors` で複数チャンネルを指定した場合も暗黙的に投機的モードになる。
+- `--speculative`: **投機的モードを明示的に有効化**。`roles.implement` の全チャンネル（既定 hermes×5 = 5）で各タスクを fan-out して競わせる。`--implement-vendors` で複数チャンネルを指定した場合も暗黙的に投機的モードになる。
 - `--parallel-tasks`: **タスクレベル並列（デフォルトで有効）**。依存のないタスクを topo レイヤー単位で並行駆動（implement+review を並列。integrate は git 操作のため直列）。このフラグは明示用で、省略しても独立タスクは自動で並行処理される。
 - `--max-task-workers N`: 同時タスク数の上限（既定 4）。
 - `--dry-run`: **何も実行しない**（worktree 作成・implement・CVE 検証・レビュア呼び出し・統合・後片付けのすべてをスキップ）。fan-out 計画（どのタスクをどのチャンネルで実行するか）のみ JSON で出力。
@@ -481,9 +486,13 @@ super-agent log T-XXXX
 
 | ファイル | 役割 | いつ触るか |
 |---|---|---|
-| `vendors.yaml` | ベンダーの呼び出し方（構造化出力・再開・権限） | 新ベンダー追加時 |
+| `vendors.yaml` | ベンダーの呼び出し方（構造化出力・再開・権限）＋ `roles.implement` / `roles.review` のチャンネル構成 | ベンダー追加時／チャンネル構成変更時 |
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック | マシンが変わった時 |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） | 新しい検証種別を足す時 |
+
+> **モデル名はコード側で正規化される**：`vendors.yaml` には OpenRouter の短名（例: `hy3:Free`）をそのまま書ける。実行時に `harness/core/invoke.py` の `normalize_model()` が実名（`tencent/hy3:free`）へ自動変換するため、yaml を実名に書き換える必要はない。未知の名前はそのまま通る（404 になるのは yaml の書き間違いやカタログ不在時のみ）。
+>
+> **現在の `roles.implement` 構成（2026-08-08）**：hermes(hy3:Free) ×5（agy/codex はコメントアウト）。`roles.review` は agy（gemini-3.6-flash）。
 
 > **`verification_env.yaml` の python パスは環境依存です。** 各環境の venv
 > （例: `.cve-venv/Scripts/python.exe`）を指すよう設定してください。
