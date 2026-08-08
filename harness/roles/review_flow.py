@@ -110,6 +110,12 @@ def run_pipeline(
             review = res.get("result")
         except Exception:
             review = None
+        # The vendor may return raw text instead of structured JSON (e.g. a
+        # free-tier model that ignores the schema). Treat anything that isn't a
+        # dict as "no structured review" so adjudicate() doesn't crash on
+        # review.get(...) — it falls back to evidence-only judgment.
+        if not isinstance(review, dict):
+            review = None
         emit(task_id, "reviewer.raw", returncode=res.get("returncode"))
 
     # 4) Adjudicate (evidence-only; independent of reviewer's environment)

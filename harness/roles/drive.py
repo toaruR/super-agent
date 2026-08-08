@@ -280,7 +280,8 @@ def drive(
         except Exception as ex:
             # any failure in the pipeline must not abort the whole drive nor
             # leave channel worktrees behind — record and let Phase B tear down.
-            entry["error"] = str(ex)
+            import traceback as _tb
+            entry["error"] = _tb.format_exc()
             entry["_winner"] = None
             entry["_channel_ids"] = channel_ids
             entry["review"] = {"channels": [], "judgment_unavailable": True,
