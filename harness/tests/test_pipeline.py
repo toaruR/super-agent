@@ -48,17 +48,19 @@ def test_pipeline_dry_run_records_events() -> None:
                      reviewer_vendor="codex", seq=seq, dry_run=True)
     seq.stop()
 
-    assert j["tree_hash"] == CVE(CONFIG / "verification_env.yaml",
-                                 CONFIG / "verifiers.yaml").hash(CASEB)
+    # dry-run: CVE 検証は実行されず、ダミー証拠（tree_hash="dry-run"）になる。
+    # 実ファイルが存在しない worktree に対しても安全（NotADirectoryError にならない）。
+    assert j["tree_hash"] == "dry-run"
     events = Ledger(str(LEDGER)).load()
     types = [e["type"] for e in events]
     assert "verification.run" in types
+    assert "reviewer.skipped" in types
     assert "brief.built" in types
     assert "judgment" in types
     # tree_hash carried from verification to judgment (H4)
     vr = next(e for e in events if e["type"] == "verification.run")
     jd = next(e for e in events if e["type"] == "judgment")
-    assert vr["tree_hash"] == jd["tree_hash"]
+    assert vr["tree_hash"] == jd["tree_hash"] == "dry-run"
 
 
 if __name__ == "__main__":

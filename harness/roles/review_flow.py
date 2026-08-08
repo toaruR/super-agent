@@ -70,12 +70,18 @@ def run_pipeline(
         emit = lambda tid, typ, **kw: ledger.append(tid, typ, **kw)
 
     # 1) CVE verification (the only place anything is executed)
-    cve = CVE(CONFIG_DIR / "verification_env.yaml", CONFIG_DIR / "verifiers.yaml")
-    evidence = cve.run(worktree, acceptance)
-    emit(task_id, "verification.run",
-         cve="local-win-py311", tree_hash=evidence["tree_hash"],
-         cve_ok=evidence["cve_ok"],
-         n_evidence=len(evidence["evidence"]))
+    if dry_run:
+        # dry-run: 実行を一切行わず、ダミー証拠を作る（計画のみ出力）
+        evidence = {"tree_hash": "dry-run", "cve_ok": True, "evidence": []}
+        emit(task_id, "verification.run", cve="dry-run", tree_hash="dry-run",
+             cve_ok=True, n_evidence=0)
+    else:
+        cve = CVE(CONFIG_DIR / "verification_env.yaml", CONFIG_DIR / "verifiers.yaml")
+        evidence = cve.run(worktree, acceptance)
+        emit(task_id, "verification.run",
+             cve="local-win-py311", tree_hash=evidence["tree_hash"],
+             cve_ok=evidence["cve_ok"],
+             n_evidence=len(evidence["evidence"]))
 
     if not evidence["cve_ok"]:
         j = adjudicate(evidence, None)

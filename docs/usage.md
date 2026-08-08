@@ -130,7 +130,7 @@ super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy
 | `<dir>` | 検証するワークツリー／題材ディレクトリ（必須） |
 | `--accept` | 受理テスト指定 `"verb arg1 arg2"`（既定 `pytest tests/`）。期待終了コードは `--expect-exit` |
 | `--reviewer` | レビュアベンダー（既定 `codex`） |
-| `--dry-run` | **CVE は実行するがレビュアは呼ばず**。裁定は `judgment_unavailable` になる |
+| `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力。裁定は `judgment_unavailable` になる |
 
 **何をするか**：`run_pipeline` を呼び、CVE→簡報→レビュー→裁定を台帳駆動で実行。
 JSON で裁定を標準出力に出します。
@@ -289,7 +289,7 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 | `--tasks` | タスク定義 DAG（acceptance + worktree 解決用） |
 | `--worktree` | worktree パス（既定 `workspaces/<task>`） |
 | `--reviewer` | レビュア（Implementer と別であること／既定 `codex`） |
-| `--dry-run` | CVE は実行、レビュア呼び出しはスキップ |
+| `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力 |
 
 **何をするか**：CVE で検証（§3.2 証拠束縛）→ 差分＋証拠ログ＋受入基則のみを brief に渡して
 レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
@@ -338,7 +338,7 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 - `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用。既定は `agy×2 + hermes×3` の5チャンネル）。
 - `--parallel-tasks`: **タスクレベル並列**。依存のないタスクを topo レイヤー単位で並行駆動（implement+review を並列。integrate は git 操作のため直列）。
 - `--max-task-workers N`: `--parallel-tasks` 時の最大同時タスク数（既定 4）。
-- `--dry-run`: ワークツリー作成＋CVE 実行は行うが、レビュア呼び出しと統合（git 操作）をスキップ。
+- `--dry-run`: **何も実行しない**（worktree 作成・implement・CVE 検証・レビュア呼び出し・統合・後片付けのすべてをスキップ）。fan-out 計画（どのタスクをどのチャンネルで実行するか）のみ JSON で出力。
 
 **マルチチャンネル（Stage B 並列(b)）**: `roles.implement` はチャンネル**リスト**で宣言。各エントリが1チャンネル＝独立 worktree で並列実装され、model/effort はチャンネルごとに指定可。review を通した**最初のチャンネルだけ**を統合し、他は破棄。これにより agy×2 + hermes×3 のような異ベンダー混載も同時実行できる。
 
