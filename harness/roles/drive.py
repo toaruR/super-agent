@@ -158,6 +158,11 @@ def drive(
                 # Backward-compatible single-channel path: use the plain worktree/branch.
                 ch = channels[0]
                 wt = str(Path("workspaces").resolve() / tid)
+                cw = create_worktree(tid, root="workspaces", dry_run=dry_run)
+                if not cw.get("ok"):
+                    return {"vendor": ch["vendor"], "model": ch["model"],
+                            "effort": ch["effort"], "task_id": tid,
+                            "ok": False, "error": cw.get("error", "worktree create failed")}
                 impl = implement(tid, task, wt, vendor=ch["vendor"],
                                  model=ch["model"], effort=ch["effort"],
                                  seq=seq, dry_run=dry_run)

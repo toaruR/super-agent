@@ -198,3 +198,26 @@ def test_drive_speculative_flag_fans_out_all_channels() -> None:
     assert m_impl.call_count == n_ch
     # composite channel ids appear (speculative fan-out)
     assert any("__" in c.args[0] for c in m_impl.call_args_list)
+
+
+def test_drive_default_single_channel_creates_worktree() -> None:
+    """Regression (bug: single-channel path skipped create_worktree, causing
+    [WinError 267] when the vendor ran in a non-existent cwd). The default
+    (non-speculative) path must still create a worktree before implementing."""
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "cX"}) as m_impl, \
+         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+         mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+         mock.patch.object(drive, "create_worktree", return_value={"ok": True, "path": "workspaces/T1", "branch": "task/T1"}) as m_cw, \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},
+         ]):
+        out = drive.drive("", None, "probe/sample/my-design-tasks.md",
+                          seq=None, dry_run=False)
+    assert out["ok"] is True
+    # create_worktree must be called for the single (plain) task id
+    assert m_cw.called
+    assert any("T1" in (c.args[0] if c.args else "") for c in m_cw.call_args_list)
+    # implement runs inside the created worktree
+    assert m_impl.called
