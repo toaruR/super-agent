@@ -341,6 +341,43 @@ def build_command(
     return cmd
 
 
+def _is_content_blocked(stdout: str, stderr: str) -> bool:
+    """Detect a vendor content-policy block in the response.
+
+    Hermes (Tencent Hunyuan hy3:free) occasionally refuses with a
+    Chinese-language policy message and stops. Observed markers:
+      - `content_policy_blocked`
+      - `你好，我无法给到相关内容。` ("sorry, I can't provide that")
+      - `无法给到相关内容`
+    Retrying (resume the same session, or re-issue the prompt) usually
+    recovers, so the caller should loop on this signal.
+    """
+    hay = (stdout or "") + "\n" + (stderr or "")
+    markers = (
+        "content_policy_blocked",
+        "无法给到相关内容",
+        "你好，我无法",
+        "unable to provide",
+    )
+    return any(m in hay for m in markers)
+
+
+def _extract_session_id(stdout: str) -> str | None:
+    """Pull the session id a vendor prints on exit (hermes: `session_id: ...`).
+
+    Used to resume the *same* session on a content-policy block — equivalent
+    to the human "just continue" recovery that works interactively.
+    """
+    if not stdout:
+        return None
+    for ln in stdout.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("session_id:"):
+            sid = stripped.split(":", 1)[1].strip()
+            return sid or None
+    return None
+
+
 def extract_result(stdout: str, result_path: str) -> Any:
     """Extract the structured field from a vendor response (A-3).
 
@@ -444,6 +481,7 @@ def invoke(
     role: str | None = None,
     dry_run: bool = False,
     timeout: int = 300,
+    max_retries: int = 3,
 ) -> dict[str, Any]:
     cmd = build_command(decl, prompt, schema=schema, session_id=session_id,
                         worktree=worktree, model=model, effort=effort, role=role)
@@ -453,13 +491,42 @@ def invoke(
     # they never block waiting on stdin. Passing `input=` makes subprocess use a
     # pipe for stdin automatically, so we must not also set stdin=DEVNULL.
     stdin_kw = {"input": prompt} if decl.prompt_stdin else {"stdin": subprocess.DEVNULL}
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace",
-                          shell=False, timeout=timeout, **stdin_kw)
-    return {
-        "cmd": cmd,
-        "returncode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
-        "result": extract_result(proc.stdout, decl.result_path()),
-    }
+
+    last: dict[str, Any] = {}
+    resume_sid: str | None = session_id
+    for attempt in range(1, max_retries + 1):
+        # Resume the prior session on retries if the vendor supports it
+        # (hermes prints `session_id:` and accepts `--resume <id>`). This is the
+        # programmatic equivalent of the interactive "just continue" recovery
+        # that works around intermittent content-policy blocks.
+        run_cmd = cmd
+        if attempt > 1 and resume_sid is not None:
+            run_cmd = build_command(
+                decl, prompt, schema=schema, session_id=resume_sid,
+                worktree=worktree, model=model, effort=effort, role=role,
+            )
+        proc = subprocess.run(run_cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              shell=False, timeout=timeout, **stdin_kw)
+        last = {
+            "cmd": run_cmd,
+            "returncode": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "result": extract_result(proc.stdout, decl.result_path()),
+            "attempt": attempt,
+        }
+        # Content-policy block? Retry by resuming the same session (or, if no
+        # session id yet, the next attempt re-issues the same prompt fresh).
+        if _is_content_blocked(proc.stdout, proc.stderr):
+            sid = _extract_session_id(proc.stdout)
+            if sid:
+                resume_sid = sid
+            if attempt < max_retries:
+                continue
+            # exhausted retries — return the last (blocked) response as-is
+            last["content_blocked"] = True
+            return last
+        # Not blocked: success (or a genuine failure), stop retrying.
+        return last
+    return last

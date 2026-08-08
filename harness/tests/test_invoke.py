@@ -259,3 +259,61 @@ def test_build_command_normalizes_model() -> None:
     # -m tencent/hy3:free (normalized), NOT -m hy3:Free
     i = cmd.index("-m")
     assert cmd[i + 1] == "tencent/hy3:free"
+
+
+def test_is_content_blocked_markers() -> None:
+    """Block detection catches the observed hermes policy messages."""
+    from harness.core.invoke import _is_content_blocked
+
+    assert _is_content_blocked("你好，我无法给到相关内容。", "") is True
+    assert _is_content_blocked("", "content_policy_blocked: ...") is True
+    assert _is_content_blocked("normal code output", "") is False
+    assert _is_content_blocked("I'm unable to provide that", "") is True
+
+
+def test_extract_session_id() -> None:
+    from harness.core.invoke import _extract_session_id
+
+    out = "some text\nsession_id: 20260808_213016_e5a356\nmore"
+    assert _extract_session_id(out) == "20260808_213016_e5a356"
+    assert _extract_session_id("no id here") is None
+
+
+def test_invoke_retries_on_content_block(monkeypatch) -> None:
+    """invoke() must retry (resuming the session) when hermes blocks, then
+    succeed on a later attempt instead of returning the blocked response."""
+    import harness.core.invoke as inv
+    from harness.core.invoke import VendorDecl
+
+    # Fake vendor decl that supports session resume (like hermes).
+    decl = VendorDecl("hermes", {
+        "model_flag": "-m", "effort_flag": "--reasoning",
+        "headless": ["hermes", "chat", "-q", "{prompt}", "-Q"],
+        "session": {"resume_flag": ["--resume"]},
+    })
+
+    # Simulated hermes: 1st call blocked (emits a session id), 2nd succeeds.
+    calls = {"n": 0}
+
+    class _FakeProc:
+        def __init__(self, rc, out, err):
+            self.returncode = rc; self.stdout = out; self.stderr = err
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # blocked, but prints a session id we can resume with
+            return _FakeProc(0, "你好，我无法给到相关内容。\nsession_id: ABC123\n", "")
+        # resumed attempt: success with code
+        return _FakeProc(0, "```python\ndef build_model(e):\n    return {}\n```\nsession_id: ABC123\n", "")
+
+    monkeypatch.setattr(inv.subprocess, "run", fake_run)
+
+    res = inv.invoke(decl, "implement this", model="tencent/hy3:free",
+                     effort="high", role="implement", timeout=10, max_retries=3)
+    # retried exactly twice (blocked once, succeeded on 2nd)
+    assert calls["n"] == 2
+    assert res.get("content_blocked") is not True
+    # the resume flag was used on the 2nd attempt
+    assert "--resume" in res["cmd"]
+    assert "ABC123" in res["cmd"]
