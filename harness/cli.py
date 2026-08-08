@@ -30,6 +30,7 @@ from harness.roles.scheduler import schedule
 from harness.roles.implementer import implement
 from harness.roles.integrator import integrate
 from harness.roles.drive import drive
+from harness.roles.improver import mine as improver_mine, report as improver_report
 from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
@@ -424,6 +425,15 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_evolve(args: argparse.Namespace) -> int:
+    """Stage 6 (§9 ⑩): mine the ledger for recurring failures and propose
+    self-improvements. With --dry-run, only prints proposals; otherwise also
+    records a ``design.proposed`` event and appends to the target file."""
+    result = improver_mine(dry_run=args.dry_run)
+    print(improver_report(result))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="super-agent")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -539,6 +549,11 @@ def main(argv: list[str] | None = None) -> int:
     sh = sub.add_parser("show", help="read-only view of design/plan (L6)")
     sh.add_argument("what", choices=["design", "plan"])
     sh.set_defaults(func=cmd_show)
+
+    ev = sub.add_parser("evolve", help="mine ledger for recurring failures and propose self-improvements (Stage 6)")
+    ev.add_argument("--dry-run", action="store_true",
+                    help="show proposed upgrades without recording them to the ledger")
+    ev.set_defaults(func=cmd_evolve)
 
     ns = p.parse_args(argv)
     return ns.func(ns)

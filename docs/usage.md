@@ -20,7 +20,7 @@ Super Agent は「異ベンダーのコーディングエージェント（Claud
 内部で `python -m harness.cli` を呼びます。PowerShell なら拡張子省略（`super-agent status`）、
 git-bash なら `./super-agent status` で実行できます。
 
-現在実装済み：Stage 0（足場）〜 Stage 5（統合）＋ Stage B（並列駆動：マルチチャンネル実装＋タスク並列）。
+現在実装済み：Stage 0（足場）〜 Stage 6（evolve 自己改良）＋ Stage B（並列駆動：マルチチャンネル実装＋タスク並列）。
 
 ---
 
@@ -98,6 +98,9 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 | `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.6 |
 | `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.7 |
 | `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.8 |
+| `integrate --task T1` | 実装済みタスクを統合ブランチへマージ＋後片付け（Stage 5＝⑧） | 2.10 |
+| `drive --tasks <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.11 |
+| `evolve` | 台帳から失敗パターンを拾い自己改良を提案（Stage 6＝⑩） | 2.12 |
 
 ### 2.1 `super-agent run` — 要求を投入し台帳に記録
 
@@ -359,6 +362,40 @@ super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
 
 > 実行後は各タスクの全チャンネル worktree が自動で破棄される（敗者チャンネルも残らない）。
 
+### 2.12 `super-agent evolve` — 自己改良（⑩ Stage 6）
+
+台帳（`harness/ledger/events.jsonl`）を読み、再発している失敗パターンから
+`acceptance` テンプレまたは憲法への昇格を提案します（G6 自己改良）。
+
+```bash
+super-agent evolve --dry-run    # 提案だけ表示（台帳は変更しない）
+super-agent evolve              # 提案を design.proposed として台帳に記録＋対象ファイルへ追記
+```
+
+| オプション | 意味 |
+|---|---|
+| `--dry-run` | 提案を表示するだけ。台帳イベントは書き込まず、対象ファイルも変更しない |
+
+**何をするか**：
+1. 失敗と判定される event を抽出 — `cve_ok == False`、`verdict ∈ {fail, reject, blocked}`、実行系 event の `returncode != 0`。
+2. `pattern`（失敗の署名：`cve:<verifier>` / `verdict:<v>` / `returncode:<n>`）でグループ化。
+3. 同種が **3回以上** 続いたら提案を生成。`cve:` 系は `acceptance-templates.md` へ、それ以外は `constitution.md` へ昇格案を書き出す。
+4. 実行時は `design.proposed` event を台帳に記録し、対応するファイルへ 1 行追記。
+
+**例（失敗が蓄積している台帳）**：
+```bash
+super-agent evolve --dry-run
+# events scanned : 26
+# failures found : 4
+# proposals      : 1
+#   1. pattern `cve:flake` x3 -> acceptance-templates
+#      sample: flaky import
+#      - [auto] failure pattern `cve:flake` recurred 3x. Suggested acceptance template: ...
+```
+
+> 失敗パターンがしきい値（3回）に満たない場合は「何も提案しない」と表示されます。
+> 提案はあくまで**案**であり、実際の acceptance ルール／憲法の変更は人間がレビューして反映します。
+
 ## 3. 検証パイプラインを動かす（Stage C）
 
 
@@ -456,7 +493,7 @@ super-agent log T-XXXX
 
 ```bash
 python -m pytest harness/tests/ -q
-# ................  59 passed
+# ................  65 passed
 ```
 
 - `test_invoke.py`（13）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）＋チャンネル解決・オーバーライド解析
@@ -469,6 +506,7 @@ python -m pytest harness/tests/ -q
 - `test_integrator.py`（4）：統合（success/conflict/violation/verify-fail）
 - `test_architect.py`（3）：設計起案・ADR 記録
 - `test_cli.py`（4）：CLI サブコマンドの引数解釈
+- `test_improver.py`（5）：Stage 6 自己改良（失敗抽出・グループ・しきい値・dry-run 不書込・design.proposed 記録）
 
 ---
 
@@ -480,11 +518,10 @@ python -m pytest harness/tests/ -q
 - `pause` / `resume` / `abort` / `amend` / `show` コマンド（Stage D' 操作面。`show design|plan` は実装済み）
 - 予算上限での自動停止・承認キュー（Stage D。予算計算は実装済み、承認キューは未実施）
 - レビュアの OS レベル隔離（Stage F）
-- 改良ループ（Stage 6 / ⑩ `evolve`）
 
-これらは `docs/plan.md` の Stage 6・7 を参照。
+これらは `docs/plan.md` の Stage 7 を参照。
 
-> **実装済み（Stage 0〜5 + Stage B 並列）**：`review` は implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。`drive` はマルチチャンネル実装（agy×2+hermes×3 等）＋タスクレベル並列に対応。
+> **実装済み（Stage 0〜6 + Stage B 並列）**：`review` は implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。`drive` はマルチチャンネル実装（agy×2+hermes×3 等）＋タスクレベル並列に対応。`evolve` は台帳から失敗パターンを拾い自己改良を提案（§2.12）。
 
 ---
 
