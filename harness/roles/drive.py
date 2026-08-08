@@ -139,79 +139,98 @@ def drive(
         No git mutation here, so it is safe to run concurrently across tasks."""
         task = by_id.get(tid, {})
         entry: dict[str, Any] = {"task_id": tid}
-
-        # ④ implement — fan out across channels, run in parallel
-        ch_results: list[dict] = []
         channel_ids: list[str] = []
-        default_vendor = resolve_role("implement", config_dir)["vendor"]
-        single_path = (len(channels) == 1 and
-                       channels[0]["vendor"] == (implement_vendor or default_vendor))
-        if single_path:
-            # Backward-compatible single-channel path: use the plain worktree/branch.
-            ch = channels[0]
-            wt = str(Path("workspaces").resolve() / tid)
-            impl = implement(tid, task, wt, vendor=ch["vendor"],
-                             model=ch["model"], effort=ch["effort"],
-                             seq=seq, dry_run=dry_run)
-            ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
-                               "effort": ch["effort"], "worktree": wt,
-                               "task_id": tid, "impl": impl})
-            channel_ids.append(tid)
-        else:
-            # Multi-channel: one worktree/branch per (task, channel).
-            def _run_channel(i: int, ch: dict) -> dict:
-                cid = _channel_worktree_id(tid, ch["vendor"], i)
-                wt = str(Path("workspaces").resolve() / cid)
-                create_worktree(cid, root="workspaces", dry_run=dry_run)
-                impl = implement(cid, task, wt, vendor=ch["vendor"],
+
+        try:
+            # ④ implement — fan out across channels, run in parallel
+            ch_results: list[dict] = []
+            default_vendor = resolve_role("implement", config_dir)["vendor"]
+            single_path = (len(channels) == 1 and
+                           channels[0]["vendor"] == (implement_vendor or default_vendor))
+            if single_path:
+                # Backward-compatible single-channel path: use the plain worktree/branch.
+                ch = channels[0]
+                wt = str(Path("workspaces").resolve() / tid)
+                impl = implement(tid, task, wt, vendor=ch["vendor"],
                                  model=ch["model"], effort=ch["effort"],
                                  seq=seq, dry_run=dry_run)
-                return {"vendor": ch["vendor"], "model": ch["model"],
-                        "effort": ch["effort"], "worktree": wt,
-                        "task_id": cid, "impl": impl}
+                ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
+                                   "effort": ch["effort"], "worktree": wt,
+                                   "task_id": tid, "impl": impl, "ok": True})
+                channel_ids.append(tid)
+            else:
+                # Multi-channel: one worktree/branch per (task, channel).
+                def _run_channel(i: int, ch: dict) -> dict:
+                    cid = _channel_worktree_id(tid, ch["vendor"], i)
+                    wt = str(Path("workspaces").resolve() / cid)
+                    cw = create_worktree(cid, root="workspaces", dry_run=dry_run)
+                    if not cw.get("ok"):
+                        return {"vendor": ch["vendor"], "model": ch["model"],
+                                "effort": ch["effort"], "task_id": cid,
+                                "ok": False, "error": cw.get("error", "worktree create failed")}
+                    impl = implement(cid, task, wt, vendor=ch["vendor"],
+                                     model=ch["model"], effort=ch["effort"],
+                                     seq=seq, dry_run=dry_run)
+                    return {"vendor": ch["vendor"], "model": ch["model"],
+                            "effort": ch["effort"], "worktree": wt,
+                            "task_id": cid, "impl": impl, "ok": True}
 
-            with ThreadPoolExecutor(max_workers=len(channels)) as ex:
-                ch_results = list(ex.map(
-                    lambda kv: _run_channel(kv[0], kv[1]),
-                    list(enumerate(channels)),
-                ))
-            channel_ids = [_channel_worktree_id(tid, c["vendor"], i)
-                           for i, c in enumerate(channels)]
+                with ThreadPoolExecutor(max_workers=len(channels)) as ex:
+                    ch_results = list(ex.map(
+                        lambda kv: _run_channel(kv[0], kv[1]),
+                        list(enumerate(channels)),
+                    ))
+                channel_ids = [_channel_worktree_id(tid, c["vendor"], i)
+                               for i, c in enumerate(channels)]
 
-        entry["implement"] = {
-            "channels": [
-                {"vendor": c["vendor"], "model": c["model"], "effort": c["effort"],
-                 "ok": c["impl"].get("ok"), "commit": c["impl"].get("commit")}
-                for c in ch_results
-            ]
-        }
+            entry["implement"] = {
+                "channels": [
+                    {"vendor": c["vendor"], "model": c["model"], "effort": c["effort"],
+                     "ok": c["impl"].get("ok"), "commit": c["impl"].get("commit")}
+                    for c in ch_results
+                ]
+            }
 
-        # ⑤⑥⑦ review — each channel, pick the first that passes
-        acc = _resolve_acceptance(task)
-        rev_role = resolve_role("review", config_dir)
-        rev_vendor = reviewer_vendor or rev_role["vendor"]
-        winner: dict | None = None
-        reviews: list[dict] = []
-        for c in ch_results:
-            rev = run_pipeline(c["task_id"], c["worktree"], acc,
-                               reviewer_vendor=rev_vendor,
-                               dry_run=dry_run, seq=seq,
-                               model=rev_role["model"], effort=rev_role["effort"])
-            verdict = rev.get("verdict")
-            reviews.append({"vendor": c["vendor"], "verdict": verdict})
-            if winner is None and verdict in ("pass", "pass_with_findings"):
-                winner = c
-        entry["review"] = {
-            "channels": reviews,
-            "judgment_unavailable": any(
-                r.get("verdict") is None for r in reviews
-            ),
-        }
-        first_verdict = reviews[0]["verdict"] if reviews else None
-        entry["review"]["verdict"] = first_verdict  # mirror single-channel shape
-        entry["_winner"] = winner  # internal: used by the serial integrate phase
-        entry["_channel_ids"] = channel_ids  # internal: teardown after integrate
-        return entry
+            # ⑤⑥⑦ review — each channel, pick the first that passes
+            acc = _resolve_acceptance(task)
+            rev_role = resolve_role("review", config_dir)
+            rev_vendor = reviewer_vendor or rev_role["vendor"]
+            winner: dict | None = None
+            reviews: list[dict] = []
+            for c in ch_results:
+                if not c.get("ok"):
+                    # channel worktree failed to create/run — record and skip
+                    reviews.append({"vendor": c.get("vendor"), "verdict": None,
+                                    "error": c.get("error")})
+                    continue
+                rev = run_pipeline(c["task_id"], c["worktree"], acc,
+                                   reviewer_vendor=rev_vendor,
+                                   dry_run=dry_run, seq=seq,
+                                   model=rev_role["model"], effort=rev_role["effort"])
+                verdict = rev.get("verdict")
+                reviews.append({"vendor": c["vendor"], "verdict": verdict})
+                if winner is None and verdict in ("pass", "pass_with_findings"):
+                    winner = c
+            entry["review"] = {
+                "channels": reviews,
+                "judgment_unavailable": any(
+                    r.get("verdict") is None for r in reviews
+                ),
+            }
+            first_verdict = reviews[0]["verdict"] if reviews else None
+            entry["review"]["verdict"] = first_verdict  # mirror single-channel shape
+            entry["_winner"] = winner  # internal: used by the serial integrate phase
+            entry["_channel_ids"] = channel_ids  # internal: teardown after integrate
+            return entry
+        except Exception as ex:
+            # any failure in the pipeline must not abort the whole drive nor
+            # leave channel worktrees behind — record and let Phase B tear down.
+            entry["error"] = str(ex)
+            entry["_winner"] = None
+            entry["_channel_ids"] = channel_ids
+            entry["review"] = {"channels": [], "judgment_unavailable": True,
+                               "verdict": None, "error": str(ex)}
+            return entry
 
     # Phase A: run task pipelines. Independent tasks (topo layers) run in parallel;
     # layers themselves run serially so dependencies are satisfied before a task
