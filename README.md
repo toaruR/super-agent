@@ -1,74 +1,118 @@
-# super-agent — 異ベンダー・エージェントチームの大枠設計
+# super-agent
 
-Claude Code / Codex / Antigravity など**ベンダーの異なるコーディングエージェント**を跨いでチームを組み、
-設計〜実装〜レビュー〜改良を協同で回すシステムの大枠設計。
+**異ベンダーのコーディングエージェント（Claude Code / Codex / Antigravity / Hermes）を、
+1つの検証可能な生産ライン上の作業員として動かすハーネス。**
+要求 → 設計 → 分解 → 実装 → レビュー → 統合 を、台帳で証拠を残しながら自動駆動する。
 
-## 読む順番
+> 設計意図・現状・実測証拠の詳細は [`docs/design-overview.md`](docs/design-overview.md) を参照。
+> 実際に動かす手順は [`docs/usage.md`](docs/usage.md) を参照。
 
-> **全ドキュメントの目録（何がどこにあるか）は [`docs/catalog.md`](docs/catalog.md) を参照。**
-> ドキュメント構造のゴールと評価方法は [`docs/goals/documentation.md`](docs/goals/documentation.md)。
+---
 
-| # | 文書 | 内容 |
-|---|---|---|
-| 1 | [`docs/goals/design.md`](docs/goals/design.md) | **ゴール**（何を良しとするか）と**評価方法**（100点ルーブリック） |
-| 2 | [`docs/evidence/000-base-evidence.md`](docs/evidence/000-base-evidence.md) | 設計の前提となる**実測結果**（推測を排するため設計前に実施） |
-| 3 | [`docs/spec.md`](docs/spec.md) | **大枠設計 本体**（v3） |
-| 4 | [`docs/design-notes/scoring.md`](docs/design-notes/scoring.md) | v1(52点)→v2(79点)→v3(92点) の**採点と改稿の記録** |
-| 5 | [`docs/evidence/0606-s2-validation.md`](docs/evidence/0606-s2-validation.md) | 設計の中心主張を**実機で検証**した結果（§5.6 の訂正を含む） |
-| 6 | [`docs/evidence/0606-n3-large-diff.md`](docs/evidence/0606-n3-large-diff.md) | N=3→N=4 実測と、大きな差分への対処（決定関連性による劣化） |
-| 7 | [`docs/evidence/0606-permission-control.md`](docs/evidence/0606-permission-control.md) | 起動オプションによる制御の実測。**read-only は実行を止めない**という発見 |
-| 8 | [`docs/design-notes/review-response.md`](docs/design-notes/review-response.md) | 独立レビュー（`unsound`）への回答・自己採点92点の撤回・改訂案 |
-| 9 | [`docs/plan.md`](docs/plan.md) | 設計を動くハーネスにする実装計画（Stage A→F） |
-| 10 | [`docs/usage.md`](docs/usage.md) | **使い方マニュアル**（実際に動かす手順） |
+## Features
 
-## 一言でいうと
+- **実行と判定の分離** — 決定的な検証はハーネスが唯一の環境（CVE）で行い、レビュアは「証拠を読む」だけ。レビュアの実行環境に依存しない裁定が得られる（偽 fail を排除）。
+- **複数ベンダーの同一 IF** — `vendors.yaml` に宣言するだけで claude / codex / agy / hermes を交換可能な作業員として扱う。
+- **マルチチャンネル実装（Stage B 並列）** — `roles.implement` をチャンネルリストで宣言すると、各エントリが独立 worktree で並列実装される（例: agy×2 + hermes×3 の同時実行）。model/effort はチャンネルごとに指定可。
+- **タスクレベル並列** — 依存のないタスクを topological レイヤー単位で並行駆動（`--parallel-tasks`）。
+- **台帳（証拠の束縛）** — 全イベントをクラッシュセーフな JSONL に記録。`tree_hash` で「どの成果物の証拠か」を保証。
+- **worktree 隔離** — 各タスク/チャンネルは独立 git worktree で実行され、統合後に自動で片付く（敗者チャンネルも残らない）。
+- **read-only レビュア** — レビュアは実装者と別ベンダーかつ読み取り専用。独立性は権限ではなく裁定器で担保。
 
-> **実行と判定を分離する。**
-> 決定的な検証はハーネスが唯一の環境で行い、エージェントは「証拠を読む」だけにする。
-> エージェントは賢い個人ではなく、**交換可能な作業員**として扱う。信頼は人格でなく**証拠と手続き**に置く。
+---
 
-## なぜそう設計したか
+## Prerequisites
 
-設計前に実機で測ったところ、**claude が書いた正しいコードを codex がレビューして `fail` を返した。**
-原因は成果物ではなく**レビュア側の実行環境**（python が見つからない）だった。
-
-> マルチエージェントの難所は「連携」に留まらず、**「判定の信用」が独立の難所**となる。
-> 「動かして確かめて合否を言え」と頼む限り、測っているのは成果物ではなく**そのエージェントの環境**である。
-
-この1件が設計全体の背骨を決めている。
-
-## 検証済みの主張
-
-| 主張 | 状態 |
+| 要件 | 確認済みの値（このマシン） |
 |---|---|
-| 3ベンダーが同一スキーマで構造化出力を返す | ✅ 実測（疎通レベル） |
-| 3ベンダーが別プロセスからセッション再開できる | ✅ 実測（合言葉レベル） |
-| 実行と判定の分離で**偽failが消える** | ✅ **N=4**（16行/2/3/42ファイル）。ただし「レビュア環境起因の偽fail」1経路のみ |
-| 裁定4分類が機能 + 意見が割れても裁定一致 | ✅ **実CVE＋実LLMで確認**（advisory保持。合成入力から実測へ昇格） |
-| レビュア役をベンダー差し替えしても動く | ✅ **claude/codex/agy の3者**でパス渡しレビューを確認 |
-| 簡報は**パス渡し**が既定（埋め込みは代替） | ✅ 実測。パス渡しのほうが指摘の質が高い |
-| **read-only 権限は実行を止めない** | ✅ 実測（claude/codex）。独立性は権限ではなく裁定器で担保 |
-| **acceptance の質が正しさの天井** | ⚠ 実例あり（Case B。テスト通過でも欠陥残る） |
+| OS | Windows（git-bash / PowerShell 両方可）、Linux も可 |
+| Python | 3.11 系（`.cve-venv` を使用） |
+| ベンダー CLI | `claude` / `codex` / `agy` / `hermes` が PATH にあること |
+| Git | worktree 操作に使用（2.26 以降推奨） |
 
-> **注意**: 上記の✔は「中心命題＋周辺の一部」が小規模題材（最大42ファイル）で動くことを示す。
-> 本番規模（依存関係が複雑・複数ランタイム・長時間タスク）での成立は**未検証**。
-> 「実証済み」と読まないこと。
+> ベンダー CLI の認証・課金設定は各ベンダーの手順で事前に済ませておくこと。
+> 既定の review ベンダーは `codex`（v0.147.0 で `gpt-5.6-luna` が実測で通る、25倍安価）。
 
-## 現状
+---
 
-**実装フェーズ（進行中）。** 中心命題は N=4 で実証、周辺設計は部分的に実証、製品コードは**主要部が実装済み**。
+## Installation
 
-`probe/n3/` に実機検証のコードと証跡がある（CVE `cve.py` / 簡報 `brief.py` / 裁定 `adjudicate2.py`）。
-S2（実行と判定の分離）・S4（3段裁定）・S5予算（簡報圧縮）は**実コードで確認済み**。
-S1（台帳）・S3（並列/リース/worktree）は**実装済み**（`harness/core/ledger.py`・`scheduler.py`・`drive.py`）。
-S6（改良ループ）・S7（OSレベル隔離）は**未実施**。
+```bash
+# 1. リポジトリを取得（src/ がハーネス本体の別 git リポジトリ）
+cd /path/to/super-agent/src
 
-本設計は別ベンダー（codex）による独立レビューを受けており、判定は **`unsound`**（過大主張26件・
-構造的欠陥18件・high 8件）。その後の自らと独立レビュア双方による実測で、中心命題は N=4 で支持された。
-詳細と訂正は [`docs/design-notes/review-response.md`](docs/design-notes/review-response.md)、
-権限実測は [`docs/evidence/0606-permission-control.md`](docs/evidence/0606-permission-control.md)、
-N=3＋大きな差分は [`docs/evidence/0606-n3-large-diff.md`](docs/evidence/0606-n3-large-diff.md)。
+# 2. 専用仮想環境を作成し依存を入れる
+python -m venv .cve-venv
+.cve-venv/Scripts/python.exe -m pip install pyyaml pytest
 
-実装は `docs/spec.md` §10 の S1→S7 の順で進めており、
-**現在は Stage 0〜5（台帳・検証・分解・スケジュール・実装・統合）＋ Stage B 並列駆動（マルチチャンネル実装＋タスク並列）が実装済み。**
-実際に動かす手順は **[`docs/usage.md`](docs/usage.md)** を参照。
+# 3. 動作確認（venv の python が使われるか）
+.cve-venv/Scripts/python.exe -c "import yaml, pytest; print('ok')"
+```
+
+ラッパー `super-agent`（bash/git-bash/Linux）または `super-agent.bat`（cmd/PowerShell）を
+`src/` から直接実行する。内部で `python -m harness.cli` を呼ぶ。
+
+```bash
+# git-bash / Linux
+./super-agent status
+# PowerShell / cmd
+super-agent status
+```
+
+---
+
+## Usage
+
+```bash
+# 設計から一気に分解→worktree→実装→レビュー→統合（既定は5チャンネル並列実装）
+super-agent drive --tasks ./probe/sample/my-design-tasks.md
+
+# 緊急オーバーライド: agy 2 + hermes 3 の5チャンネル
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:2,hermes:3"
+
+# タスク並列 + チャンネル並列の両方
+super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
+    --implement-vendors "agy:1,hermes:1" --parallel-tasks
+
+# 単体コマンド（ステージ個別に動かす）
+super-agent review   probe/n3/caseGreen            # 検証パイプライン（CVE→簡報→裁定）
+super-agent status                                # 台帳の最近のイベント
+super-agent log T-XXXX                            # 指定タスクの全イベント
+super-agent show design | plan                    # 設計／計画の read-only 表示
+```
+
+その他のコマンドと詳細な手順は [`docs/usage.md`](docs/usage.md) を参照。
+
+```bash
+# テストを通す（動作の証明）
+.cve-venv/Scripts/python.exe -m pytest harness/tests/ -q
+# 59 passed
+```
+
+---
+
+## Configuration
+
+ベンダーの呼び出し方は `harness/config/vendors.yaml` で宣言する（新ベンダー追加はこのファイルへの
+宣言のみ）。主な設定項目：
+
+| キー | 意味 |
+|---|---|
+| `roles.design` | 設計起案ベンダー（既定 `claude`） |
+| `roles.implement` | **実装チャンネルのリスト**。各エントリ `{vendor, model, effort}` が1チャンネル＝独立 worktree で並列実装。既定は `agy×2 + hermes×3` |
+| `roles.review` | レビュアベンダー（既定 `codex` / `gpt-5.6-luna`） |
+| `<vendor>.headless` | ヘッドレス呼び出しコマンド。`{worktree}` `{prompt}` が置換される |
+| `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） |
+| `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック |
+
+> `verification_env.yaml` の python パスは環境依存。このマシンでは
+> `D:/vagrant/harnesses/super-agent/.cve-venv/...` を指す。別マシンでは書き換えること。
+
+環境変数（`.env`）は現在使用していない。ベンダー CLI の認証情報は各 CLI の仕組み
+（ネイティブな認証キャッシュ等）に委ねる。
+
+---
+
+## License
+
+**未定。** 公開前に決定する（MIT / Apache 2.0 等を想定）。

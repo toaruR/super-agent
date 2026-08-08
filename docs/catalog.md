@@ -9,7 +9,8 @@ super-agent/src の全ドキュメントを網羅する手引き。どこから�
 
 | ファイル | 役割 |
 |---|---|
-| [`README.md`](../README.md)（src 直下） | **最初に読む**。何か・現状・この目録へのリンク |
+| [`README.md`](../README.md)（src 直下） | **最初に読む**。何をするか・特徴・動作環境・導入・使い方・設定の概要 |
+| [`docs/design-overview.md`](design-overview.md) | 設計の背景・中心命題・実測証拠・現状の詳細（旧 README の内容） |
 | [`docs/catalog.md`](catalog.md) | このファイル。全ドキュメントの目録 |
 | [`docs/goals/documentation.md`](goals/documentation.md) | **ドキュメント構造自体**のゴールと評価方法 |
 
