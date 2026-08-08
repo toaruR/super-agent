@@ -140,6 +140,10 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
             import time as _time
             suffix = int(_time.time() * 1000) % 100000
             new_branch = f"{branch}__{suffix}"
+            # drop the orphaned old branch ref FIRST so Git GUIs never see a
+            # branch whose worktree pointer is gone (avoids "Invalid refs").
+            run(["git", "branch", "-D", branch])
+            _prune_worktree_meta(branch)
             proc3 = run(["git", "worktree", "add", path, "-b", new_branch])
             if proc3.returncode == 0:
                 return {"path": path, "branch": new_branch, "ok": True,
@@ -181,22 +185,27 @@ def teardown_worktree(task_id: str, root: str = "workspaces",
                        encoding="utf-8", errors="replace", shell=False)
 
     if not Path(path).exists():
-        # already gone (integrator may have removed the winner); just drop branch
-        b = run(["git", "branch", "-D", branch])
+        # already gone (integrator may have removed the winner).
+        # Order matters for Git GUIs: drop the orphaned worktree *metadata*
+        # (the .git/worktrees/<id> dir Fork reads via its gitdir pointer)
+        # BEFORE deleting the branch ref, so Fork never sees a gitdir pointing
+        # at a ref that no longer exists.
         _prune_worktree_meta(branch)
+        b = run(["git", "branch", "-D", branch])
         return {"ok": True, "removed": False, "branch_deleted": b.returncode == 0,
                 "path": path}
 
     r = run(["git", "worktree", "remove", "--force", path])
     if r.returncode != 0:
-        # fall back to prune + manual metadata removal so GUI tools stay clean
+        # fall back: wipe metadata first, then the branch ref (same ordering rule)
         _prune_worktree_meta(branch)
         b = run(["git", "branch", "-D", branch])
         return {"ok": r.returncode == 0, "path": path,
                 "error": (r.stderr or r.stdout).strip(),
                 "branch_deleted": b.returncode == 0}
-    b = run(["git", "branch", "-D", branch])
+    # worktree + its metadata are gone; now safe to delete the branch ref
     _prune_worktree_meta(branch)
+    b = run(["git", "branch", "-D", branch])
     return {"ok": True, "removed": True, "branch_deleted": b.returncode == 0,
             "path": path}
 
