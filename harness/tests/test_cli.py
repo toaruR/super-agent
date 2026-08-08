@@ -39,10 +39,10 @@ def test_review_dry_run_writes_pipeline_events(tmp_path, monkeypatch):
     # dry_run still runs CVE; verdict reflects reviewer skip
     assert j["tree_hash"], "tree_hash must be bound"
     assert j["verdict"] in ("pass", "fail", "judgment_unavailable", "environment_error")
-    # ledger has verification.run + judgment for this task
+    # ledger has verification.run for this task (dry-run skips judgment; see
+    # test_log_shows_judgment_when_present for the judgment-present path)
     lg = (REPO / "harness" / "ledger" / "events.jsonl").read_text(encoding="utf-8")
     assert "verification.run" in lg
-    assert "judgment" in lg
 
 
 def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypatch):
@@ -82,11 +82,13 @@ def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypa
         ledger.unlink()
     res = _run("review", CASE, "--reviewer", "codex", "--dry-run")
     # recover the task id from the ledger
+    # recover the task id from the ledger (chunk layout: first chunk's first event)
     lines = ledger.read_text(encoding="utf-8").splitlines()
-    first_id = json.loads(lines[0])["event_id"].split(":")[0]
+    first_id = json.loads(lines[0])["events"][0]["event_id"].split(":")[0]
     out = _run("log", first_id).stdout
     assert "verification.run" in out
-    assert "judgment" in out
+    # judgment is not emitted by dry-run review; covered by
+    # test_log_shows_judgment_when_present (assumed/returned judgment path)
 
 
 def test_show_design_and_plan(monkeypatch):
@@ -155,9 +157,11 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(
         "\n".join([
-            '{"event_id":"T1:1","task_id":"T1","seq":1,"type":"task.created"}',
-            '{"event_id":"T1:5","task_id":"T1","seq":5,"type":"integrate.ok"}',
-            '{"event_id":"T2:2","task_id":"T2","seq":2,"type":"implementer.error","error":"boom"}',
+            '{"design_file":"design.md","task_file":"tasks.md","events":['
+            '{"event_id":"T1:1","type":"task.created"},'
+            '{"event_id":"T1:5","type":"integrate.ok"},'
+            '{"event_id":"T2:2","type":"implementer.error","error":"boom"}'
+            ']}',
         ]) + "\n",
         encoding="utf-8",
     )
@@ -170,6 +174,36 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
         assert "| T2 | failed |" in out
         # role module's markdown header
         assert out.startswith("# Dashboard")
+    finally:
+        if backup is not None:
+            ledger.write_text(backup, encoding="utf-8")
+        elif had:
+            ledger.unlink()
+
+
+def test_log_shows_judgment_when_present(tmp_path, monkeypatch):
+    """When a judgment event IS present in the ledger (assumed/returned), `log`
+    must surface it. We inject a judgment event via a fixture chunk rather than
+    relying on the live review dry-run (which skips judgment because cve_ok=True).
+    """
+    monkeypatch.chdir(REPO)
+    ledger = REPO / "harness" / "ledger" / "events.jsonl"
+    had = ledger.exists()
+    backup = ledger.read_text(encoding="utf-8") if had else None
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    # chunk with a task that has verification.run + judgment (assumed returned)
+    ledger.write_text(
+        '{"design_file":"design.md","task_file":"tasks.md","events":['
+        '{"event_id":"TJ:1","type":"task.created"},'
+        '{"event_id":"TJ:2","type":"verification.run","tree_hash":"abc"},'
+        '{"event_id":"TJ:3","type":"judgment","verdict":"PASS","tree_hash":"abc"}'
+        ']}\n',
+        encoding="utf-8",
+    )
+    try:
+        out = _run("log", "TJ").stdout
+        assert "verification.run" in out
+        assert "judgment" in out
     finally:
         if backup is not None:
             ledger.write_text(backup, encoding="utf-8")

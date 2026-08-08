@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import uuid
@@ -35,7 +36,10 @@ from harness.roles.improver import mine as improver_mine, report as improver_rep
 from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
-LEDGER_PATH = Path(__file__).resolve().parent / "ledger" / "events.jsonl"
+# Ledger path can be overridden via SUPER_AGENT_LEDGER (used for sample/fixture
+# ledgers without touching the real append-only events.jsonl).
+LEDGER_PATH = Path(os.environ.get("SUPER_AGENT_LEDGER",
+                                  str(Path(__file__).resolve().parent / "ledger" / "events.jsonl")))
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = REPO_ROOT / "docs"
 
@@ -408,7 +412,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     lg = Ledger(str(LEDGER_PATH))
-    events = lg.load()
+    events = lg.load_flat()
     print(f"events in ledger: {len(events)}")
     for ev in events[-20:]:
         print(f"  {ev.get('event_id')} {ev.get('type')}")
@@ -417,7 +421,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_log(args: argparse.Namespace) -> int:
     lg = Ledger(str(LEDGER_PATH))
-    events = lg.load()
+    events = lg.load_flat()
     matched = [e for e in events if e.get("event_id", "").startswith(args.task)]
     if not matched:
         print(f"no events for task prefix '{args.task}'")
@@ -457,7 +461,7 @@ def cmd_evolve(args: argparse.Namespace) -> int:
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Generate dashboard (md, html, or both) from ledger events."""
     lg = Ledger(str(LEDGER_PATH))
-    events = lg.load()
+    events = lg.load_flat()
 
     # The model builder + renderers live in harness.roles.dashboard (this is the
     # single source of truth; no inline fallbacks — if the import fails the CLI
