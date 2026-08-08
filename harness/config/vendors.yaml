@@ -16,12 +16,16 @@ roles:
   # 勝者を統合）は非デフォルトのモードで、--speculative フラグを付けたときのみ有効。
   # その際はこのリスト全体が fan-out される（agy×2 + hermes×3 = 5チャンネル）。
   implement:
-    - { vendor: agy,    model: gemini-3.6-flash, effort: high }
     - { vendor: hermes, model: hy3:Free,         effort: high }
     - { vendor: hermes, model: hy3:Free,         effort: high }
     - { vendor: hermes, model: hy3:Free,         effort: high }
-    - { vendor: agy,    model: gemini-3.6-pro,   effort: high }
-  review:    { vendor: codex,  model: gpt-5.6-luna,    effort: high }   # codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価: $0.20/$1.20 vs gpt-5.5 の $5/$30）
+    - { vendor: hermes, model: hy3:Free,         effort: high }
+    - { vendor: hermes, model: hy3:Free,         effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  # review:    { vendor: codex,  model: gpt-5.6-luna,    effort: high }   # codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価: $0.20/$1.20 vs gpt-5.5 の $5/$30）
+  # review:    { vendor: claude, model: claude-sonnet-5,  effort: high }
+  review:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
 
 claude:
   model_flag: "--model"
