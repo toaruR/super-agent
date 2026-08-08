@@ -738,15 +738,26 @@ super-agent status
 
 | 段 | 作るもの | これで得られること | 検証状況 |
 |---|---|---|---|
-| **S1** | 台帳(JSONL) + アダプタ宣言 + `invoke` 1本 | 3ベンダーを同一IFで叩ける | ⚠ **疎通のみ実測**（E-2a）。台帳もYAML宣言の解釈も**未実装** |
+| **S1** | 台帳(JSONL) + アダプタ宣言 + `invoke` 1本 | 3ベンダーを同一IFで叩ける | ✅ **実装済み**（`harness/core/ledger.py`, `invoke.py`, アダプタ宣言は `config/vendors.yaml`） |
 | **S2** | CVE + 証拠固定 + 簡報（パス渡し） | 判定が環境非依存になる | ✅ **`cve.py`/`brief.py` として実装。N=4 で確認**（16行/2/3/42ファイル） |
-| **S3** | 席 + リース + worktree | 並列実装が壊れない | ❌ **未実施** |
+| **S3** | 席 + リース + worktree | 並列実装が壊れない | ✅ **実装済み**（`harness/roles/scheduler.py` + `drive.py`: worktree隔離・マルチチャンネル・タスク並列） |
 | **S4** | 3段判定 + 裁定規則 | 信用できる合否 | ✅ **`adjudicate2.py` として実装。実CVE+実LLMで確認**（意見が割れても裁定一致・advisory保持） |
 | **S2+S4 統合** | 検証パイプライン（CVE→簡報→レビュー→裁定） | 一台で end-to-end に検証・裁定 | ✅ **`harness/roles/review_flow.py` として実装。caseGreen/caseB で実CVE実行＋tree_hash束縛＋裁定を確認（11 test passed）。レビュア不能時は judgment_unavailable（偽failなし）** |
-| **S5** | 予算 + 承認キュー + status | 人間の負荷が一定になる | ⚠ **予算のみ実装**（`brief.py`。-81%〜-91%）。承認キュー・statusは未実施 |
+| **S5** | 予算 + 承認キュー + status | 人間の負荷が一定になる | ⚠ **status/log/showは実装済み**（`cli.py`）。承認キューは未実施。予算は `brief.py`（-81%〜-91%） |
 | **S6** | 改良ループ | 同じ失敗を繰り返さない | ❌ **未実施** |
 | **S7** | **OSレベル隔離 + `acceptance[].run` 許可リスト化** | 実行の副作用・インジェクションを封じる | ⚠ **許可リスト化は実装済み**（`verifiers.py`。H2解決）。OS隔離(network/fs namespace)は未実施(U6) |
 
+> **§S3 実装（並列実装の基盤）**: `harness/roles/scheduler.py` の `create_worktree`
+> がタスクごとに `git worktree add workspaces/<id> -b task/<id>` を作成し、独立作業領域を
+> 隔離。これにより Implementer × N の並列実装が同一ファイルを壊し合う事故が防止される。
+> 並列の駆動は `harness/roles/drive.py` で実現:
+> - **チャンネル並列（Stage B 並列(b)）**: `roles.implement` をチャンネルリストで宣言。
+>   各エントリが1チャンネル（vendor/model/effort 自由指定可）＝独立 worktree で並列実装。
+>   リスト長がチャンネル数。review を通した最初のチャンネルだけを統合し、他は破棄。
+> - **タスク並列**: 依存のないタスクを topo レイヤー単位で並行駆動（`--parallel-tasks`）。
+>   integrate（git checkout/merge）は共有リポジトリのため直列に実行。
+> - **cleanup**: 統合後に各タスクの全チャンネル worktree を `teardown_worktree` で破棄。
+>
 > **凡例**: ✅実証済 / ⚠限定的（N=1 または部分）/ ❌未実施
 > 動くコードは `probe/n3/`（`cve.py` `brief.py` `adjudicate2.py`）。
 > ただしこれは**実験の証跡であって製品コードではない**（台帳・席・リース・並列・隔離は未着手）。
@@ -756,7 +767,7 @@ super-agent status
 「実行されても平気な設計」(裁定がCVE証拠のみを見る) で独立性は保てるが、
 **レビュアが悪意ある/間違ったコマンドを走らせる副作用**（外部通信・worktree外書込）は
 未防護である。子プロセス隔離と `acceptance[].run` の許可リスト(H2) が必須になる。
-その次に S1(台帳)→S3(並列)→S5(承認)→S6(改良) の順。
+S1(台帳)→S3(並列) は実装済み。残る優先順は S5(承認キュー)→S6(改良)→S7(OS隔離) の順。
 
 ---
 

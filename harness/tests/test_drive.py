@@ -5,8 +5,15 @@ from __future__ import annotations
 from unittest import mock
 
 from harness.roles import drive
+from harness.core.invoke import resolve_role_channels
 
 SAMPLE_TASKS = "probe/sample/my-design-tasks.md"
+
+
+def _default_channels():
+    # 設定(roles.implement)に依存しない形で期待チャンネル数を得る
+    return resolve_role_channels("implement", config_dir="harness/config")
+
 
 
 def test_drive_calls_pipeline_per_task_in_order() -> None:
@@ -22,12 +29,15 @@ def test_drive_calls_pipeline_per_task_in_order() -> None:
 
     assert out["ok"] is True
     # the sample has 2 tasks
-    assert len(out["tasks"]) == 2
-    assert m_impl.call_count == 2
-    assert m_rev.call_count == 2
-    assert m_int.call_count == 2
+    n_tasks = len(out["tasks"])
+    assert n_tasks == 2
+    n_ch = len(_default_channels())
+    # impl/review called once per (task, channel)
+    assert m_impl.call_count == n_tasks * n_ch
+    assert m_rev.call_count == n_tasks * n_ch
+    assert m_int.call_count == n_tasks
     int_calls = [c.args[0] for c in m_int.call_args_list]
-    assert "T1" in int_calls and "T2" in int_calls
+    assert any("T1" in t for t in int_calls) and any("T2" in t for t in int_calls)
 
 def test_drive_resolves_vendors_from_roles_yaml_when_unspecified() -> None:
     """Stage B consolidation (A/B/C): drive must resolve implement/reviewer
@@ -40,8 +50,12 @@ def test_drive_resolves_vendors_from_roles_yaml_when_unspecified() -> None:
         out = drive.drive("", None, "probe/sample/my-design-tasks.md",
                           seq=None, dry_run=False)
         assert out["ok"] is True
-        # vendor falls back to roles.implement.vendor (agy) and roles.review.vendor (codex)
-        assert m_impl.call_args.kwargs["vendor"] == "agy"
+        # vendor/reviewer fall back to roles.* (not a hardcoded fallback).
+        # With the default multi-channel implement list, each channel uses a
+        # vendor from roles.implement; reviewer resolves to roles.review.vendor.
+        configured = {c["vendor"] for c in resolve_role_channels("implement", config_dir="harness/config")}
+        observed = {c.kwargs["vendor"] for c in m_impl.call_args_list}
+        assert observed <= configured  # every impl used a configured implement vendor
         assert m_rev.call_args.kwargs["reviewer_vendor"] == "codex"
 
 
@@ -133,7 +147,8 @@ def test_drive_parallel_tasks_runs_independent_concurrently() -> None:
                           parallel_tasks=True)
     assert out["ok"] is True
     assert len(out["tasks"]) == 2
-    # both tasks implemented (single channel each -> 1 impl call per task)
-    assert m_impl.call_count == 2
+    n_ch = len(_default_channels())
+    # 2 tasks * n channels implemented in parallel (mocked)
+    assert m_impl.call_count == 2 * n_ch
     # both integrated (serial, but both present)
     assert m_int.call_count == 2

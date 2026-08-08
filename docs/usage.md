@@ -20,7 +20,7 @@ Super Agent は「異ベンダーのコーディングエージェント（Claud
 内部で `python -m harness.cli` を呼びます。PowerShell なら拡張子省略（`super-agent status`）、
 git-bash なら `./super-agent status` で実行できます。
 
-現在実装済み：Stage 0（足場）〜 Stage 5（統合）。
+現在実装済み：Stage 0（足場）〜 Stage 5（統合）＋ Stage B（並列駆動：マルチチャンネル実装＋タスク並列）。
 
 ---
 
@@ -329,23 +329,35 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 
 ### 2.11 `super-agent drive` — DAG 全タスクを一括駆動（Stage B）
 
-`plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して順次（1タスクずつ）** 実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
+`plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して**実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
 
 - `--tasks <md>`: 分解済みタスク DAG。`--tasks` が存在しない場合は `--spec` から分解→worktree 作成→`<md>` に書き出します。
 - `--spec <md>`: 設計ファイル（`--tasks` が無い時に使用）。
 - `--target <branch>`: 統合先ブランチ（既定 `main`）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
+- `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用。既定は `agy×2 + hermes×3` の5チャンネル）。
+- `--parallel-tasks`: **タスクレベル並列**。依存のないタスクを topo レイヤー単位で並行駆動（implement+review を並列。integrate は git 操作のため直列）。
+- `--max-task-workers N`: `--parallel-tasks` 時の最大同時タスク数（既定 4）。
 - `--dry-run`: ワークツリー作成＋CVE 実行は行うが、レビュア呼び出しと統合（git 操作）をスキップ。
 
-例：
+**マルチチャンネル（Stage B 並列(b)）**: `roles.implement` はチャンネル**リスト**で宣言。各エントリが1チャンネル＝独立 worktree で並列実装され、model/effort はチャンネルごとに指定可。review を通した**最初のチャンネルだけ**を統合し、他は破棄。これにより agy×2 + hermes×3 のような異ベンダー混載も同時実行できる。
 
-```
+```bash
+# 既定の5チャンネル（vendors.yaml の roles.implement）で全タスクを駆動
 super-agent drive --tasks ./probe/sample/my-design-tasks.md
+
+# 緊急 override: agy 2 + hermes 3 の5チャンネル
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:2,hermes:3"
+
+# タスク並列 + チャンネル並列の両方
+super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
+    --implement-vendors "agy:1,hermes:1" --parallel-tasks
+
+# dry-run（fan-out だけ確認、ベンダーは呼ばない）
 super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
-super-agent drive --spec ./probe/sample/my-design.md --tasks ./probe/sample/my-design-tasks.md
 ```
 
-> **並列は未実装**：現在は1タスクずつ直列実行。並列（b）は今後の拡張。
+> 実行後は各タスクの全チャンネル worktree が自動で破棄される（敗者チャンネルも残らない）。
 
 ## 3. 検証パイプラインを動かす（Stage C）
 
@@ -444,14 +456,19 @@ super-agent log T-XXXX
 
 ```bash
 python -m pytest harness/tests/ -q
-# ................  40 passed
+# ................  59 passed
 ```
 
-- `test_invoke.py`（6）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）
+- `test_invoke.py`（13）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）＋チャンネル解決・オーバーライド解析
 - `test_ledger.py`（3）：台帳の原子性（H3）
 - `test_pipeline.py`（2）：パイプラインの CVE 実行＋tree_hash 束縛＋裁定記録
 - `test_implementer.py`（3）：実装→コミットの束縛＋台帳記録（vendor はモック）
-- `test_scheduler.py`（7）：worktree 冪等性・リース記録・再利用
+- `test_scheduler.py`（9）：worktree 冪等性・リース記録・再利用・topo_layers・teardown
+- `test_drive.py`（7）：逐次/並列駆動・チャンネル fan-out・winner 統合・タスク並列
+- `test_decomposer.py`（11）：分解・構造検査・acceptance
+- `test_integrator.py`（4）：統合（success/conflict/violation/verify-fail）
+- `test_architect.py`（3）：設計起案・ADR 記録
+- `test_cli.py`（4）：CLI サブコマンドの引数解釈
 
 ---
 
@@ -459,15 +476,15 @@ python -m pytest harness/tests/ -q
 
 以下は**設計のみ**。マニュアルに書かれていても、まだ動きません：
 
-- `super-agent run` での**並列実装の自動起動**（Stage B）：worktree/リース/scheduler は動くが、複数タスクを一斉に回す駆動は未実装
-- `pause` / `resume` / `abort` / `amend` / `show` コマンド（Stage D' 操作面）
-- 予算上限での自動停止・承認キュー（Stage D）
+- `super-agent run` での**複数タスクの自動起動**（Stage A の `run` は1要求＝1タスク記録のみ。`drive` による DAG 一括駆動の並列は実装済み）
+- `pause` / `resume` / `abort` / `amend` / `show` コマンド（Stage D' 操作面。`show design|plan` は実装済み）
+- 予算上限での自動停止・承認キュー（Stage D。予算計算は実装済み、承認キューは未実施）
 - レビュアの OS レベル隔離（Stage F）
+- 改良ループ（Stage 6 / ⑩ `evolve`）
 
-これらは `docs/plan.md` の Stage B〜F を参照。
+これらは `docs/plan.md` の Stage 6・7 を参照。
 
-> **実装済み（Stage 0〜5）**：review は implement の成果物（worktree）に対して
-> `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。
+> **実装済み（Stage 0〜5 + Stage B 並列）**：`review` は implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。`drive` はマルチチャンネル実装（agy×2+hermes×3 等）＋タスクレベル並列に対応。
 
 ---
 

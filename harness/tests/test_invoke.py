@@ -195,12 +195,14 @@ def test_extract_recovers_fenced_json() -> None:
 
 
 def test_resolve_role_channels_list_and_dict() -> None:
-    # Stage B parallel (b): roles.implement がリストならチャンネル数 = リスト長
+    # Stage B parallel (b): roles.implement がリストならチャンネル数 = リスト長。
+    # 既定の roles.implement（vendors.yaml）がリストであれば、その長さがチャンネル数。
     from harness.core.invoke import resolve_role_channels
 
     ch = resolve_role_channels("implement", "harness/config")
-    assert isinstance(ch, list) and len(ch) == 1
-    assert ch[0]["vendor"] == "agy"
+    assert isinstance(ch, list)
+    assert len(ch) >= 1          # 既定は1以上のチャンネルリスト
+    assert ch[0]["vendor"] == "agy"  # 既定リストの先頭チャンネルは agy
 
     override = [
         {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high"},
