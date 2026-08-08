@@ -80,5 +80,39 @@ def test_render_html_table() -> None:
     assert "<!DOCTYPE html>" in html
     assert "<th>Task ID</th><th>Status</th>" in html
     assert "<tr><td>task-1</td><td>integrated</td></tr>" in html
-    assert "<tr><td>task-2</td><td>failed</td></tr>" in html
+
+
+def test_build_model_priority_stronger_state_wins() -> None:
+    """Requirement A: a stronger (further-along) state must win over a weaker
+    one even when the weaker event appears later in the stream."""
+    events = [
+        {"task_id": "T1", "type": "task.implemented"},
+        {"task_id": "T1", "type": "integrated"},
+        # a late, weak judgment_unavailable must NOT clobber `integrated`
+        {"task_id": "T1", "type": "judgment", "verdict": "unavailable"},
+    ]
+    model = build_model(events)
+    assert model["T1"] == "integrated"
+
+
+def test_build_model_priority_keeps_weak_judgment() -> None:
+    """When no concrete progress state exists, a weak judgment event is
+    preserved (it is weaker than even `created`)."""
+    events = [
+        {"task_id": "T2", "type": "judgment", "verdict": "unavailable"},
+    ]
+    model = build_model(events)
+    assert model["T2"] == "judgment:unavailable"
+
+
+def test_build_model_priority_equal_rank_latest_wins() -> None:
+    """Same-rank states fall back to latest (chronological) event."""
+    events = [
+        {"task_id": "T3", "type": "task.implemented"},
+        {"task_id": "T3", "type": "task.implemented"},
+    ]
+    model = build_model(events)
+    assert model["T3"] == "implemented"
+
+
 

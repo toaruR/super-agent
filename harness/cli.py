@@ -354,7 +354,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     resolved from the implemented task (Stage 4 -> Stage 5 handoff).
     """
     # Stage 5 handoff: resolve acceptance + worktree from the task DAG
-    if args.task and args.tasks:
+    if getattr(args, "task", None) and getattr(args, "tasks", None):
         tasks_file = Path(args.tasks)
         if not tasks_file.exists():
             print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
@@ -372,7 +372,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         acceptance = task.get("acceptance") or [
             {"verb": "pytest", "args": ["tests/"], "expect_exit": 0}]
     else:
-        target = Path(args.dir)
+        target = Path(getattr(args, "dir"))
         if not target.exists():
             print(f"error: directory not found: {target}", file=sys.stderr)
             return 2
@@ -385,7 +385,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
     seq = ensure_ledger()
     seq.start()
-    task_id = args.task or f"T-{uuid.uuid4().hex[:8]}"
+    task_id = getattr(args, "task", None) or f"T-{uuid.uuid4().hex[:8]}"
     r = resolve_role("review", CONFIG_DIR,
                      explicit_vendor=args.reviewer,
                      explicit_model=getattr(args, "model", None),
@@ -548,13 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     pl.set_defaults(func=cmd_plan)
 
     rv = sub.add_parser("review", help="run verification pipeline on a dir (Stage 0/5)")
-    rv.add_argument("dir", nargs="?", default=None,
-                    help="worktree / case directory (or use --task --tasks)")
-    rv.add_argument("--task", default=None, help="task id to review (Stage 5 handoff from implement)")
-    rv.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
-                    help="decomposed task DAG (to resolve --task's acceptance + worktree)")
-    rv.add_argument("--worktree", default=None,
-                    help="worktree path (default: workspaces/<task>) when using --task")
+    rv.add_argument("dir", help="worktree / case directory to verify")
     rv.add_argument("--accept", default=None,
                     help="acceptance as 'verb arg1 arg2 ...' (default: pytest tests/)")
     rv.add_argument("--expect-exit", dest="expect_exit", type=int, default=0)
@@ -565,6 +559,20 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--dry-run", action="store_true",
                     help="run CVE but skip the live reviewer call")
     rv.set_defaults(func=cmd_review)
+
+    rt = sub.add_parser("review-task", help="review an implemented task (Stage 5 handoff)")
+    rt.add_argument("--task", required=True, help="task id to review (Stage 5 handoff from implement)")
+    rt.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
+                    help="decomposed task DAG (to resolve --task's acceptance + worktree)")
+    rt.add_argument("--worktree", default=None,
+                    help="worktree path (default: workspaces/<task>)")
+    rt.add_argument("--reviewer", default=None)
+    rt.add_argument("--model", default=None, help="override the reviewer vendor's default model")
+    rt.add_argument("--effort", default=None, help="override the reviewer vendor's default effort")
+    rt.add_argument("--budget", type=int, default=4000)
+    rt.add_argument("--dry-run", action="store_true",
+                    help="run CVE but skip the live reviewer call")
+    rt.set_defaults(func=cmd_review)
 
     im = sub.add_parser("implement", help="implement a task in its worktree + commit (Stage 4)")
     im.add_argument("--task", required=True, help="task id to implement (e.g. T1)")

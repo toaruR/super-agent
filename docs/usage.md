@@ -140,6 +140,8 @@ super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy
 **何をするか**：`run_pipeline` を呼び、CVE→簡報→レビュー→裁定を台帳駆動で実行。
 JSON で裁定を標準出力に出します。
 
+> **注**：実装済みタスク（④）を tasks.md から解決してレビューする場合は `super-agent review-task --task T1`（§2.9）を使う。`review` と `review-task` は別コマンド。
+
 **例**：
 ```bash
 super-agent review probe/n3/caseGreen --reviewer codex --dry-run
@@ -278,21 +280,21 @@ worktree 内で実行。`touch_allow` 以外のファイルは触らせません
 `git add <touch_allow>` → `commit` し、台帳に `artifact.produced`（paths, commit）と
 `task.implemented`（commit, tree_hash）を記録します。`tree_hash` は §3.2 の証拠束縛です。
 
-### 2.9 `super-agent review` — 読み取り専用レビュー（⑤⑥⑦）
+### 2.9 `super-agent review-task` — 実装済みタスクの読み取り専用レビュー（⑤⑥⑦）
 
 実装済みタスク（④）を、`--task` で直接レビューできます。acceptance と worktree パスは
 tasks.md から自動解決されます（Implementer と**別ベンダー**、かつ read-only が強制）。
 
 ```bash
 # implement した T1 をレビュー（CVE実行→brief→read-onlyレビュー→裁定）
-super-agent review --task T1 --tasks my-design-tasks.md --reviewer codex
+super-agent review-task --task T1 --tasks my-design-tasks.md --reviewer codex
 # ドライラン（CVEは走るがレビュア呼び出しをスキップ）
-super-agent review --task T1 --tasks my-design-tasks.md --dry-run
+super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
 ```
 
 | オプション | 意味 |
 |---|---|
-| `--task` | レビューするタスクID（④の成果物） |
+| `--task` | レビューするタスクID（④の成果物、必須） |
 | `--tasks` | タスク定義 DAG（acceptance + worktree 解決用） |
 | `--worktree` | worktree パス（既定 `workspaces/<task>`） |
 | `--reviewer` | レビュア（Implementer と別であること／既定 `codex`） |
@@ -301,6 +303,8 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 **何をするか**：CVE で検証（§3.2 証拠束縛）→ 差分＋証拠ログ＋受入基則のみを brief に渡して
 レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
  台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
+
+> **注**：任意のディレクトリを直接検証したい場合は `super-agent review <dir>`（§2.2）を使う。`review` と `review-task` は別コマンド。
 
 ### 2.10 `super-agent integrate` — 実装済みタスクの統合（⑧ Stage 5）
 
@@ -406,6 +410,32 @@ super-agent evolve --dry-run
 > 失敗パターンがしきい値（3回）に満たない場合は「何も提案しない」と表示されます。
 > 提案はあくまで**案**であり、実際の acceptance ルール／憲法の変更は人間がレビューして反映します。
 
+### 2.13 `super-agent dashboard` — 台帳からダッシュボード生成
+
+```
+super-agent dashboard [--format md|html|both] [--out <path>]
+```
+
+台帳（`harness/ledger/events.jsonl`）の全イベントを `build_model()` で task_id → ステータスに集約し、Markdown / HTML に描画する。
+
+| オプション | 意味 |
+|---|---|
+| `--format` | 出力形式：`md` / `html` / `both`（既定 `md`） |
+| `--out`, `-o` | 出力先（ファイルまたはディレクトリ）。省略時は標準出力に出力 |
+
+```bash
+# 標準出力に Markdown で表示
+super-agent dashboard
+
+# HTML でファイルに書き出し
+super-agent dashboard --format html --out dashboard.html
+
+# Markdown + HTML をディレクトリに出力（dashboard.md / dashboard.html）
+super-agent dashboard --format both --out ./out/
+```
+
+> ステータスは `build_model()` が状態遷移の優先順位（integrated > implemented > …）で決定する。詳細は `docs/spec.md` §9 参照。
+
 ## 3. 検証パイプラインを動かす（Stage C）
 
 
@@ -507,7 +537,7 @@ super-agent log T-XXXX
 
 ```bash
 python -m pytest harness/tests/ -q
-# ................  65 passed
+# ................  97 passed  (2 failed: 既知の yaml 依存テスト。本セッションの課題外)
 ```
 
 - `test_invoke.py`（13）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）＋チャンネル解決・オーバーライド解析
@@ -524,22 +554,23 @@ python -m pytest harness/tests/ -q
 
 ---
 
-## 6. 今できないこと（未実装）
+## 6. 現在の実装状況
 
-以下は**設計のみ**。マニュアルに書かれていても、まだ動きません：
+**実装済み（Stage 0〜6 + Stage B 並列）**:
+- `run` / `architect` / `plan` / `implement` / `review` / `integrate` / `evolve` / `dashboard` の全コマンド
+- `review`: implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）
+- `drive`: デフォルトは単一チャンネル実装＋タスクレベル並列。投機的マルチチャンネルは `--speculative` で opt-in
+- `evolve`: 台帳から失敗パターンを拾い自己改良を提案
 
-- `super-agent run` での**複数タスクの自動起動**（Stage A の `run` は1要求＝1タスク記録のみ。`drive` による DAG 一括駆動の並列は実装済み）
-- `pause` / `resume` / `abort` / `amend` / `show` コマンド（Stage D' 操作面。`show design|plan` は実装済み）
+**未実装（将来の Stage）**:
+- `run` での複数タスク自動起動（Stage A は1要求＝1タスク記録のみ）
+- `pause` / `resume` / `abort` / `amend` コマンド（Stage D' 操作面。`show design|plan` は実装済み）
 - 予算上限での自動停止・承認キュー（Stage D。予算計算は実装済み、承認キューは未実施）
 - レビュアの OS レベル隔離（Stage F）
 
-これらは `docs/plan.md` の Stage 7 を参照。
+詳細は `docs/plan.md` の Stage 7 を参照。
 
-> **実装済み（Stage 0〜6 + Stage B 並列）**：`review` は implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。`drive` はデフォルトで単一チャンネル実装＋タスクレベル並列、投機的マルチチャンネル実装は `--speculative` で opt-in（agy×2+hermes×3 等の fan-out はその時のみ）。`evolve` は台帳から失敗パターンを拾い自己改良を提案（§2.12）。
 
----
-
-## 7. トラブルシューティング
 
 | 現象 | 原因 / 対処 |
 |---|---|

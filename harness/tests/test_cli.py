@@ -46,7 +46,7 @@ def test_review_dry_run_writes_pipeline_events(tmp_path, monkeypatch):
 
 
 def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypatch):
-    """Stage 5 handoff: `review --task T1 --tasks dag.md` resolves acceptance
+    """Stage 5 handoff: `review-task --task T1 --tasks dag.md` resolves acceptance
     and the worktree path from the implemented task (no live vendor)."""
     monkeypatch.chdir(REPO)
     # write a task DAG with T1 having a custom acceptance
@@ -64,7 +64,7 @@ def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypa
         ledger = REPO / "harness" / "ledger" / "events.jsonl"
         if ledger.exists():
             ledger.unlink()
-        res = _run("review", "--task", "T1", "--tasks", str(dag),
+        res = _run("review-task", "--task", "T1", "--tasks", str(dag),
                    "--reviewer", "codex", "--dry-run")
         j = json.loads(res.stdout)
         assert j["tree_hash"], "tree_hash must be bound (CVE ran)"

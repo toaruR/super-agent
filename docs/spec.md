@@ -211,12 +211,18 @@ super-agent implement --task <id> [--tasks FILE] [--worktree DIR] [--vendor V] [
 - 成功でコミットし、台帳に `task.implemented` を記録。
 - 実装者には `--mode plan` 等の読み取り専用フラグは付与**しない**（編集をブロックするため）。
 
-### 5.5 `review` — 検証パイプライン実行（Stage 0/5）
+### 5.5 `review` / `review-task` — 検証パイプライン実行（Stage 0/5）
 
-```
-super-agent review [<dir>] [--task ID] [--tasks FILE] [--worktree DIR] [--accept EXPR] [--expect-exit N] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
+```bash
+# 任意のディレクトリを直接検証
+super-agent review <dir> [--accept EXPR] [--expect-exit N] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
+
+# 実装済みタスク（Stage 4 成果物）を tasks.md から解決してレビュー
+super-agent review-task --task ID [--tasks FILE] [--worktree DIR] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
 ```
 
+- `review <dir>`: 位置引数 `dir`（必須）で任意のワークツリー／題材ディレクトリを検証。
+- `review-task --task ID`: `--task`（必須）で指定した実装済みタスクを `--tasks` から acceptance + worktree を解決してレビュー。
 - 読み取り専用ロール。ベンダーには `--mode plan`（agy）等の読み取り専用フラグを付与。
 - 台帳に `verification.run` / `reviewer.invoked`（vendor 記録）/ `judgment`（verdict）を記録。
 - 裁定は CVE の証拠のみで下す。
