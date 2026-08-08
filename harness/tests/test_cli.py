@@ -100,3 +100,22 @@ def test_status_runs(monkeypatch):
     monkeypatch.chdir(REPO)
     out = _run("status").stdout
     assert "events in ledger" in out
+
+
+def test_drive_speculative_flag_is_accepted(monkeypatch):
+    """The --speculative flag must be accepted by the CLI parser and forwarded
+    to drive() (no error). Use --dry-run so no live vendor is invoked."""
+    monkeypatch.chdir(REPO)
+    dag = REPO / "probe" / "sample" / "my-design-tasks-parallel.md"
+    res = _run("drive", "--tasks", str(dag), "--speculative", "--dry-run")
+    # dry-run drive prints a JSON summary with ok=True
+    import json as _json
+    j = _json.loads(res.stdout)
+    assert j["ok"] is True
+
+
+def test_drive_default_has_no_speculative_flag_in_help(monkeypatch):
+    """Sanity: --speculative appears in drive's help (so it is wired up)."""
+    monkeypatch.chdir(REPO)
+    res = _run("drive", "--help")
+    assert "--speculative" in res.stdout

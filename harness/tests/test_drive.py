@@ -31,10 +31,9 @@ def test_drive_calls_pipeline_per_task_in_order() -> None:
     # the sample has 2 tasks
     n_tasks = len(out["tasks"])
     assert n_tasks == 2
-    n_ch = len(_default_channels())
-    # impl/review called once per (task, channel)
-    assert m_impl.call_count == n_tasks * n_ch
-    assert m_rev.call_count == n_tasks * n_ch
+    # Default (non-speculative): each task is implemented in a SINGLE channel.
+    assert m_impl.call_count == n_tasks
+    assert m_rev.call_count == n_tasks
     assert m_int.call_count == n_tasks
     int_calls = [c.args[0] for c in m_int.call_args_list]
     assert any("T1" in t for t in int_calls) and any("T2" in t for t in int_calls)
@@ -85,9 +84,9 @@ def test_drive_skips_integrate_when_review_fails() -> None:
     assert out["tasks"][0]["integrate"]["skipped"] is True
 
 
-def test_drive_multichannel_fanout_and_winner_integration() -> None:
-    # Stage B parallel (b): implement を複数チャンネルで並列実行し、
-    # 最初に review を通したチャンネルを統合する。
+def test_drive_speculative_fanout_and_winner_integration() -> None:
+    # Stage B parallel (b) SPECULATIVE mode (opt-in): implement を複数チャンネルで
+    # 並列実行し、最初に review を通したチャンネルを統合する。
     channels = [
         {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high"},
         {"vendor": "hermes", "model": "hy3:Free", "effort": "high"},
@@ -103,7 +102,7 @@ def test_drive_multichannel_fanout_and_winner_integration() -> None:
         m_int.return_value = {"ok": True, "commit": "cInt"}
 
         out = drive.drive("", None, SAMPLE_TASKS, seq=None, dry_run=False,
-                          implement_channels=channels)
+                          implement_channels=channels, speculative=True)
 
     assert out["ok"] is True
     t1 = next(t for t in out["tasks"] if t["task_id"] == "T1")
@@ -147,8 +146,55 @@ def test_drive_parallel_tasks_runs_independent_concurrently() -> None:
                           parallel_tasks=True)
     assert out["ok"] is True
     assert len(out["tasks"]) == 2
-    n_ch = len(_default_channels())
-    # 2 tasks * n channels implemented in parallel (mocked)
-    assert m_impl.call_count == 2 * n_ch
+    # Default (non-speculative): each task implemented in a SINGLE channel,
+    # but the two INDEPENDENT tasks (PA, PB) run concurrently.
+    assert m_impl.call_count == 2
     # both integrated (serial, but both present)
     assert m_int.call_count == 2
+
+
+def test_drive_default_is_single_channel_not_speculative() -> None:
+    """Regression: the default drive (no --speculative) must implement each task
+    in exactly ONE channel, even though roles.implement declares 5 channels."""
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement") as m_impl, \
+         mock.patch.object(drive, "run_pipeline") as m_rev, \
+         mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},
+             {"task_id": "T2", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},
+         ]):
+        m_impl.return_value = {"ok": True, "commit": "c1"}
+        m_rev.return_value = {"verdict": "pass"}
+        out = drive.drive("", None, "probe/sample/my-design-tasks.md",
+                          seq=None, dry_run=False)
+    assert out["ok"] is True
+    # 2 tasks, each in a single channel => 2 impl calls (NOT 2 * 5)
+    assert m_impl.call_count == 2
+    assert m_rev.call_count == 2
+    # every channel id used is the plain task id (no __vendor_N composite)
+    for c in m_impl.call_args_list:
+        tid = c.args[0]
+        assert "__" not in tid
+
+
+def test_drive_speculative_flag_fans_out_all_channels() -> None:
+    """With speculative=True, the full roles.implement fan-out is used."""
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement") as m_impl, \
+         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "fail"}), \
+         mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+         mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},
+         ]):
+        m_impl.return_value = {"ok": True, "commit": "c1"}
+        drive.drive("", None, "probe/sample/my-design-tasks-parallel.md",
+                    seq=None, dry_run=False, speculative=True)
+    # all 5 declared channels are used for the single task
+    n_ch = len(_default_channels())
+    assert m_impl.call_count == n_ch
+    # composite channel ids appear (speculative fan-out)
+    assert any("__" in c.args[0] for c in m_impl.call_args_list)

@@ -20,7 +20,7 @@ Super Agent は「異ベンダーのコーディングエージェント（Claud
 内部で `python -m harness.cli` を呼びます。PowerShell なら拡張子省略（`super-agent status`）、
 git-bash なら `./super-agent status` で実行できます。
 
-現在実装済み：Stage 0（足場）〜 Stage 6（evolve 自己改良）＋ Stage B（並列駆動：マルチチャンネル実装＋タスク並列）。
+現在実装済み：Stage 0（足場）〜 Stage 6（evolve 自己改良）＋ Stage B（並列駆動：デフォルトは単一チャンネル実装＋タスクレベル並列、投機的マルチチャンネル実装は `--speculative` で opt-in）。
 
 ---
 
@@ -338,23 +338,25 @@ super-agent review --task T1 --tasks my-design-tasks.md --dry-run
 - `--spec <md>`: 設計ファイル（`--tasks` が無い時に使用）。
 - `--target <branch>`: 統合先ブランチ（既定 `main`）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
-- `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用。既定は `agy×2 + hermes×3` の5チャンネル）。
-- `--parallel-tasks`: **タスクレベル並列**。依存のないタスクを topo レイヤー単位で並行駆動（implement+review を並列。integrate は git 操作のため直列）。
-- `--max-task-workers N`: `--parallel-tasks` 時の最大同時タスク数（既定 4）。
+- `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override（投機的モードのトリガー）**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用）。**この指定自体が投機的モードを意味する** — 複数チャンネルが同じタスクを競って実装し、最初に review を通した勝者を統合する。
+- `--speculative`: **投機的モードを明示的に有効化**。`roles.implement` の全チャンネル（既定 agy×2 + hermes×3 = 5）で各タスクを fan-out して競わせる。`--implement-vendors` で複数チャンネルを指定した場合も暗黙的に投機的モードになる。
+- `--parallel-tasks`: **タスクレベル並列（デフォルトで有効）**。依存のないタスクを topo レイヤー単位で並行駆動（implement+review を並列。integrate は git 操作のため直列）。このフラグは明示用で、省略しても独立タスクは自動で並行処理される。
+- `--max-task-workers N`: 同時タスク数の上限（既定 4）。
 - `--dry-run`: **何も実行しない**（worktree 作成・implement・CVE 検証・レビュア呼び出し・統合・後片付けのすべてをスキップ）。fan-out 計画（どのタスクをどのチャンネルで実行するか）のみ JSON で出力。
 
-**マルチチャンネル（Stage B 並列(b)）**: `roles.implement` はチャンネル**リスト**で宣言。各エントリが1チャンネル＝独立 worktree で並列実装され、model/effort はチャンネルごとに指定可。review を通した**最初のチャンネルだけ**を統合し、他は破棄。これにより agy×2 + hermes×3 のような異ベンダー混載も同時実行できる。
+**デフォルトの挙動（非投機的）**: 各タスクは `roles.implement` の**最初の1チャンネル**だけで実装される（投機的 fan-out なし）。並行化は**タスクレベル**でのみ発生（独立タスクが自動並行）。`--speculative` を付けない限り、1タスクにつき1ブランチ（単一チャンネル）しか作られない。
+
+**投機的マルチチャンネル（Stage B 並列(b)、opt-in）**: `--speculative`（または `--implement-vendors` で複数チャンネル指定）時のみ有効。`roles.implement` はチャンネル**リスト**で宣言され、各エントリが1チャンネル＝独立 worktree で並列実装、model/effort はチャンネルごとに指定可。review を通した**最初のチャンネルだけ**を統合し、他は破棄。これにより agy×2 + hermes×3 のような異ベンダー混載も同時実行できる。
 
 ```bash
-# 既定の5チャンネル（vendors.yaml の roles.implement）で全タスクを駆動
+# デフォルト: 各タスクを単一チャンネルで実装、独立タスクは自動並行
 super-agent drive --tasks ./probe/sample/my-design-tasks.md
 
-# 緊急 override: agy 2 + hermes 3 の5チャンネル
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:2,hermes:3"
+# 投機的モード: 各タスクを roles.implement の全5チャンネルで競わせ、勝者を統合
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --speculative
 
-# タスク並列 + チャンネル並列の両方
-super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
-    --implement-vendors "agy:1,hermes:1" --parallel-tasks
+# 明示的チャンネル指定でも投機的になる（agy 1 + hermes 1 = 2チャンネル競争）
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
 
 # dry-run（fan-out だけ確認、ベンダーは呼ばない）
 super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
@@ -521,7 +523,7 @@ python -m pytest harness/tests/ -q
 
 これらは `docs/plan.md` の Stage 7 を参照。
 
-> **実装済み（Stage 0〜6 + Stage B 並列）**：`review` は implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。`drive` はマルチチャンネル実装（agy×2+hermes×3 等）＋タスクレベル並列に対応。`evolve` は台帳から失敗パターンを拾い自己改良を提案（§2.12）。
+> **実装済み（Stage 0〜6 + Stage B 並列）**：`review` は implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）。`drive` はデフォルトで単一チャンネル実装＋タスクレベル並列、投機的マルチチャンネル実装は `--speculative` で opt-in（agy×2+hermes×3 等の fan-out はその時のみ）。`evolve` は台帳から失敗パターンを拾い自己改良を提案（§2.12）。
 
 ---
 

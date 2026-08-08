@@ -292,7 +292,12 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
 def cmd_drive(args: argparse.Namespace) -> int:
     """Stage B: drive the full implement->review->integrate pipeline for every
-    task in the DAG (serial, one task at a time).
+    task in the DAG.
+
+    Default: each task is implemented in a single channel (no speculative
+    racing); independent tasks run concurrently (task-level parallelism).
+    Pass --speculative to fan each task out across multiple channels and
+    integrate only the first reviewer-approved one.
 
     If --tasks does not exist, decompose from --spec first (creating worktrees).
     """
@@ -306,6 +311,10 @@ def cmd_drive(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"error: --implement-vendors: {e}", file=sys.stderr)
             return 2
+    # --speculative is implied when multiple channels are explicitly requested
+    speculative = bool(getattr(args, "speculative", False)) or (
+        implement_channels is not None and len(implement_channels) > 1
+    )
     out = drive(
         args.requirement or "",
         args.spec,
@@ -318,6 +327,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         implement_channels=implement_channels,
         parallel_tasks=args.parallel_tasks,
         max_task_workers=args.max_task_workers,
+        speculative=speculative,
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -532,9 +542,16 @@ def main(argv: list[str] | None = None) -> int:
                          '(each entry becomes one parallel implement channel)')
     dr.add_argument("--parallel-tasks", action="store_true",
                     help="run independent tasks (topo layers) concurrently during "
-                         "implement+review (integrate stays serial)")
+                         "implement+review (integrate stays serial). "
+                         "NOTE: task-level parallelism is ON by default; this flag "
+                         "is accepted for explicitness but has no extra effect.")
+    dr.add_argument("--speculative", action="store_true",
+                    help="speculative multi-channel mode: fan each task out across "
+                         "all declared implement channels (roles.implement) and "
+                         "integrate only the first reviewer-approved one. Off by "
+                         "default (each task implemented in a single channel).")
     dr.add_argument("--max-task-workers", type=int, default=4,
-                    help="max concurrent tasks when --parallel-tasks is set")
+                    help="max concurrent tasks (used when tasks are independent)")
     dr.add_argument("--dry-run", action="store_true",
                     help="assemble plans and run CVE, but skip vendor calls and git changes")
     dr.set_defaults(func=cmd_drive)

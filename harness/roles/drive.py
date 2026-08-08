@@ -61,21 +61,23 @@ def drive(
     implement_vendor: str | None = None,
     reviewer_vendor: str | None = None,
     implement_channels: list[dict] | None = None,
-    parallel_tasks: bool = False,
+    parallel_tasks: bool = True,
     max_task_workers: int = 4,
+    speculative: bool = False,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
 
-    Stage B parallel (b): the `implement` role fans out into multiple channels
-    (multi-vendor / multi-model). Each channel runs in its own worktree/branch in
-    parallel (ThreadPoolExecutor); the first channel whose review passes is
-    integrated, the rest are discarded.
+    Default mode (speculative=False): each task is implemented in a SINGLE
+    channel (the first declared implement channel, or the one selected via
+    --implement-vendor / --implement-vendors with a single entry). Independent
+    tasks run concurrently by default (task-level parallelism) — this is the
+    default way to go faster, not speculative multi-channel fan-out.
 
-    Task-level parallelism: when `parallel_tasks` is True, tasks that have no
-    inter-dependencies (per topo layers) are driven concurrently during the
-    implement+review phase. The integrate phase is always serialized (git on the
-    shared repo root). Default (parallel_tasks=False) keeps the original serial
-    per-task behavior.
+    Speculative mode (speculative=True, or when --implement-vendors lists
+    multiple channels): the `implement` role fans out into multiple channels
+    (multi-vendor / multi-model). Each channel runs in its own worktree/branch
+    in parallel and the first channel whose review passes is integrated; the
+    rest are discarded. This is an OPT-IN mode, not the default.
 
     Channel declaration (precedence):
       1. `implement_channels` arg (parsed from CLI `--implement-vendors "agy:2,hermes:3"`)
@@ -127,12 +129,17 @@ def drive(
     results_by_id: dict[str, dict] = {}
 
     # Resolve the implement channel fan-out once (shared by all tasks).
+    # Default (speculative=False): collapse to a SINGLE channel so each task is
+    # implemented once (no racing). Speculative mode keeps the full fan-out.
     if implement_vendor:
         channels = [{"vendor": implement_vendor, "model": None, "effort": None}]
     else:
         channels = resolve_role_channels(
             "implement", config_dir, explicit_override=implement_channels
         )
+        if not speculative:
+            # non-speculative default: implement each task in a single channel
+            channels = channels[:1]
 
     def _run_task_pipeline(tid: str) -> dict:
         """Phase A: implement (channels parallel) + review, pick winner.

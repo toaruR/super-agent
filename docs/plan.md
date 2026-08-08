@@ -172,27 +172,31 @@ git worktree list            # worktree が消えている
 
 ### Stage B — 並列駆動（実装 + タスク並列）（✅）
 
-**目標**: `drive` で DAG 全タスクを一括駆動する際、① implement をマルチチャンネル（agy×N + hermes×M 等の同時利用）、② 独立タスクをタスクレベルで並列に実行する。
+**目標**: `drive` で DAG 全タスクを一括駆動する際、① 各タスクは**単一チャンネル**で実装（投機的 fan-out なし）、② 独立タスクは**自動でタスクレベル並列**に実行する。
+
+**投機的実装（マルチチャンネル競争）は非デフォルトのモード**: `--speculative` フラグ（または `--implement-vendors` で複数チャンネルを明示）を付けたときのみ有効。その際は `roles.implement` の全チャンネルで同じタスクを並列実装し、最初に review を通した勝者を統合、他は破棄。
 
 1. `harness/core/invoke.py`: `resolve_role_channels(role)` を追加。`roles.implement` はチャンネルリスト（各エントリ = 1チャンネル、model/effort 自由指定）。単一辞書も後方互換。`parse_channel_override("agy:2,hermes:3")` で CLI 指定を解析。
 2. `harness/roles/drive.py`:
-   - **チャンネル並列**: 各タスクを `channels = resolve_role_channels("implement")` で fan-out。各チャンネルが独立 worktree `workspaces/<tid>__<vendor>_<i>` / branch `task/<tid>__<vendor>_<i>` で並列実装（ThreadPoolExecutor）。review を通した最初のチャンネルを winner として統合、他は破棄。
-   - **タスク並列**: `--parallel-tasks` で、依存のないタスクを topo レイヤー単位で並行駆動（`scheduler.topo_layers`）。integrate（git checkout/merge）は共有リポジトリのため直列に実行。
+   - **デフォルト（非投機的）**: 各タスクを `channels = resolve_role_channels("implement")[:1]` で**単一チャンネル**実装。`speculative=False` のときは常に最初の1チャンネルのみ。
+   - **タスク並列（デフォルトで有効）**: 依存のないタスクを topo レイヤー単位で並行駆動（`scheduler.topo_layers`）。integrate（git checkout/merge）は共有リポジトリのため直列に実行。
+   - **投機的モード（opt-in）**: `--speculative` または `implement_channels` が複数のとき、`channels` を全fan-out。各チャンネルが独立 worktree `workspaces/<tid>__<vendor>_<i>` / branch `task/<tid>__<vendor>_<i>` で並列実装（ThreadPoolExecutor）。review を通した最初のチャンネルを winner として統合、他は破棄。
    - **cleanup**: 統合後に各タスクの全チャンネル worktree を `teardown_worktree` で破棄（敗者チャンネルも残らない）。
 3. `harness/roles/scheduler.py`: `topo_layers()`（タスクを依存レイヤーに分割。レイヤー0=依存なし）、`teardown_worktree()`（worktree+branch を idempotent に削除）を追加。
-4. `harness/cli.py`: `--implement-vendors "agy:2,hermes:3"`（緊急オーバーライド）、`--parallel-tasks` / `--max-task-workers N` を追加。
+4. `harness/cli.py`: `--implement-vendors "agy:2,hermes:3"`（緊急オーバーライド）、`--parallel-tasks`（デフォルトで有効）、`--speculative`（投機的モードの opt-in）、`--max-task-workers N` を追加。
 
 **動作確認**:
 ```
-# 既定は vendors.yaml の roles.implement（agy×2 + hermes×3 の5チャンネル）
+# デフォルト: 各タスクを単一チャンネルで実装、独立タスクは自動並行
 super-agent drive --tasks ./probe/sample/my-design-tasks.md
-# タスク並列 + チャンネル並列の両方
-super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
-    --implement-vendors "agy:1,hermes:1" --parallel-tasks
-# worktree 確認: 実行中は各チャンネル/タスクの worktree が並び、終了後は綺麗に消える
+# 投機的モード: 各タスクを roles.implement の全5チャンネルで競わせ、勝者を統合
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --speculative
+# 明示的チャンネル数指定でも投機的になる（agy 1 + hermes 1 = 2チャンネル競争）
+super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
+# worktree 確認: 実行中は各タスク/チャンネルの worktree が並び、終了後は綺麗に消える
 git worktree list
 ```
-**完了条件**: implement のマルチチャンネル（agy で動くこと＝前提）＋タスクレベル並列が実ベンダーで完走し、敗者チャンネルの worktree が残らない（59 passed）。
+**完了条件**: デフォルトの単一チャンネル実装＋タスクレベル並列が実ベンダーで完走し、敗者チャンネルの worktree が残らない。投機的モードは `--speculative` 時のみ複数チャンネルを起動（65 passed）。
 
 ---
 

@@ -241,7 +241,14 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
     prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
     res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, role="implement", dry_run=False)
     parsed = res.get("result") or {}
-    tasks = parsed.get("tasks", [])
+    if isinstance(parsed, str):
+        # vendor returned a JSON string instead of a parsed object
+        try:
+            import json as _json
+            parsed = _json.loads(parsed)
+        except Exception:
+            parsed = {}
+    tasks = parsed.get("tasks", []) if isinstance(parsed, dict) else []
 
     errs = structural_check(tasks, registry)
     if errs:

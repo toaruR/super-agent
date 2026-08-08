@@ -8,8 +8,12 @@ roles:
   # implement はチャンネルリスト（Stage B 並列(b) のマルチチャンネル実装）。
   # 各エントリが1チャンネル = 独立 worktree で並列実行。チャンネル数 = リスト長。
   # model/effort はチャンネルごとに指定可。単一辞書 {vendor,model,effort} も後方互換。
-  # 既定は agy×2 + hermes×3 の5チャンネル並列。CLI --implement-vendors "agy:1" 等で
-  # 一時的に絞り込み可。
+  #
+  # 【既定は投機的実装「なし」】デフォルトの drive は、このリストから「1チャンネル」
+  # だけを選んで各タスクを実装する（競わせない）。独立タスクは自動でタスクレベル並行
+  # 処理される。投機的実装（複数チャンネルが同じタスクを競わせ、最初に review を通した
+  # 勝者を統合）は非デフォルトのモードで、--speculative フラグを付けたときのみ有効。
+  # その際はこのリスト全体が fan-out される（agy×2 + hermes×3 = 5チャンネル）。
   implement:
     - { vendor: agy,    model: gemini-3.6-flash, effort: high }
     - { vendor: hermes, model: hy3:Free,         effort: high }
