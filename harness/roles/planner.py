@@ -248,6 +248,8 @@ def replan(
     Records ledger events when seq is given.
     """
     config_dir = Path(__file__).resolve().parent.parent / "config"
+    import sys as _sys2
+    print(f"DIAG replan ENTER: ids={[t['task_id'] for t in existing_tasks]} events_n={len(events or [])}", file=_sys2.stderr)
     registry = None
     try:
         from harness.core.verify import VerifierRegistry

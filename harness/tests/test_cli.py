@@ -12,9 +12,10 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 import os
 from pathlib import Path
+_cve_candidate = Path(__file__).resolve().parents[2] / ".cve-venv" / "Scripts" / "python.exe"
 CVE = os.environ.get(
     "CVE_PYTHON",
-    str(Path(__file__).resolve().parents[2] / ".cve-venv" / "Scripts" / "python.exe"),
+    str(_cve_candidate) if _cve_candidate.exists() else sys.executable,
 )
 CLI = ["-m", "harness.cli"]
 CASE = str(REPO / "probe" / "n3" / "caseGreen")
@@ -119,3 +120,24 @@ def test_drive_default_has_no_speculative_flag_in_help(monkeypatch):
     monkeypatch.chdir(REPO)
     res = _run("drive", "--help")
     assert "--speculative" in res.stdout
+
+
+def test_cli_dashboard_md_stdout(monkeypatch):
+    monkeypatch.chdir(REPO)
+    res = _run("dashboard", "--format", "md")
+    assert res.returncode == 0
+    assert "Dashboard" in res.stdout or "Task" in res.stdout or "#" in res.stdout
+
+
+def test_cli_dashboard_both_writes_two_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(REPO)
+    out_dir = tmp_path / "dash_out"
+    res = _run("dashboard", "--format", "both", "--out", str(out_dir))
+    assert res.returncode == 0
+    md_file = out_dir / "dashboard.md"
+    html_file = out_dir / "dashboard.html"
+    assert md_file.exists()
+    assert html_file.exists()
+    assert len(md_file.read_text(encoding="utf-8")) > 0
+    assert len(html_file.read_text(encoding="utf-8")) > 0
+
