@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from harness.roles.dashboard import (
     build_model,
+    progress_summary,
     render_html,
     render_markdown,
 )
@@ -79,7 +80,7 @@ def test_render_html_table() -> None:
     html = render_html(model)
     assert "<!DOCTYPE html>" in html
     assert "<th>Task ID</th><th>Status</th>" in html
-    assert "<tr><td>task-1</td><td>integrated</td></tr>" in html
+    assert "<tr><td>task-1</td><td>" in html
 
 
 def test_build_model_priority_stronger_state_wins() -> None:
@@ -115,4 +116,78 @@ def test_build_model_priority_equal_rank_latest_wins() -> None:
     assert model["T3"] == "implemented"
 
 
+def test_build_model_aggregates_speculative_subchannel() -> None:
+    """Requirement B: speculative sub-channels (PA__hermes_0) are aggregated
+    into their parent logical task (PA)."""
+    events = [
+        {"task_id": "PA", "type": "task.created"},
+        {"task_id": "PA__hermes_0", "type": "task.implemented"},
+        {"task_id": "PA__hermes_1", "type": "review.pass"},
+    ]
+    model = build_model(events)
+    assert set(model) == {"PA"}
+    # strongest status across parent + sub-channels wins
+    assert model["PA"] == "passed"
 
+
+def test_build_model_transient_event_does_not_pin_status() -> None:
+    """Requirement B: a transient event (verification.run) must not pin the
+    task's status; a later terminal event overrides it."""
+    events = [
+        {"task_id": "T4", "type": "verification.run"},
+        {"task_id": "T4", "type": "review.pass"},
+    ]
+    model = build_model(events)
+    assert model["T4"] == "passed"
+
+
+def test_render_markdown_summary() -> None:
+    """Markdown output must include a progress-summary section with totals,
+    completed count, rate and per-status distribution."""
+    model = {"task-1": "integrated", "task-2": "failed", "task-3": "passed"}
+    md = render_markdown(model)
+    assert "## Progress Summary" in md
+    assert "Total logical tasks: 3" in md
+    assert "Completed (integrated/passed): 2 (66.7%)" in md
+    assert "By status:" in md
+    # the tasks table is still present
+    assert "| task-1 | integrated |" in md
+
+
+def test_render_html_dark_mode_and_badges() -> None:
+    """HTML output must be dark-themed and render colour-coded status badges
+    plus a progress-summary card."""
+    model = {"task-1": "integrated", "task-2": "failed", "task-3": "passed"}
+    out = render_html(model)
+    # dark-mode styling present
+    assert "color-scheme: dark" in out
+    assert "background:#0f172a" in out
+    # progress summary card
+    assert "Progress Summary" in out
+    assert "Logical Tasks" in out
+    assert "66.7%" in out
+    # colour badges for each status
+    assert 'class="badge badge-green"' in out
+    assert 'class="badge badge-red"' in out
+    # a concrete badge label
+    assert ">Integrated<" in out
+    assert ">Failed<" in out
+
+
+def test_progress_summary_empty() -> None:
+    s = progress_summary({})
+    assert s["total"] == 0
+    assert s["done"] == 0
+    assert s["rate"] == 0.0
+    assert s["counts"] == {}
+
+
+def test_progress_summary_counts() -> None:
+    model = {"a": "integrated", "b": "passed", "c": "failed", "d": "scheduled"}
+    s = progress_summary(model)
+    assert s["total"] == 4
+    assert s["done"] == 2
+    assert s["rate"] == 50.0
+    assert s["counts"] == {
+        "integrated": 1, "passed": 1, "failed": 1, "scheduled": 1
+    }
