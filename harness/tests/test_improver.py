@@ -3,14 +3,14 @@
 import json
 from pathlib import Path
 
+from harness.core.ledger import Ledger
 from harness.roles import improver
 
 
 def _write_events(path: Path, events: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
-        for e in events:
-            fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+    chunk = {"design_file": "", "events": events}
+    path.write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def test_extract_failures_detects_cve_failure():
@@ -62,7 +62,7 @@ def test_mine_dry_run_does_not_write_ledger(tmp_path):
     result = improver.mine(dry_run=True)
     assert result["proposals"], "expected a proposal"
     # dry-run must NOT append to the ledger
-    after = ledger_path.read_text(encoding="utf-8").strip().splitlines()
+    after = Ledger(str(ledger_path)).load_flat()
     assert len(after) == 3, "dry-run should not add ledger events"
 
 
@@ -80,8 +80,7 @@ def test_mine_records_design_proposed(tmp_path):
     result = improver.mine(dry_run=False)
     assert result["proposals"]
     # a design.proposed event should now be in the ledger
-    lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
-    types = [json.loads(l).get("type") for l in lines]
+    types = [e.get("type") for e in Ledger(str(ledger_path)).load_flat()]
     assert "design.proposed" in types
     # and the proposal was written to the (temp) target file
     assert (tmp_path / "acceptance-templates.md").exists()

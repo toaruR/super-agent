@@ -184,7 +184,7 @@ def test_schedule_dry_run_records_planned_worktree(monkeypatch):
     assert res["ok"] is True
     from harness.core.ledger import Ledger
     ledger = Ledger(str(REPO / "harness" / "ledger" / "events.jsonl"))
-    evs = [e for e in ledger.load() if e.get("task_id") == "T-plan" or e.get("type") == "task.scheduled"]
+    evs = ledger.load_flat()
     assert any(e["type"] == "task.scheduled" for e in evs)
 
 

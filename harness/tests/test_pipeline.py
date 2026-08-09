@@ -23,7 +23,6 @@ from harness.roles.review_flow import run_pipeline
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CASEB = REPO_ROOT / "probe" / "n3" / "caseB"
 CONFIG = Path(__file__).resolve().parent.parent / "config"
-LEDGER = Path(__file__).resolve().parent.parent / "ledger" / "events.jsonl"
 
 
 def _acceptance() -> list[dict]:
@@ -38,11 +37,9 @@ def test_cve_runs_and_binds_tree_hash() -> None:
     assert len(ev["evidence"]) >= 1
 
 
-def test_pipeline_dry_run_records_events() -> None:
-    LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    if LEDGER.exists():
-        LEDGER.unlink()
-    seq = Sequencer(str(LEDGER))
+def test_pipeline_dry_run_records_events(tmp_path) -> None:
+    ledger_path = tmp_path / "events.jsonl"
+    seq = Sequencer(str(ledger_path))
     seq.start()
     j = run_pipeline("T-CASEB", CASEB, _acceptance(),
                      reviewer_vendor="codex", seq=seq, dry_run=True)
@@ -51,7 +48,7 @@ def test_pipeline_dry_run_records_events() -> None:
     # dry-run: CVE 検証は実行されず、ダミー証拠（tree_hash="dry-run"）になる。
     # 実ファイルが存在しない worktree に対しても安全（NotADirectoryError にならない）。
     assert j["tree_hash"] == "dry-run"
-    events = Ledger(str(LEDGER)).load()
+    events = Ledger(str(ledger_path)).load_flat()
     types = [e["type"] for e in events]
     assert "verification.run" in types
     assert "reviewer.skipped" in types

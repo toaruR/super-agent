@@ -241,6 +241,7 @@ def replan(
     model: str | None = None,
     seq=None,
     dry_run: bool = False,
+    design_file: str = "",
 ) -> dict:
     """Re-plan the task DAG given what actually happened (ledger events).
 
@@ -329,11 +330,13 @@ def replan(
         seq.propose("replan", "plan.revised",
                     n_tasks=len(tasks),
                     n_investigation=len(investigation),
-                    notes=notes[:300])
+                    notes=notes[:300],
+                    design_file=design_file)
         for it in investigation:
             seq.propose(it.get("task_id", "investigate"), "task.created",
                         goal=it.get("goal", ""), role="planner",
-                        kind="investigation")
+                        kind="investigation",
+                        design_file=design_file)
 
     return {
         "ok": True,

@@ -56,6 +56,7 @@ def run_pipeline(
     model: str | None = None,
     effort: str | None = None,
     seq: Sequencer | None = None,
+    design_file: str = "",
 ) -> dict:
     """Run the full verification pipeline for one task. Returns the judgment.
 
@@ -65,9 +66,9 @@ def run_pipeline(
     worktree = Path(worktree)
     ledger = seq._ledger if seq is not None else Ledger(str(CONFIG_DIR.parent / "ledger" / "events.jsonl"))
     if seq is not None:
-        emit = lambda tid, typ, **kw: seq.propose(tid, typ, **kw)
+        emit = lambda tid, typ, **kw: seq.propose(tid, typ, design_file=design_file, **kw)
     else:
-        emit = lambda tid, typ, **kw: ledger.append(tid, typ, **kw)
+        emit = lambda tid, typ, **kw: ledger.append_event(design_file, "", {"event_id": f"{tid}:0", "type": typ, **kw})
 
     # 1) CVE verification (the only place anything is executed)
     if dry_run:

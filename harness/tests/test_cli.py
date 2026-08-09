@@ -109,8 +109,9 @@ def test_drive_speculative_flag_is_accepted(monkeypatch):
     """The --speculative flag must be accepted by the CLI parser and forwarded
     to drive() (no error). Use --dry-run so no live vendor is invoked."""
     monkeypatch.chdir(REPO)
+    spec = REPO / "probe" / "sample" / "my-design.md"
     dag = REPO / "probe" / "sample" / "my-design-tasks-parallel.md"
-    res = _run("drive", "--tasks", str(dag), "--speculative", "--dry-run")
+    res = _run("drive", "--spec", str(spec), "--tasks", str(dag), "--speculative", "--dry-run")
     # dry-run drive prints a JSON summary with ok=True
     import json as _json
     j = _json.loads(res.stdout)

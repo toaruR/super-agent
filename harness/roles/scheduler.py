@@ -238,7 +238,8 @@ def _prune_worktree_meta(branch: str) -> None:
 def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
              role: str = "implementer", lease_seconds: int = 3600,
              root: str = "workspaces", dry_run: bool = False,
-             create_worktrees: bool = True, seq=None) -> dict:
+             create_worktrees: bool = True, seq=None,
+             design_file: str = "") -> dict:
     """Schedule the given task DAG: serial worktree creation + lease issuance.
 
     ledger events per task: worktree.created (or worktree.error) + task.leased.
@@ -257,22 +258,25 @@ def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
         if dry_run:
             if seq is not None:
                 seq.propose(tid, "task.scheduled", dry_run=True,
-                            worktree_cmd=create_worktree(tid, root, dry_run=True)["cmd"])
+                            worktree_cmd=create_worktree(tid, root, dry_run=True)["cmd"],
+                            design_file=design_file)
             continue
         if create_worktrees:
             wt = create_worktree(tid, root)
             if wt["ok"]:
                 if seq is not None:
-                    seq.propose(tid, "worktree.created", path=wt["path"], branch=wt["branch"])
+                    seq.propose(tid, "worktree.created", path=wt["path"], branch=wt["branch"],
+                                design_file=design_file)
             else:
                 errors.append(f"{tid}: worktree creation failed: {wt['error']}")
                 if seq is not None:
-                    seq.propose(tid, "worktree.error", error=wt["error"])
+                    seq.propose(tid, "worktree.error", error=wt["error"], design_file=design_file)
                 continue
         lease_until = time.time() + lease_seconds
         if seq is not None:
             seq.propose(tid, "task.leased", vendor=vendor, role=role,
                         lease_until=lease_until,
-                        touch_allow=t.get("touch_allow", []))
+                        touch_allow=t.get("touch_allow", []),
+                        design_file=design_file)
 
     return {"ok": not errors, "order": order, "errors": errors}

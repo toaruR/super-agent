@@ -55,7 +55,7 @@ def test_drive_resolves_vendors_from_roles_yaml_when_unspecified() -> None:
         configured = {c["vendor"] for c in resolve_role_channels("implement", config_dir="harness/config")}
         observed = {c.kwargs["vendor"] for c in m_impl.call_args_list}
         assert observed <= configured  # every impl used a configured implement vendor
-        assert m_rev.call_args.kwargs["reviewer_vendor"] == "codex"
+        assert m_rev.call_args.kwargs["reviewer_vendor"] == "agy"
 
 
 def test_drive_respects_explicit_vendor_override() -> None:

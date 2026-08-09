@@ -92,19 +92,25 @@ def test_role_model_and_effort_resolution() -> None:
     assert "--model" in cmd and "claude-sonnet-5" in cmd
     assert "--effort" in cmd and "high" in cmd
 
-    # implement role -> agy / gemini-3.6-flash / high (model_suffix folded)
+    # implement role -> hermes / hy3:Free / high (flag-style effort)
     ri = resolve_role("implement", "harness/config")
-    assert ri["vendor"] == "agy" and ri["model"] == "gemini-3.6-flash" and ri["effort"] == "high"
+    assert ri["vendor"] == "hermes" and ri["model"] == "hy3:Free" and ri["effort"] == "high"
+    he = load_vendors("harness/config")["hermes"]
+    cmd = build_command(he, "P", model=ri["model"], effort=ri["effort"])
+    assert "-m" in cmd and "tencent/hy3:free" in cmd  # hy3:Free normalized
+    assert "--reasoning" in cmd and "high" in cmd
+
+    # review role -> agy / gemini-3.6-flash / high (model_suffix folded)
+    rr = resolve_role("review", "harness/config")
+    assert rr["vendor"] == "agy" and rr["model"] == "gemini-3.6-flash"
     ag = load_vendors("harness/config")["agy"]
-    cmd = build_command(ag, "P", model=ri["model"], effort=ri["effort"])
+    cmd = build_command(ag, "P", model=rr["model"], effort=rr["effort"])
     assert "gemini-3.6-flash-high" in cmd  # suffixed
 
-    # review role -> codex / gpt-5.6-luna / high (config-style effort)
-    # NOTE: codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価）。
-    rr = resolve_role("review", "harness/config")
-    assert rr["vendor"] == "codex" and rr["model"] == "gpt-5.6-luna"
+    # codex uses config-style effort (not tied to any current role default,
+    # but still a declared vendor and its build_command path stays covered)
     cx = load_vendors("harness/config")["codex"]
-    cmd = build_command(cx, "P", model=rr["model"], effort=rr["effort"])
+    cmd = build_command(cx, "P", model="gpt-5.6-luna", effort="high")
     assert "-m" in cmd and "gpt-5.6-luna" in cmd
     ci = cmd.index("-c")
     assert cmd[ci + 1] == "model_reasoning_effort=high"
@@ -202,7 +208,7 @@ def test_resolve_role_channels_list_and_dict() -> None:
     ch = resolve_role_channels("implement", "harness/config")
     assert isinstance(ch, list)
     assert len(ch) >= 1          # 既定は1以上のチャンネルリスト
-    assert ch[0]["vendor"] == "agy"  # 既定リストの先頭チャンネルは agy
+    assert ch[0]["vendor"] == "hermes"  # 既定リストの先頭チャンネルは hermes
 
     override = [
         {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high"},

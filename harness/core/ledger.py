@@ -75,6 +75,41 @@ class Ledger:
             self._register(chunk)
             return f"{design_file}|{task_file}"
 
+    def append_event(self, design_file: str, task_file: str,
+                     event: dict[str, Any]) -> str | None:
+        """Merge one event into the (design_file, task_file) chunk (案X).
+
+        If a chunk for that key already exists, its events list is extended and
+        the whole file is rewritten atomically (temp + rename). Otherwise a new
+        chunk line is appended.
+        """
+        with self._lock:
+            chunks = self.load()
+            key = (design_file, task_file)
+            target = None
+            for c in chunks:
+                if (c.get("design_file", ""), c.get("task_file", "")) == key:
+                    target = c
+                    break
+            if target is None:
+                target = {"design_file": design_file}
+                if task_file:
+                    target["task_file"] = task_file
+                target["events"] = []
+                chunks.append(target)
+            target.setdefault("events", []).append(event)
+            self._rewrite(chunks)
+            self._register(target)
+            return f"{design_file}|{task_file}"
+
+    def _rewrite(self, chunks: list[dict[str, Any]]) -> None:
+        """Rewrite the whole ledger file atomically (temp + rename)."""
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for c in chunks:
+                fh.write(json.dumps(c, ensure_ascii=False, separators=(",", ":")) + "\n")
+        os.replace(tmp, self.path)
+
     def load(self) -> list[dict[str, Any]]:
         """Reconstruct the full chunk stream (crash-safe: drops partial tail)."""
         if not os.path.exists(self.path):
@@ -128,8 +163,11 @@ class Sequencer:
                 item = self._queue.get(timeout=0.05)
             except queue.Empty:
                 continue
-            self._ledger.append_chunk(
-                item["design_file"], item["task_file"], item["events"])
+            # item holds {design_file, task_file, events:[event]}
+            design_file = item["design_file"]
+            task_file = item["task_file"]
+            for ev in item["events"]:
+                self._ledger.append_event(design_file, task_file, ev)
 
     def propose_chunk(self, design_file: str, task_file: str,
                       events: list[dict[str, Any]]) -> None:
@@ -140,9 +178,17 @@ class Sequencer:
         })
 
     def propose(self, task_id: str, type_: str, **fields: Any) -> None:
-        """Legacy single-event wrapper: emits a chunk with no task_file (task not
-        yet settled) containing one event. New code should use propose_chunk."""
-        self.propose_chunk("", "", [{
+        """Queue one event under (design_file, task_file).
+
+        If task_file is omitted, resolve it from the ledger via the
+        design_file (callers in the drive phase always pass task_file
+        explicitly; downstream roles recover it from the ledger).
+        """
+        design_file = fields.pop("design_file", "")
+        task_file = fields.pop("task_file", "")
+        if not task_file:
+            task_file = self.resolve_task_file(design_file)
+        self.propose_chunk(design_file, task_file, [{
             "event_id": f"{task_id}:0",
             "type": type_,
             **fields,
@@ -156,6 +202,17 @@ class Sequencer:
     def load(self) -> list[dict[str, Any]]:
         """Read the full chunk stream (delegates to the underlying Ledger)."""
         return self._ledger.load()
+
+    def resolve_task_file(self, design_file: str) -> str:
+        """Return the task_file registered for a design_file, or '' if none.
+
+        Used by propose() so downstream roles can recover task_file from the
+        ledger instead of receiving it as a function argument.
+        """
+        for chunk in self._ledger.load():
+            if chunk.get("design_file") == design_file and chunk.get("task_file"):
+                return chunk["task_file"]
+        return ""
 
     def load_flat(self) -> list[dict[str, Any]]:
         """Flatten all chunks into a single event list."""

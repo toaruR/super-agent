@@ -76,7 +76,7 @@ def _fmt_touch_allow(task: dict, worktree: str) -> str:
 def implement(task_id: str, task: dict, worktree_path: str,
               vendor: str = "claude", seq: Sequencer | None = None,
               dry_run: bool = False, model: str | None = None,
-              effort: str | None = None) -> dict:
+              effort: str | None = None, design_file: str = "") -> dict:
     """Implement a single task inside its worktree and commit.
 
     Returns a payload with ok/commit/cmd. Records ledger events when seq given.
@@ -111,13 +111,13 @@ def implement(task_id: str, task: dict, worktree_path: str,
         )
     except FileNotFoundError as e:
         if seq is not None:
-            seq.propose(task_id, "implementer.error", error=str(e))
+            seq.propose(task_id, "implementer.error", error=str(e), design_file=design_file)
         return {"ok": False, "task_id": task_id, "error": str(e)}
 
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout).strip()
         if seq is not None:
-            seq.propose(task_id, "implementer.error", error=err)
+            seq.propose(task_id, "implementer.error", error=err, design_file=design_file)
         return {"ok": False, "task_id": task_id, "error": err}
 
     # harness performs the commit (touch_allow allow-list)
@@ -128,10 +128,12 @@ def implement(task_id: str, task: dict, worktree_path: str,
 
     if seq is not None:
         seq.propose(task_id, "artifact.produced",
-                    paths=touch_allow, commit=commit.get("commit"))
+                    paths=touch_allow, commit=commit.get("commit"),
+                    design_file=design_file)
         seq.propose(task_id, "task.implemented",
                     commit=commit.get("commit"),
-                    tree_hash=commit.get("tree_hash"))
+                    tree_hash=commit.get("tree_hash"),
+                    design_file=design_file)
 
     return {
         "ok": True,

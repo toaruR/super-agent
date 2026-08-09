@@ -62,6 +62,7 @@ def test_architect_log_shows_adr(monkeypatch):
         ledger.unlink()
     spec = REPO / "probe" / "n3" / "caseGreen" / "tests" / "test_ok.py"
     _run("architect", "demo", "--spec", str(spec))
-    first_id = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])["event_id"].split(":")[0]
+    chunk = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    first_id = chunk["events"][0]["event_id"].split(":")[0]
     out = _run("log", first_id).stdout
     assert "adr.written" in out

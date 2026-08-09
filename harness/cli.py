@@ -311,7 +311,18 @@ def cmd_drive(args: argparse.Namespace) -> int:
     integrate only the first reviewer-approved one.
 
     If --tasks does not exist, decompose from --spec first (creating worktrees).
+
+    Both --spec (design_file) and --tasks (task_file) are REQUIRED: driving a
+    task needs its design + task root to exist.
     """
+    if not args.spec:
+        print(json.dumps({"ok": False, "error": "--spec (design_file) is required"},
+                         ensure_ascii=False, indent=2))
+        return 1
+    if not args.tasks:
+        print(json.dumps({"ok": False, "error": "--tasks (task_file) is required"},
+                         ensure_ascii=False, indent=2))
+        return 1
     seq = ensure_ledger()
     seq.start()
     implement_channels = None
@@ -327,9 +338,9 @@ def cmd_drive(args: argparse.Namespace) -> int:
         implement_channels is not None and len(implement_channels) > 1
     )
     out = drive(
-        args.requirement or "",
-        args.spec,
-        args.tasks,
+        requirement=args.requirement or "",
+        spec_path=args.spec,
+        tasks_path=args.tasks,
         target_branch=args.target,
         seq=seq,
         dry_run=args.dry_run,
@@ -342,6 +353,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         adaptive=getattr(args, "adaptive", True),
         implement_model=args.model,
         implement_effort=args.effort,
+        task_file=str(Path(args.tasks).resolve()),
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -512,6 +524,14 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles/pipes default to the system locale codepage (e.g. cp932),
+    # which can't encode arbitrary unicode pulled from design docs (em-dashes,
+    # etc). Keep the encoding as-is (so callers decoding our output with the
+    # same locale default still work) but replace unencodable characters
+    # instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     p = argparse.ArgumentParser(prog="super-agent")
     sub = p.add_subparsers(dest="cmd", required=True)
 

@@ -62,12 +62,13 @@ def integrate(
     target_branch: str = "main",
     seq: Sequencer | None = None,
     dry_run: bool = False,
+    design_file: str = "",
 ) -> dict:
     """Integrate an implemented task into the target branch.
 
     Returns a payload with ok/merged/verified/cmd.
     """
-    emit = (lambda tid, typ, **kw: seq.propose(tid, typ, **kw)) if seq is not None \
+    emit = (lambda tid, typ, **kw: seq.propose(tid, typ, design_file=design_file, **kw)) if seq is not None \
         else (lambda *a, **k: None)
     wt = Path(worktree_path)
     branch = f"task/{task_id}"

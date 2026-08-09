@@ -22,7 +22,7 @@ def _make_seq(tmp_path) -> tuple[Sequencer, str]:
 
 
 def _types(path) -> list[str]:
-    return [e["type"] for e in Ledger(path).load()]
+    return [e["type"] for e in Ledger(path).load_flat()]
 
 
 def test_integrate_dry_run_emits_merge_plan() -> None:

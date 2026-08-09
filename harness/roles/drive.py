@@ -68,6 +68,7 @@ def drive(
     adaptive: bool = True,
     implement_model: str | None = None,
     implement_effort: str | None = None,
+    task_file: str | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
 
@@ -104,13 +105,18 @@ def drive(
     config_dir = Path(__file__).resolve().parent.parent / "config"
     registry = VerifierRegistry(config_dir / "verifiers.yaml")
 
+    # Register the task root (design_file + task_file) up front so that every
+    # downstream role can recover task_file from the ledger via resolve_task_file.
+    if seq is not None:
+        tid = f"T-{uuid_short()}"
+        seq.propose(tid, "task.created", goal=requirement, role="decomposer",
+                    design_file=spec_path or "",
+                    task_file=task_file or str(tasks_file.resolve()))
+
     if tasks_file.exists():
         tasks = parse_tasks_md(str(tasks_file))
         reused = True
     else:
-        if seq is not None:
-            tid = f"T-{uuid_short()}"
-            seq.propose(tid, "task.created", goal=requirement, role="decomposer")
         out = decomposer_decompose(
             tid if seq is not None else "T-drive",
             requirement, vendor=resolve_role("design", config_dir)["vendor"], existing_design=spec_path or "",
@@ -120,7 +126,8 @@ def drive(
             return {"ok": False, "error": "decompose failed", "detail": out}
         tasks = out.get("tasks", [])
         schedule(tid if seq is not None else "T-drive", tasks, root="workspaces",
-                 dry_run=dry_run, create_worktrees=False, seq=seq)
+                 dry_run=dry_run, create_worktrees=False, seq=seq,
+                 design_file=spec_path or "")
         render_tasks_md_safe(tasks, requirement, tasks_file)
         reused = False
 
@@ -132,7 +139,8 @@ def drive(
     # (and torn down after integrate), so schedule here only issues leases —
     # do NOT create a parent worktree that nothing would tear down.
     schedule("T-drive" if seq is None else f"T-{uuid_short()}", tasks,
-             root="workspaces", dry_run=False, create_worktrees=False, seq=seq)
+             root="workspaces", dry_run=False, create_worktrees=False, seq=seq,
+             design_file=spec_path or "")
 
     # Ensure the shared repo root is on the target branch before any integrate
     # merges into it. integrate() merges task/<id> into the *current* branch of
@@ -221,7 +229,8 @@ def drive(
                             "ok": False, "error": cw.get("error", "worktree create failed")}
                 impl = implement(tid, task, wt, vendor=ch["vendor"],
                                  model=ch["model"], effort=ch["effort"],
-                                 seq=seq, dry_run=dry_run)
+                                 seq=seq, dry_run=dry_run,
+                                 design_file=spec_path or "")
                 ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
                                    "effort": ch["effort"], "worktree": wt,
                                    "task_id": tid, "impl": impl, "ok": True})
@@ -238,7 +247,8 @@ def drive(
                                 "ok": False, "error": cw.get("error", "worktree create failed")}
                     impl = implement(cid, task, wt, vendor=ch["vendor"],
                                      model=ch["model"], effort=ch["effort"],
-                                     seq=seq, dry_run=dry_run)
+                                     seq=seq, dry_run=dry_run,
+                                     design_file=spec_path or "")
                     return {"vendor": ch["vendor"], "model": ch["model"],
                             "effort": ch["effort"], "worktree": wt,
                             "task_id": cid, "impl": impl, "ok": True}
@@ -274,7 +284,8 @@ def drive(
                 rev = run_pipeline(c["task_id"], c["worktree"], acc,
                                    reviewer_vendor=rev_vendor,
                                    dry_run=dry_run, seq=seq,
-                                   model=rev_role["model"], effort=rev_role["effort"])
+                                   model=rev_role["model"], effort=rev_role["effort"],
+                                   design_file=spec_path or "")
                 verdict = rev.get("verdict")
                 # Record the REVIEWER vendor (rev_vendor), not the implementer's
                 # vendor — this entry is the review phase, and the actual
@@ -328,6 +339,7 @@ def drive(
                     existing_design=spec_path or "",
                     model=resolve_role("planner", config_dir).get("model"),
                     seq=seq, dry_run=dry_run,
+                    design_file=spec_path or "",
                 )
                 if rep.get("ok") and rep.get("tasks"):
                     new_tasks = rep["tasks"]
@@ -369,7 +381,8 @@ def drive(
         if not dry_run and winner is not None:
             try:
                 integ = integrate(winner["task_id"], task, winner["worktree"],
-                                 target_branch=target_branch, seq=seq, dry_run=dry_run)
+                                 target_branch=target_branch, seq=seq, dry_run=dry_run,
+                                 design_file=spec_path or "")
                 entry["integrate"] = {"ok": integ.get("ok"),
                                       "commit": integ.get("commit"),
                                       "winner": winner["vendor"]}

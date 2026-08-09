@@ -104,7 +104,7 @@ def mine(dry_run: bool = False) -> dict[str, Any]:
     recorded ``event_ids``.
     """
     ledger = Ledger(str(LEDGER_PATH))
-    events = ledger.load()
+    events = ledger.load_flat()
     failures = _extract_failures(events)
     groups = _group_by_pattern(failures)
     proposals = _propose_upgrades(groups)

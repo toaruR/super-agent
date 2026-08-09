@@ -116,7 +116,7 @@ def test_implement_records_artifact_and_implemented(monkeypatch, tmp_path):
     out = implement("T1", _task(), str(wt), vendor="claude", seq=seq)
     seq.stop()
     assert out["ok"] is True
-    evs = Ledger(str(tmp_path / "events.jsonl")).load()
+    evs = Ledger(str(tmp_path / "events.jsonl")).load_flat()
     types = {e["type"] for e in evs}
     assert "artifact.produced" in types
     assert "task.implemented" in types
