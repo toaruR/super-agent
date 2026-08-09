@@ -22,7 +22,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from harness.core.invoke import invoke, load_vendors, resolve_role
+from harness.core.invoke import resolve_role
 from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
@@ -188,30 +188,6 @@ def cmd_architect(args: argparse.Namespace) -> int:
     )
     seq.stop()
     print(json.dumps(adr, ensure_ascii=False, indent=2))
-    return 0
-
-
-def cmd_run(args: argparse.Namespace) -> int:
-    seq = ensure_ledger()
-    seq.start()
-    task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=args.requirement)
-    decls = load_vendors(CONFIG_DIR)
-    r = resolve_role("review", CONFIG_DIR, explicit_vendor=args.vendor,
-                     explicit_model=getattr(args, "model", None),
-                     explicit_effort=getattr(args, "effort", None))
-    reviewer = decls.get(r["vendor"], decls["claude"])
-    res = invoke(
-        reviewer,
-        f"Review task: {args.requirement}",
-        schema={"type": "object", "properties": {"notes": {"type": "string"}}},
-        model=r["model"], effort=r["effort"], dry_run=args.dry_run,
-    )
-    seq.propose(task_id, "agent.invoked", vendor=r["vendor"], dry_run=args.dry_run)
-    if not args.dry_run and res.get("returncode", 0) != 0:
-        seq.propose(task_id, "agent.error", detail=res.get("stderr", "")[:500])
-    seq.stop()
-    print(f"task {task_id} recorded. ledger={LEDGER_PATH}")
     return 0
 
 
@@ -619,14 +595,6 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(errors="replace")
     p = argparse.ArgumentParser(prog="super-agent")
     sub = p.add_subparsers(dest="cmd", required=True)
-
-    r = sub.add_parser("run", help="record a requirement + invoke vendor (Stage A)")
-    r.add_argument("requirement")
-    r.add_argument("--vendor", default=None)
-    r.add_argument("--model", default=None, help="override the vendor's default model")
-    r.add_argument("--effort", default=None, help="override the vendor's default effort")
-    r.add_argument("--dry-run", action="store_true")
-    r.set_defaults(func=cmd_run)
 
     a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
     a.add_argument("requirement")

@@ -88,43 +88,22 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 
 ## 2. コマンド一覧
 
-`super-agent` として使えるコマンド（Stage A + Stage 0 足場）：
+`super-agent` として使えるコマンド：
 
 | コマンド | 役割 | § |
 |---|---|---|
-| `run "<要求>"` | 要求を台帳に記録しベンダーを呼ぶ（Stage A） | 2.1 |
-| `review <dir>` | 検証パイプラインを走らせる（Stage 0＝⑤⑥⑦⑨） | 2.2 |
-| `status` | 台帳の最近のイベントを表示 | 2.3 |
-| `log <task>` | 指定タスクの全イベントを表示 | 2.4 |
-| `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.5 |
-| `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.6 |
-| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.7 |
-| `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.8 |
-| `integrate --task T1` | 実装済みタスクを統合ブランチへマージ＋後片付け（Stage 5＝⑧） | 2.10 |
-| `drive --tasks <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.11 |
-| `evolve` | 台帳から失敗パターンを拾い自己改良を提案（Stage 6＝⑩） | 2.12 |
+| `review <dir>` | 検証パイプラインを走らせる（Stage 0＝⑤⑥⑦⑨） | 2.1 |
+| `status` | 台帳の最近のイベントを表示 | 2.2 |
+| `log <task>` | 指定タスクの全イベントを表示 | 2.3 |
+| `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.4 |
+| `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.5 |
+| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.6 |
+| `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.7 |
+| `integrate --task T1` | 実装済みタスクを統合ブランチへマージ＋後片付け（Stage 5＝⑧） | 2.9 |
+| `drive --tasks <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.10 |
+| `evolve` | 台帳から失敗パターンを拾い自己改良を提案（Stage 6＝⑩） | 2.11 |
 
-### 2.1 `super-agent run` — 要求を投入し台帳に記録
-
-```bash
-super-agent run "<要求>" [--vendor claude|codex|agy|hermes] [--dry-run]
-```
-
-| オプション | 意味 |
-|---|---|
-| `--vendor` | 要求を処理させるベンダー（既定 `claude`） |
-| `--dry-run` | **ベンダーを実際に起動せず**、組み立てるコマンドだけ確認 |
-
-**何をするか**：要求を受け、`task.created` と `agent.invoked` の2イベントを
-台帳（`harness/ledger/events.jsonl`）に書きます。まだ検証は走りません（並列/実行は未実装）。
-
-**例**：
-```bash
-super-agent run "build a fizzbuzz module" --vendor codex --dry-run
-# → task T-XXXX recorded. ledger=...
-```
-
-### 2.2 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
+### 2.1 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
 
 ```bash
 super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy|hermes] [--dry-run]
@@ -140,7 +119,7 @@ super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy
 **何をするか**：`run_pipeline` を呼び、CVE→簡報→レビュー→裁定を台帳駆動で実行。
 JSON で裁定を標準出力に出します。
 
-> **注**：実装済みタスク（④）を tasks.md から解決してレビューする場合は `super-agent review-task --task T1`（§2.9）を使う。`review` と `review-task` は別コマンド。
+> **注**：実装済みタスク（④）を tasks.md から解決してレビューする場合は `super-agent review-task --task T1`（§2.8）を使う。`review` と `review-task` は別コマンド。
 
 **例**：
 ```bash
@@ -148,7 +127,7 @@ super-agent review probe/n3/caseGreen --reviewer codex --dry-run
 # → verdict/judgment_unavailable, tree_hash が束縛される
 ```
 
-### 2.3 `super-agent status` — 台帳の状態を表示
+### 2.2 `super-agent status` — 台帳の状態を表示
 
 ```bash
 super-agent status
@@ -161,7 +140,7 @@ events in ledger: 2
   T-418dd0b1:2 agent.invoked
 ```
 
-### 2.4 `super-agent log <task>` — 指定タスクの全イベント
+### 2.3 `super-agent log <task>` — 指定タスクの全イベント
 
 ```bash
 super-agent log T-XXXX
@@ -177,7 +156,7 @@ events for T-XXXX: 5
   T-XXXX:5 judgment {"verdict": "judgment_unavailable", "tree_hash": "3309..."}
 ```
 
-### 2.5 `super-agent show design|plan` — 設計／計画の表示（L6 読み取り）
+### 2.4 `super-agent show design|plan` — 設計／計画の表示（L6 読み取り）
 
 ```bash
 super-agent show design   # docs/goals/design.md を表示
@@ -186,7 +165,7 @@ super-agent show plan     # docs/plan.md を表示
 
 読み取り専用。台帳イベントは発生しません（L6 の `show` 操作）。
 
-### 2.6 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
+### 2.5 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
 ```bash
 super-agent architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
@@ -218,7 +197,7 @@ super-agent architect "Web API を作れ" --dry-run
 > 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
 
 
-### 2.7 `super-agent plan` — 分解(②)＋編成・worktree・リース(③)
+### 2.6 `super-agent plan` — 分解(②)＋編成・worktree・リース(③)
 
 `plan` は Stage 2（decomposer）と Stage 3（scheduler）を連続実行します。
 `--tasks` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
@@ -253,7 +232,7 @@ worktree/リースだけ作成します。`--tasks` が無い / 未作成なら 
 冪等：再実行しても既存 worktree/ブランチを再利用・または prune して再作成します。
 
 
-### 2.8 `super-agent implement` — タスク実装＋コミット（④）
+### 2.7 `super-agent implement` — タスク実装＋コミット（④）
 
 `plan` が作った worktree 内で、指定タスクを Implementer ベンダーに実装させ、harness が
 コミットします（§3.1 隔離＋§6.2 `touch_allow` 制約）。
@@ -280,7 +259,7 @@ worktree 内で実行。`touch_allow` 以外のファイルは触らせません
 `git add <touch_allow>` → `commit` し、台帳に `artifact.produced`（paths, commit）と
 `task.implemented`（commit, tree_hash）を記録します。`tree_hash` は §3.2 の証拠束縛です。
 
-### 2.9 `super-agent review-task` — 実装済みタスクの読み取り専用レビュー（⑤⑥⑦）
+### 2.8 `super-agent review-task` — 実装済みタスクの読み取り専用レビュー（⑤⑥⑦）
 
 実装済みタスク（④）を、`--task` で直接レビューできます。acceptance と worktree パスは
 tasks.md から自動解決されます（Implementer と**別ベンダー**、かつ read-only が強制）。
@@ -304,9 +283,9 @@ super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
 レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
  台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
 
-> **注**：任意のディレクトリを直接検証したい場合は `super-agent review <dir>`（§2.2）を使う。`review` と `review-task` は別コマンド。
+> **注**：任意のディレクトリを直接検証したい場合は `super-agent review <dir>`（§2.1）を使う。`review` と `review-task` は別コマンド。
 
-### 2.10 `super-agent integrate` — 実装済みタスクの統合（⑧ Stage 5）
+### 2.9 `super-agent integrate` — 実装済みタスクの統合（⑧ Stage 5）
 
  実装・レビューを通ったタスクの worktree ブランチ（`task/<id>`）を統合ブランチへマージし、
  統合後も acceptance が GREEN か再検証してから worktree を片付けます。
@@ -338,7 +317,7 @@ super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
  > **注意**：実行（dry-run なし）すると worktree が削除されます。T1/T2 のように残しておきたい
  > ワークツリーがある場合は `--dry-run` で確認してください。
 
-### 2.11 `super-agent drive` — DAG 全タスクを一括駆動（Stage B）
+### 2.10 `super-agent drive` — DAG 全タスクを一括駆動（Stage B）
 
 `plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して**実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
 
@@ -376,7 +355,7 @@ super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
 
 > **ベンダー呼び出しの自動リトライ**: 実装者（hermes 等）がコンテンツポリシーでブロックされた場合、super-agent は同一セッションを再開して自動でリトライする（人間の「続けて」と等価）。ブロックしなければ1回で終わり、正常系は遅くならない。挙動の詳細は `docs/spec.md` の「ベンダー呼び出しの自動リトライ」参照。
 
-### 2.12 `super-agent evolve` — 自己改良（⑩ Stage 6）
+### 2.11 `super-agent evolve` — 自己改良（⑩ Stage 6）
 
 台帳（`harness/ledger/events.jsonl`）を読み、再発している失敗パターンから
 `acceptance` テンプレまたは憲法への昇格を提案します（G6 自己改良）。
@@ -557,13 +536,12 @@ python -m pytest harness/tests/ -q
 ## 6. 現在の実装状況
 
 **実装済み（Stage 0〜6 + Stage B 並列）**:
-- `run` / `architect` / `plan` / `implement` / `review` / `integrate` / `evolve` / `dashboard` の全コマンド
+- `architect` / `plan` / `implement` / `review` / `integrate` / `evolve` / `dashboard` の全コマンド
 - `review`: implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）
 - `drive`: デフォルトは単一チャンネル実装＋タスクレベル並列。投機的マルチチャンネルは `--speculative` で opt-in
 - `evolve`: 台帳から失敗パターンを拾い自己改良を提案
 
 **未実装（将来の Stage）**:
-- `run` での複数タスク自動起動（Stage A は1要求＝1タスク記録のみ）
 - `pause` / `resume` / `abort` / `amend` コマンド（Stage D' 操作面。`show design|plan` は実装済み）
 - 予算上限での自動停止・承認キュー（Stage D。予算計算は実装済み、承認キューは未実施）
 - レビュアの OS レベル隔離（Stage F）

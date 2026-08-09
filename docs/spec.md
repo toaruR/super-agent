@@ -231,19 +231,13 @@ verifiers:
 
 全コマンドは `harness/cli.py` のサブコマンド。共通: `--dry-run` は実行をスキップして計画のみ出力。
 
-### 5.1 `run` — 要件記録 + ベンダー呼び出し（Stage A）
-
-```
-super-agent run <requirement> [--vendor V] [--model M] [--effort E] [--dry-run]
-```
-
-### 5.2 `architect` — 設計決定を ADR として記録（Stage 1）
+### 5.1 `architect` — 設計決定を ADR として記録（Stage 1）
 
 ```
 super-agent architect <requirement> [--spec FILE] [--vendor V] [--model M] [--effort E] [--dry-run]
 ```
 
-### 5.3 `plan` — 分解 + スケジュール（Stage 3）
+### 5.2 `plan` — 分解 + スケジュール（Stage 3）
 
 ```
 super-agent plan [<requirement>] [--spec FILE] [--tasks FILE] [--vendor V] [--model M] [--effort E] [--lease N] [--root DIR] [--dry-run]
@@ -253,7 +247,7 @@ super-agent plan [<requirement>] [--spec FILE] [--tasks FILE] [--vendor V] [--mo
 - `--lease`: リース時間（秒、既定 3600）。
 - `--root`: worktree ルート（既定 `workspaces`）。
 
-### 5.4 `implement` — タスク実装 + コミット（Stage 4）
+### 5.3 `implement` — タスク実装 + コミット（Stage 4）
 
 ```
 super-agent implement --task <id> [--tasks FILE] [--worktree DIR] [--vendor V] [--model M] [--effort E] [--dry-run]
@@ -263,7 +257,7 @@ super-agent implement --task <id> [--tasks FILE] [--worktree DIR] [--vendor V] [
 - 成功でコミットし、台帳に `task.implemented` を記録。
 - 実装者には `--mode plan` 等の読み取り専用フラグは付与**しない**（編集をブロックするため）。
 
-### 5.5 `review` / `review-task` — 検証パイプライン実行（Stage 0/5）
+### 5.4 `review` / `review-task` — 検証パイプライン実行（Stage 0/5）
 
 ```bash
 # 任意のディレクトリを直接検証
@@ -279,7 +273,7 @@ super-agent review-task --task ID [--tasks FILE] [--worktree DIR] [--reviewer V]
 - 台帳に `verification.run` / `reviewer.invoked`（vendor 記録）/ `judgment`（verdict）を記録。
 - 裁定は CVE の証拠のみで下す。
 
-### 5.6 `integrate` — 実装済みタスクの統合（Stage 5）
+### 5.5 `integrate` — 実装済みタスクの統合（Stage 5）
 
 ```
 super-agent integrate --task <id> [--tasks FILE] [--worktree DIR] [--target BRANCH] [--dry-run]
@@ -290,7 +284,7 @@ super-agent integrate --task <id> [--tasks FILE] [--worktree DIR] [--target BRAN
 - 成功で `integrated` 記録、`git worktree remove --force` で後片付け。
 - **注意**: 実行（dry-run なし）すると worktree が削除される。
 
-### 5.7 `drive` — DAG 全タスク一括駆動（Stage B）
+### 5.6 `drive` — DAG 全タスク一括駆動（Stage B）
 
 ```
 super-agent drive [--requirement TEXT] [--spec FILE] [--tasks FILE] [--target BRANCH]
@@ -306,7 +300,7 @@ super-agent drive [--requirement TEXT] [--spec FILE] [--tasks FILE] [--target BR
 - `--max-task-workers N`: 同時タスク数上限（既定 4）。
 - 既定（非投機的）: 各タスクを `roles.implement` の最初の1チャンネルのみで実装。
 
-### 5.8 `evolve` — 自己改良（Stage 6）
+### 5.7 `evolve` — 自己改良（Stage 6）
 
 ```
 super-agent evolve [--dry-run]
@@ -315,7 +309,7 @@ super-agent evolve [--dry-run]
 - 台帳の失敗パターン（同じ `pattern` が 3回以上）から `acceptance` テンプレまたは憲法への昇格案を提案。
 - `--dry-run`: 提案表示のみ。実行時は `design.proposed` event を記録し対象ファイルへ追記。
 
-### 5.9 `dashboard` — 台帳可視化
+### 5.8 `dashboard` — 台帳可視化
 
 ```
 super-agent dashboard [--format md|html|both] [--out DIR]
@@ -325,7 +319,7 @@ super-agent dashboard [--format md|html|both] [--out DIR]
 - `--out` 指定時はファイル書き出し、未指定時は標準出力。
 - 詳細は §9。
 
-### 5.10 その他
+### 5.9 その他
 
 - `status`: 最近の台帳イベントを表示。
 - `log <task>`: 指定タスクprefix の台帳イベントを表示。
