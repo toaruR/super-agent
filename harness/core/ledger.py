@@ -4,7 +4,14 @@
 Chunk-based layout (spec.md "用語: 台帳の構造（1塊 = 1設計）"):
   - one CHUNK  = one line = one append write (newline terminated)
   - a chunk bundles all events for a single (design_file, task_file) pair
-  - chunk schema: {"design_file": ..., "task_file": ..., "events": [ ... ]}
+  - chunk schema: {"design_file": ..., "task_file": ..., "created_at": ...,
+    "updated_at": ..., "events": [ ... ]}
+  - chunk-level created_at is set once, when the chunk is first written;
+    updated_at is refreshed on every subsequent event append
+  - each individual event is stamped with "ts" (unix epoch seconds) the first
+    time it is appended, so downstream consumers (harness.roles.dashboard) can
+    derive a per-task created_at/updated_at even when several logical tasks
+    share one (design_file, task_file) chunk
 
 Design rules:
   - a repeat of the same (design_file, task_file) chunk in one session is ignored
@@ -18,6 +25,7 @@ import json
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,10 +73,18 @@ class Ledger:
         with self._lock:
             if key in self._seen:
                 return None  # duplicate chunk -> idempotent ignore
+            now = time.time()
+            stamped = []
+            for ev in events:
+                e = dict(ev)
+                e.setdefault("ts", now)
+                stamped.append(e)
             chunk: dict[str, Any] = {"design_file": design_file}
             if task_file:
                 chunk["task_file"] = task_file
-            chunk["events"] = events
+            chunk["created_at"] = now
+            chunk["updated_at"] = now
+            chunk["events"] = stamped
             line = json.dumps(chunk, ensure_ascii=False, separators=(",", ":")) + "\n"
             with open(self.path, "a", encoding="utf-8") as fh:
                 fh.write(line)  # single append; OS guarantees atomicity at line size
@@ -91,13 +107,18 @@ class Ledger:
                 if (c.get("design_file", ""), c.get("task_file", "")) == key:
                     target = c
                     break
+            now = time.time()
+            ev = dict(event)
+            ev.setdefault("ts", now)
             if target is None:
                 target = {"design_file": design_file}
                 if task_file:
                     target["task_file"] = task_file
+                target["created_at"] = now
                 target["events"] = []
                 chunks.append(target)
-            target.setdefault("events", []).append(event)
+            target["updated_at"] = now
+            target.setdefault("events", []).append(ev)
             self._rewrite(chunks)
             self._register(target)
             return f"{design_file}|{task_file}"

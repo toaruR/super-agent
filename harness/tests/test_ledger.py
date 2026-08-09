@@ -55,6 +55,31 @@ def test_crash_partial_line() -> None:
         shutil.rmtree(tmp)
 
 
+def test_chunk_and_event_timestamps() -> None:
+    """Chunks get created_at (set once) / updated_at (refreshed on every
+    append); each event gets its own ts stamp."""
+    tmp = tempfile.mkdtemp()
+    try:
+        p = os.path.join(tmp, "events.jsonl")
+        lg = Ledger(p)
+        lg.append_event("design.md", "tasks.md", {"event_id": "T-1:1", "type": "task.created"})
+        chunk = lg.load()[0]
+        assert chunk["created_at"] > 0
+        assert chunk["updated_at"] == chunk["created_at"]
+        assert chunk["events"][0]["ts"] > 0
+
+        created_at = chunk["created_at"]
+        lg.append_event("design.md", "tasks.md", {"event_id": "T-1:2", "type": "task.implemented"})
+        chunk = lg.load()[0]
+        # created_at is stable across subsequent appends to the same chunk
+        assert chunk["created_at"] == created_at
+        assert chunk["updated_at"] >= created_at
+        assert len(chunk["events"]) == 2
+        assert chunk["events"][1]["ts"] >= chunk["events"][0]["ts"]
+    finally:
+        shutil.rmtree(tmp)
+
+
 def test_sequencer_order() -> None:
     """N threads propose chunks through one Sequencer; final stream is ordered & unique."""
     tmp = tempfile.mkdtemp()

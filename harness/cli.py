@@ -459,7 +459,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     # The dashboard role module is the single source of truth for the
     # task_id -> status aggregation (state-transition priority). Reuse it
     # rather than re-deriving status here so status semantics stay in sync.
-    from harness.roles.dashboard import build_model
+    from harness.roles.dashboard import build_model, format_ts, group_by_design_file
 
     model = build_model(events)
 
@@ -467,27 +467,36 @@ def cmd_status(args: argparse.Namespace) -> int:
     total = len(model)
     if total:
         status_counts: dict[str, int] = {}
-        for s in model.values():
-            status_counts[s] = status_counts.get(s, 0) + 1
-        done = sum(1 for s in model.values() if s in _DONE_STATUSES)
+        for info in model.values():
+            status_counts[info["status"]] = status_counts.get(info["status"], 0) + 1
+        done = sum(1 for info in model.values() if info["status"] in _DONE_STATUSES)
         rate = done / total * 100.0
         top = ", ".join(f"{s}={c}" for s, c in sorted(
             status_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        design_files = sorted({info["design_file"] for info in model.values()
+                                if info["design_file"]})
         print(f"\n# Progress summary")
         print(f"  logical tasks: {total}")
         print(f"  done ({'/'.join(_DONE_STATUSES)}): {done}")
         print(f"  overall progress: {done}/{total} ({rate:.1f}%)")
         print(f"  by status: {top}")
+        if design_files:
+            print(f"  design files: {', '.join(design_files)}")
     else:
         print(f"\n# Progress summary")
         print(f"  logical tasks: 0")
         print(f"  overall progress: 0/0 (0.0%)")
 
-    # --- 2) logical task list ---
+    # --- 2) logical task list (grouped by design_file) ---
     print(f"\n# Logical tasks")
     if model:
-        for task_id, status in sorted(model.items()):
-            print(f"  {task_id}\t{status}")
+        for design_file, tasks in group_by_design_file(model).items():
+            print(f"  ## {design_file}")
+            for task_id, info in sorted(tasks.items()):
+                created = format_ts(info["created_at"])
+                updated = format_ts(info["updated_at"])
+                print(f"    {task_id}\t{info['status']}"
+                      f"\tcreated={created}\tupdated={updated}")
     else:
         print("  (no logical tasks recorded)")
 

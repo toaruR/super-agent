@@ -16,6 +16,7 @@ Improvements (dashboard-improvement design):
 from __future__ import annotations
 
 import html
+from datetime import datetime
 from typing import Any
 
 STATUS_MAP = {
@@ -102,6 +103,17 @@ def _rank_of(status: str) -> int:
     return -1
 
 
+def format_ts(ts: Any) -> str:
+    """Format a unix-epoch timestamp (as stored by harness.core.ledger) for
+    display. Returns "-" for missing/unparseable values."""
+    if not ts:
+        return "-"
+    try:
+        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return "-"
+
+
 def _badge(status: str) -> tuple[str, str]:
     """Return ``(label, css_class)`` for rendering a status badge.
 
@@ -182,8 +194,55 @@ def _logical_parent(task_id: str) -> str:
     return task_id
 
 
-def build_model(events: list[dict[str, Any]]) -> dict[str, str]:
-    """Convert ledger events into a structured model mapping task_id -> status.
+def _empty_task_entry() -> dict[str, Any]:
+    return {
+        "status": None, "_rank": None,
+        "design_file": "", "task_file": "",
+        "created_at": "", "updated_at": "",
+    }
+
+
+def _merge_event_meta(entry: dict[str, Any], ev: dict[str, Any]) -> None:
+    """Fold one event's design_file/task_file/ts into a task entry.
+
+    design_file/task_file are taken from the first event that carries them
+    (they should be constant across a task's events). created_at/updated_at
+    track the min/max ``ts`` seen so far.
+    """
+    df = ev.get("design_file") or ""
+    tf = ev.get("task_file") or ""
+    ts = ev.get("ts") or ""
+    if df and not entry["design_file"]:
+        entry["design_file"] = df
+    if tf and not entry["task_file"]:
+        entry["task_file"] = tf
+    if ts:
+        if not entry["created_at"] or ts < entry["created_at"]:
+            entry["created_at"] = ts
+        if not entry["updated_at"] or ts > entry["updated_at"]:
+            entry["updated_at"] = ts
+
+
+def _merge_meta(agg: dict[str, Any], entry: dict[str, Any]) -> None:
+    """Merge a raw task entry's meta fields into its parent's aggregate entry."""
+    if entry["design_file"] and not agg["design_file"]:
+        agg["design_file"] = entry["design_file"]
+    if entry["task_file"] and not agg["task_file"]:
+        agg["task_file"] = entry["task_file"]
+    ca = entry["created_at"]
+    if ca and (not agg["created_at"] or ca < agg["created_at"]):
+        agg["created_at"] = ca
+    ua = entry["updated_at"]
+    if ua and (not agg["updated_at"] or ua > agg["updated_at"]):
+        agg["updated_at"] = ua
+
+
+def build_model(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Convert ledger events into a structured model mapping task_id -> info.
+
+    Each info dict has keys: ``status``, ``design_file``, ``task_file``,
+    ``created_at``, ``updated_at`` (the latter two are unix-epoch seconds, or
+    ``""`` when no event carried a ``ts``).
 
     Two passes:
 
@@ -193,23 +252,26 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, str]:
        states such as ``judgment_unavailable`` or ``judgment:*`` never clobber a
        concrete implementation status (``implemented`` / ``integrated`` etc.).
        Transient events (``verification.run`` …) are ignored for status.
+       design_file/task_file/created_at/updated_at are folded in regardless of
+       whether the event carries a status.
 
     2. Speculative sub-channels (``PA__hermes_0``) are aggregated under their
        parent logical task (``PA``); the parent's status is the strongest status
-       seen across itself and all of its sub-channels (requirement B).
+       seen across itself and all of its sub-channels (requirement B), and its
+       created_at/updated_at span the earliest/latest across itself and all
+       sub-channels.
 
     Args:
         events: List of ledger event dicts.
 
     Returns:
-        Dict mapping logical task_id to status string.
+        Dict mapping logical task_id to an info dict.
     """
-    # Pass 1: raw task id -> strongest status.
-    raw: dict[str, str] = {}
-    rank_of: dict[str, int] = {}
     if not events:
-        return raw
+        return {}
 
+    # Pass 1: raw task id -> strongest status + meta.
+    raw: dict[str, dict[str, Any]] = {}
     for ev in events:
         if not isinstance(ev, dict):
             continue
@@ -217,30 +279,55 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, str]:
         if not task_id:
             continue
 
-        status, rank = _event_status(ev)
-        if status is None:
-            continue
+        entry = raw.setdefault(task_id, _empty_task_entry())
+        _merge_event_meta(entry, ev)
 
-        cur_rank = rank_of.get(task_id)
-        if cur_rank is None or rank > cur_rank:
-            raw[task_id] = status
-            rank_of[task_id] = rank
+        status, rank = _event_status(ev)
+        if status is not None and (entry["_rank"] is None or rank > entry["_rank"]):
+            entry["status"] = status
+            entry["_rank"] = rank
 
     # Pass 2: aggregate speculative sub-channels into parent logical tasks.
-    aggregated: dict[str, str] = {}
-    agg_rank: dict[str, int] = {}
-    for task_id, status in raw.items():
+    aggregated: dict[str, dict[str, Any]] = {}
+    for task_id, entry in raw.items():
+        if entry["status"] is None:
+            continue
         parent = _logical_parent(task_id)
-        rank = _rank_of(status)
-        cur = agg_rank.get(parent)
-        if cur is None or rank > cur:
-            aggregated[parent] = status
-            agg_rank[parent] = rank
+        agg = aggregated.get(parent)
+        if agg is None:
+            agg = _empty_task_entry()
+            aggregated[parent] = agg
+        if agg["_rank"] is None or entry["_rank"] > agg["_rank"]:
+            agg["status"] = entry["status"]
+            agg["_rank"] = entry["_rank"]
+        _merge_meta(agg, entry)
 
+    for entry in aggregated.values():
+        entry.pop("_rank", None)
     return aggregated
 
 
-def progress_summary(model: dict[str, str]) -> dict[str, Any]:
+# Heading used for tasks whose design_file couldn't be determined.
+_UNKNOWN_DESIGN_FILE = "(design file unknown)"
+
+
+def group_by_design_file(
+    model: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Group a task model by design_file for grouped display in status/dashboard.
+
+    Returns an ordered dict of design_file -> {task_id: info}, sorted by
+    design_file with tasks lacking a design_file (grouped under
+    ``_UNKNOWN_DESIGN_FILE``) sorted last.
+    """
+    groups: dict[str, dict[str, dict[str, Any]]] = {}
+    for task_id, info in model.items():
+        key = info.get("design_file") or _UNKNOWN_DESIGN_FILE
+        groups.setdefault(key, {})[task_id] = info
+    return dict(sorted(groups.items(), key=lambda kv: (kv[0] == _UNKNOWN_DESIGN_FILE, kv[0])))
+
+
+def progress_summary(model: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Compute an aggregate progress summary for the model.
 
     Returns a dict with keys: ``total`` (logical task count), ``done`` (count of
@@ -249,18 +336,23 @@ def progress_summary(model: dict[str, str]) -> dict[str, Any]:
     """
     total = len(model)
     counts: dict[str, int] = {}
-    for status in model.values():
+    for info in model.values():
+        status = info["status"]
         counts[status] = counts.get(status, 0) + 1
     done = sum(c for s, c in counts.items() if s in _DONE_STATUSES)
     rate = (done / total * 100.0) if total else 0.0
     return {"total": total, "done": done, "rate": rate, "counts": counts}
 
 
-def render_markdown(model: dict[str, str]) -> str:
+def render_markdown(model: dict[str, dict[str, Any]]) -> str:
     """Render the task status model as Markdown.
 
-    Emits a progress-summary section followed by the ``| Task ID | Status |``
-    table (the table row format is kept for CLI compatibility).
+    Emits a progress-summary section followed by the task list grouped into
+    one ``| Task ID | Status | Created At | Updated At |`` table per
+    design_file (the ``### <design_file>`` heading carries the grouping, so
+    the table itself no longer repeats it per row). The
+    ``| Task ID | Status |`` prefix of each row is kept for CLI compatibility
+    with older consumers of this table.
     """
     summary = progress_summary(model)
     lines = ["# Dashboard", ""]
@@ -283,11 +375,23 @@ def render_markdown(model: dict[str, str]) -> str:
 
     lines.append("## Tasks")
     lines.append("")
-    lines.append("| Task ID | Status |")
-    lines.append("| --- | --- |")
-    for task_id, status in sorted(model.items()):
-        lines.append(f"| {html.escape(task_id)} | {html.escape(status)} |")
-    return "\n".join(lines) + "\n"
+    if model:
+        for design_file, tasks in group_by_design_file(model).items():
+            lines.append(f"### {html.escape(design_file)}")
+            lines.append("")
+            lines.append("| Task ID | Status | Created At | Updated At |")
+            lines.append("| --- | --- | --- | --- |")
+            for task_id, info in sorted(tasks.items()):
+                lines.append(
+                    f"| {html.escape(task_id)} | {html.escape(info['status'])} | "
+                    f"{html.escape(format_ts(info['created_at']))} | "
+                    f"{html.escape(format_ts(info['updated_at']))} |"
+                )
+            lines.append("")
+    else:
+        lines.append("(no logical tasks recorded)")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 # Dark-mode stylesheet for the HTML renderer.
@@ -314,20 +418,33 @@ _HTML_CSS = """
 """
 
 
-def render_html(model: dict[str, str]) -> str:
+def render_html(model: dict[str, dict[str, Any]]) -> str:
     """Render the task status model as a dark-mode HTML dashboard.
 
     Includes a progress-summary card (total / completed / rate / distribution)
-    and a table of tasks with colour-coded status badges.
+    and a table of tasks with colour-coded status badges plus design file and
+    created/updated timestamps.
     """
     summary = progress_summary(model)
 
-    rows = ""
-    for task_id, status in sorted(model.items()):
-        label, cls = _badge(status)
-        rows += (
-            f'<tr><td>{html.escape(task_id)}</td>'
-            f'<td><span class="badge {cls}">{html.escape(label)}</span></td></tr>\n'
+    tables = ""
+    for design_file, tasks in group_by_design_file(model).items():
+        rows = ""
+        for task_id, info in sorted(tasks.items()):
+            label, cls = _badge(info["status"])
+            rows += (
+                f'<tr><td>{html.escape(task_id)}</td>'
+                f'<td><span class="badge {cls}">{html.escape(label)}</span></td>'
+                f'<td>{html.escape(format_ts(info["created_at"]))}</td>'
+                f'<td>{html.escape(format_ts(info["updated_at"]))}</td></tr>\n'
+            )
+        tables += (
+            f'<h3>{html.escape(design_file)}</h3>\n'
+            "<table>\n"
+            "<thead><tr><th>Task ID</th><th>Status</th>"
+            "<th>Created At</th><th>Updated At</th></tr></thead>\n"
+            f"<tbody>\n{rows}</tbody>\n"
+            "</table>\n"
         )
 
     dist = "".join(
@@ -359,10 +476,7 @@ def render_html(model: dict[str, str]) -> str:
         '</div>\n'
         f'<div class="dist">{dist}</div>\n'
         "</div>\n"
-        "<table>\n"
-        "<thead><tr><th>Task ID</th><th>Status</th></tr></thead>\n"
-        f"<tbody>\n{rows}</tbody>\n"
-        "</table>\n"
+        f"{tables}"
         "</body>\n"
         "</html>\n"
     )
