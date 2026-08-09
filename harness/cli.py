@@ -183,23 +183,39 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_architect(args: argparse.Namespace) -> int:
     """Stage 1 (§9 ①): record design decisions as ADRs on the ledger.
 
-    With --spec <file>: record the human-supplied design verbatim.
-    Without: ask a read-only vendor to propose ADRs, saved as a new,
-    non-colliding file under paths.yaml's design_dir (or just dry-run the prompt).
+    With --spec <file> that already exists: record the human-supplied design
+    verbatim; requirement is optional (recovered from the file's first line
+    if omitted, stripping a leading '# 設計:' marker if present).
+    Without an existing --spec file: requirement is required — a read-only
+    vendor proposes ADRs, saved as a new, non-colliding file under
+    paths.yaml's design_dir (or just dry-run the prompt).
     """
+    spec_exists = args.spec is not None and Path(args.spec).exists()
+    requirement = args.requirement
+    if spec_exists and not requirement:
+        text = Path(args.spec).read_text(encoding="utf-8", errors="ignore")
+        first_line = text.splitlines()[0].strip() if text.splitlines() else ""
+        if first_line.startswith("# 設計:"):
+            first_line = first_line[len("# 設計:"):].strip()
+        requirement = first_line
+    if not spec_exists and not requirement:
+        print(json.dumps({"ok": False,
+                          "error": "requirement is required unless --spec points to an existing design file"},
+                         ensure_ascii=False, indent=2))
+        return 1
     if args.spec is None:
-        args.spec = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(args.requirement)))
+        args.spec = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(requirement)))
     seq = ensure_ledger()
     seq.start()
     task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=args.requirement, role="architect")
+    seq.propose(task_id, "task.created", goal=requirement, role="architect")
     r = resolve_role("design", CONFIG_DIR,
                      explicit_vendor=args.vendor,
                      explicit_model=getattr(args, "model", None),
                      explicit_effort=getattr(args, "effort", None))
     adr = architect_propose(
         task_id,
-        args.requirement,
+        requirement,
         r["vendor"],
         spec_path=args.spec,
         dry_run=args.dry_run,
@@ -605,9 +621,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
-    a.add_argument("requirement")
+    a.add_argument("requirement", nargs="?", default="",
+                   help="requirement text (optional if --spec points to an existing design "
+                        "file; recovered from the file's first line if omitted there)")
     a.add_argument("--spec", default=None,
-                   help="human-supplied design file (recorded verbatim). If omitted, "
+                   help="human-supplied design file (recorded verbatim). If it doesn't exist, "
                         "an LLM proposes it and it is saved as a new, non-colliding "
                         f"file under paths.yaml's design_dir ({PATH_DEFAULTS['design_dir']}).")
     a.add_argument("--vendor", default=None)

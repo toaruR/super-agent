@@ -13,7 +13,7 @@
 
 - **実行と判定の分離** — 決定的な検証はハーネスが唯一の環境（CVE）で行い、レビュアは「証拠を読む」だけ。レビュアの実行環境に依存しない裁定が得られる（偽 fail を排除）。
 - **複数ベンダーの同一 IF** — `vendors.yaml` に宣言するだけで claude / codex / agy / hermes を交換可能な作業員として扱う。
-- **マルチチャンネル実装（Stage B 並列）** — `roles.implement` をチャンネルリストで宣言すると、各エントリが独立 worktree で並列実装される（例: agy×2 + hermes×3 の同時実行）。model/effort はチャンネルごとに指定可。
+- **マルチチャンネル実装（Stage B 並列、opt-in）** — 既定は各タスク1チャンネルの単一実装。`--speculative`（または `--implement-vendors` で複数チャンネル指定）を付けると `roles.implement` の全チャンネルが独立 worktree で並列実装し、review を通した最初の勝者だけを統合する（例: agy×2 + hermes×3 の同時競争）。model/effort はチャンネルごとに指定可。
 - **タスクレベル並列** — 依存のないタスクを topological レイヤー単位で並行駆動（`--parallel-tasks`）。
 - **台帳（証拠の束縛）** — 全イベントをクラッシュセーフな JSONL に記録。`tree_hash` で「どの成果物の証拠か」を保証。
 - **worktree 隔離** — 各タスク/チャンネルは独立 git worktree で実行され、統合後に自動で片付く（敗者チャンネルも残らない）。
@@ -64,13 +64,17 @@ super-agent status
 ## Usage
 
 ```bash
-# 設計から一気に分解→worktree→実装→レビュー→統合（既定は5チャンネル並列実装）
+# 既存の設計ファイルをそのまま ADR として台帳に記録（要求文はファイル1行目から復元されるので省略可）
+super-agent architect --spec my-design.md
+
+# 設計から一気に分解→worktree→実装→レビュー→統合
+# （既定は各タスク単一チャンネル実装。独立タスクはタスクレベル並列で自動並行）
 super-agent drive --tasks ./probe/sample/my-design-tasks.md
 
-# 緊急オーバーライド: agy 2 + hermes 3 の5チャンネル
+# 投機的モード: agy 2 + hermes 3 の5チャンネルで各タスクを競わせ、勝者だけ統合
 super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:2,hermes:3"
 
-# タスク並列 + チャンネル並列の両方
+# 投機的モード + タスクレベル並列の両方
 super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
     --implement-vendors "agy:1,hermes:1" --parallel-tasks
 
@@ -99,8 +103,8 @@ super-agent evolve --dry-run                      # 台帳から失敗パター�
 | キー | 意味 |
 |---|---|
 | `roles.design` | 設計起案ベンダー（既定 `claude`） |
-| `roles.implement` | **実装チャンネルのリスト**。各エントリ `{vendor, model, effort}` が1チャンネル＝独立 worktree で並列実装。既定は `agy×2 + hermes×3` |
-| `roles.review` | レビュアベンダー（既定 `codex`） |
+| `roles.implement` | **実装チャンネルのリスト**。各エントリ `{vendor, model, effort}` が1チャンネル＝独立 worktree。`--speculative` 時は全チャンネルが並列実装（現在の既定値・更新頻度は [`docs/usage.md`](docs/usage.md) §4 参照） |
+| `roles.review` | レビュアベンダー（現在の既定値は [`docs/usage.md`](docs/usage.md) §4 参照） |
 | `<vendor>.headless` | ヘッドレス呼び出しコマンド。`{worktree}` `{prompt}` が置換される |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） |
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック |

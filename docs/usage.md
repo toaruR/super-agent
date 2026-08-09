@@ -106,7 +106,7 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 ### 2.1 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
 ```bash
-super-agent architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
+super-agent architect ["<要求>"] [--spec <file>] [--vendor claude] [--dry-run]
 ```
 
 | オプション | 意味 |
@@ -119,10 +119,22 @@ super-agent architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
 台帳に `adr.written` イベントで記録します（§9 の①）。後から `log <task>` で
 「何を・なぜ決めたか」を辿れます。
 
+**`"<要求>"` は `--spec` が既存ファイルを指す場合は省略可**（`plan` と同様）。省略時は
+ファイルの**1行目**から復元します（先頭が `# 設計:` ならそのプレフィックスを取り除いた
+残りを使用）。`--spec` が無い／ファイルがまだ無い場合（LLM に起案させる場合）は、起案の
+入力として要求文が必須なので `"<要求>"` は省略できません（省略するとエラーを返します）。
+
 **例（人間の設計をそのまま記録 — 最も確実）**：
 ```bash
 super-agent architect "Web API を作れ" --spec my-design.md
 # → 既存ならその内容を記録。無ければ LLM が起案して my-design.md を作成し記録
+```
+
+**例（既存ファイルなら要求文を省略できる）**：
+```bash
+super-agent architect --spec my-design.md
+# my-design.md の1行目が「# 設計: Web API を作れ」なら goal は「Web API を作れ」に復元される
+# 1行目にその印が無ければ、1行目の文字列をそのまま goal として使う
 ```
 
 **例（LLM に起案させる／dry-run で確認）**：
@@ -492,6 +504,9 @@ super-agent log T-XXXX
 | `vendors.yaml` | ベンダーの呼び出し方（構造化出力・再開・権限）＋ `roles.implement` / `roles.review` のチャンネル構成 | ベンダー追加時／チャンネル構成変更時 |
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック | マシンが変わった時 |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） | 新しい検証種別を足す時 |
+| `paths.yaml` | `design_dir` / `tasks_dir`：`architect`/`plan`/`drive` 等が `--spec`/`--tasks` 省略時に書き出すデフォルト出力先ディレクトリ | 出力先ディレクトリ規約を変える時 |
+
+> **`paths.yaml`**：ファイル名ではなく**ディレクトリ**のみを指定する。実際のファイル名は要求文（`--requirement`）からのスラッグ＋重複回避の連番（`<slug>.md` → 既存なら `<slug>-2.md` → …）で自動生成される（`harness/core/invoke.py` の `slugify()`/`unique_path()`）。`architect "<要求>"`（`--spec` 省略）と `plan`/`drive`（`--tasks` 省略、`drive` は `--spec` も）は、それぞれ `design_dir`（既定 `docs/design`）/ `tasks_dir`（既定 `docs/tasks`）配下に新規ファイルを自動命名して書き出す。`--spec`/`--tasks` を明示すればそちらが優先される。読み取り専用の消費コマンド（`implement`/`integrate`/`review-task`）は `--tasks` 省略時、`tasks_dir` 配下で最終更新が最も新しいファイル（`latest_file()`）にフォールバックする。`plan` の `--spec` は入力専用（既存 design を読むだけ）なので自動生成の対象外：明示すればファイルが無いとエラー、省略すれば既存 design 無しのまま要求文だけで進む。
 
 > **モデル名はコード側で正規化される**：`vendors.yaml` には OpenRouter の短名（例: `hy3:Free`）をそのまま書ける。実行時に `harness/core/invoke.py` の `normalize_model()` が実名（`tencent/hy3:free`）へ自動変換するため、yaml を実名に書き換える必要はない。未知の名前はそのまま通る（404 になるのは yaml の書き間違いやカタログ不在時のみ）。
 >

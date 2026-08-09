@@ -21,9 +21,10 @@ CLI = ["-m", "harness.cli"]
 CASE = str(REPO / "probe" / "n3" / "caseGreen")
 
 
-def _run(*cli_args, expect_rc=0):
+def _run(*cli_args, expect_rc=0, env=None):
     cmd = [CVE, *CLI, *cli_args]
-    res = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True)
+    run_env = {**os.environ, **env} if env else None
+    res = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, env=run_env)
     assert res.returncode == expect_rc, f"rc={res.returncode} stderr={res.stderr}"
     return res
 
@@ -172,6 +173,43 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
             ledger.write_text(backup, encoding="utf-8")
         elif had:
             ledger.unlink()
+
+
+def test_architect_recovers_requirement_from_first_line(tmp_path, monkeypatch):
+    """`architect --spec <existing file>` with requirement omitted recovers it
+    from the file's first line (stripping a leading '# 設計:' marker).
+    Uses an isolated ledger (SUPER_AGENT_LEDGER) rather than the shared
+    real ledger, which is prone to Windows PermissionError when open elsewhere."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    spec = tmp_path / "header-design.md"
+    spec.write_text("# 設計: サンプルWeb API\n\n## エンドポイント\nGET /health\n", encoding="utf-8")
+    _run("architect", "--spec", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
+    lg = ledger.read_text(encoding="utf-8")
+    assert '"goal": "サンプルWeb API"' in lg or '"goal":"サンプルWeb API"' in lg
+
+
+def test_architect_recovers_requirement_from_plain_first_line(tmp_path, monkeypatch):
+    """Files without the '# 設計:' marker still recover requirement from
+    their literal first line."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    spec = tmp_path / "plain-design.md"
+    spec.write_text("素のテキストの1行目\n\n本文\n", encoding="utf-8")
+    _run("architect", "--spec", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
+    lg = ledger.read_text(encoding="utf-8")
+    assert '"goal": "素のテキストの1行目"' in lg or '"goal":"素のテキストの1行目"' in lg
+
+
+def test_architect_requires_requirement_when_spec_missing(tmp_path, monkeypatch):
+    """Without --spec (or a non-existent --spec target), requirement is still
+    mandatory: the CLI must fail fast rather than silently proceeding empty."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    res = _run("architect", "--dry-run", expect_rc=1, env={"SUPER_AGENT_LEDGER": str(ledger)})
+    j = json.loads(res.stdout)
+    assert j["ok"] is False
+    assert "requirement" in j["error"]
 
 
 def test_log_shows_judgment_when_present(tmp_path, monkeypatch):
