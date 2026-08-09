@@ -164,7 +164,7 @@ def render_tasks_md(tasks: list[dict], requirement: str = "") -> str:
 def parse_tasks_md(path: str) -> list[dict]:
     """Reverse of render_tasks_md: read a task DAG back from the Markdown file.
 
-    Used by `plan --tasks <existing.md>` to skip re-decomposition. Returns a
+    Used by `plan --task_file <existing.md>` to skip re-decomposition. Returns a
     list of task dicts. Roughly parses our own emitted format.
     """
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
@@ -219,12 +219,20 @@ def parse_tasks_md(path: str) -> list[dict]:
 
 def decompose(task_id: str, requirement: str, vendor: str = "claude",
               existing_design: str = "", dry_run: bool = False,
-              seq=None, model: str | None = None) -> dict:
+              seq=None, model: str | None = None,
+              design_file: str = "") -> dict:
     """Decompose a requirement into a checked task DAG. Returns the payload.
 
     ledger events: task.created per task (after structural check passes).
     If the check fails, returns {"ok": False, "errors": [...]} and records nothing.
+
+    design_file, if given, tags every ledger event so this chunk lands in the
+    same (design_file, task_file) chunk as the caller's other events instead
+    of splintering off into a design_file="" chunk (see CLAUDE.md's
+    "ハマりポイント" on decompose()'s historical design_file-loss bug).
     """
+    emit = (lambda tid, typ, **kw: seq.propose(tid, typ, design_file=design_file, **kw)) \
+        if seq is not None else (lambda tid, typ, **kw: None)
     config_dir = Path(__file__).resolve().parent.parent / "config"
     registry = VerifierRegistry(config_dir / "verifiers.yaml")
     verbs = ", ".join(sorted(registry._map.keys()))
@@ -252,16 +260,14 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
 
     errs = structural_check(tasks, registry)
     if errs:
-        if seq is not None:
-            seq.propose(task_id, "decompose.rejected", errors=errs)
+        emit(task_id, "decompose.rejected", errors=errs)
         return {"ok": False, "errors": errs, "tasks": tasks}
 
-    if seq is not None:
-        seq.propose(task_id, "decompose.ok", n_tasks=len(tasks))
-        for t in tasks:
-            seq.propose(t["task_id"], "task.created",
-                        goal=t.get("goal", ""),
-                        acceptance=t.get("acceptance", []),
-                        depends_on=t.get("depends_on", []),
-                        touch_allow=t.get("touch_allow", []))
+    emit(task_id, "decompose.ok", n_tasks=len(tasks))
+    for t in tasks:
+        emit(t["task_id"], "task.created",
+             goal=t.get("goal", ""),
+             acceptance=t.get("acceptance", []),
+             depends_on=t.get("depends_on", []),
+             touch_allow=t.get("touch_allow", []))
     return {"ok": True, "tasks": tasks}

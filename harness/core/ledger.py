@@ -27,7 +27,25 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+
+def _same_path(a: str, b: str) -> bool:
+    """True if `a` and `b` refer to the same filesystem path.
+
+    design_file/task_file strings in the ledger are recorded in mixed
+    relative/absolute form by different callers (e.g. drive.py passes a
+    CLI-relative design_file but a resolved absolute task_file), so a plain
+    string comparison would miss equivalent paths. Falls back to string
+    equality if either side is empty or Path resolution raises.
+    """
+    if not a or not b:
+        return False
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except (OSError, ValueError):
+        return a == b
 
 
 @dataclass
@@ -247,6 +265,25 @@ class Sequencer:
         for chunk in self._ledger.load():
             if chunk.get("design_file") == design_file and chunk.get("task_file"):
                 return chunk["task_file"]
+        return ""
+
+    def resolve_design_file(self, task_file: str) -> str:
+        """Return the design_file registered for a task_file, or '' if none.
+
+        Mirror of resolve_task_file() (task -> design instead of design ->
+        task). Used by cli.resolve_design_file_arg() to recover --design_file
+        when only --task_file is given and the file is already registered
+        in the ledger.
+        Reads the ledger directly (no cache): callers use this once, at the
+        CLI entry point, before any writes for this invocation happen, so
+        there is no race against the background writer thread to guard
+        against (unlike resolve_task_file(), which propose() calls mid-flight).
+        """
+        for chunk in self._ledger.load():
+            df = chunk.get("design_file", "")
+            tf = chunk.get("task_file", "")
+            if df and _same_path(tf, task_file):
+                return df
         return ""
 
     def load_flat(self) -> list[dict[str, Any]]:

@@ -109,6 +109,14 @@ def drive(
     config_dir = Path(__file__).resolve().parent.parent / "config"
     registry = VerifierRegistry(config_dir / "verifiers.yaml")
 
+    # Vendor prompts (decompose / replan) want the design's TEXT, not its path
+    # string (a known-fixed bug: existing_design used to be handed spec_path
+    # itself). Read once here; "" if spec_path is unset or doesn't exist yet
+    # (e.g. drive auto-named a fresh design_file that hasn't been written).
+    spec_text = ""
+    if spec_path and Path(spec_path).exists():
+        spec_text = Path(spec_path).read_text(encoding="utf-8", errors="ignore")
+
     # Register the task root (design_file + task_file) up front so that every
     # downstream role can recover task_file from the ledger via resolve_task_file.
     if seq is not None:
@@ -123,8 +131,8 @@ def drive(
     else:
         out = decomposer_decompose(
             tid if seq is not None else "T-drive",
-            requirement, vendor=resolve_role("design", config_dir)["vendor"], existing_design=spec_path or "",
-            dry_run=dry_run, seq=seq,
+            requirement, vendor=resolve_role("design", config_dir)["vendor"], existing_design=spec_text,
+            dry_run=dry_run, seq=seq, design_file=spec_path or "",
         )
         if not out.get("ok"):
             return {"ok": False, "error": "decompose failed", "detail": out}
@@ -342,7 +350,7 @@ def drive(
                 rep = planner_role.replan(
                     requirement, tasks, events=events,
                     vendor=resolve_role("planner", config_dir)["vendor"],
-                    existing_design=spec_path or "",
+                    existing_design=spec_text,
                     model=resolve_role("planner", config_dir).get("model"),
                     seq=seq, dry_run=dry_run,
                     design_file=spec_path or "",

@@ -1,7 +1,11 @@
-# architect が生成する設計ファイル（design.md 相当）と、
-# plan/decomposer が生成するタスク DAG ファイル（tasks.md 相当）の
-# デフォルト出力先ディレクトリ。CLI で --spec / --tasks を省略したときに使われる。
-# ファイル名は要求文からのスラッグ＋重複回避の連番で自動生成される（固定ファイル名ではない）。
-# 明示的に --spec / --tasks を渡せばここより優先される。
+# architect/plan/drive が --design_file を省略したときに書き出す設計ファイル（design.md 相当）の
+# デフォルト出力先ディレクトリ。ファイル名は要求文からのスラッグ＋重複回避の連番で自動生成される
+# （固定ファイル名ではない）。明示的に --design_file を渡せばここより優先される。
 design_dir: docs/design
+
+# タスク DAG ファイル（tasks.md 相当）は、もうこのディレクトリには書かれない。
+# plan/drive は --design_file で確定した design_file と同階層の `<design のstem>_tasks/` フォルダに
+# タスクファイルを格納する（連番なし。既定パスに既存ファイルがあればエラーで中止する）。
+# tasks_dir は (a) implement/integrate/review-task が --task_file 省略時にフォールバック走査する
+# 対象、(b) このディレクトリ配下に残る古いフラット配置のタスクファイルを引き続き参照するためだけに使う。
 tasks_dir: docs/tasks

@@ -1,7 +1,7 @@
 @echo off
 rem super-agent.bat — thin wrapper: `python -m harness.cli` from the local venv.
 rem Usage:  super-agent <subcommand> [args]
-rem   e.g.  super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+rem   e.g.  super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md
 rem
 rem cd's into src/ (where .cve-venv lives) then calls python.exe, which resolves to
 rem .cve-venv\Scripts\python.exe when that dir is on PATH / current. If not, set PATH

@@ -29,6 +29,18 @@ def _run(*cli_args, expect_rc=0, env=None):
     return res
 
 
+def _sample_tasks_md() -> str:
+    """A minimal but well-formed tasks.md that parse_tasks_md()/structural_check()
+    accept, built via the actual renderer so the guard tests below don't rely
+    on hand-guessed Markdown syntax."""
+    from harness.roles.decomposer import render_tasks_md
+    return render_tasks_md([{
+        "task_id": "T1", "goal": "g",
+        "acceptance": [{"verb": "pytest", "args": ["tests/"], "expect_exit": 0}],
+        "depends_on": [], "touch_allow": ["src/a.py"],
+    }], "req")
+
+
 def test_review_dry_run_writes_pipeline_events(tmp_path, monkeypatch):
     monkeypatch.chdir(REPO)
     # clean ledger so we count this task's events only
@@ -47,7 +59,7 @@ def test_review_dry_run_writes_pipeline_events(tmp_path, monkeypatch):
 
 
 def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypatch):
-    """Stage 5 handoff: `review-task --task T1 --tasks dag.md` resolves acceptance
+    """Stage 5 handoff: `review-task --task T1 --task_file dag.md` resolves acceptance
     and the worktree path from the implemented task (no live vendor)."""
     monkeypatch.chdir(REPO)
     # write a task DAG with T1 having a custom acceptance
@@ -65,7 +77,7 @@ def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypa
         ledger = REPO / "harness" / "ledger" / "events.jsonl"
         if ledger.exists():
             ledger.unlink()
-        res = _run("review-task", "--task", "T1", "--tasks", str(dag),
+        res = _run("review-task", "--task", "T1", "--task_file", str(dag),
                    "--reviewer", "codex", "--dry-run")
         j = json.loads(res.stdout)
         assert j["tree_hash"], "tree_hash must be bound (CVE ran)"
@@ -104,7 +116,7 @@ def test_drive_speculative_flag_is_accepted(monkeypatch):
     monkeypatch.chdir(REPO)
     spec = REPO / "probe" / "sample" / "my-design.md"
     dag = REPO / "probe" / "sample" / "my-design-tasks-parallel.md"
-    res = _run("drive", "--spec", str(spec), "--tasks", str(dag), "--speculative", "--dry-run")
+    res = _run("drive", "--design_file", str(spec), "--task_file", str(dag), "--speculative", "--dry-run")
     # dry-run drive prints a JSON summary with ok=True
     import json as _json
     j = _json.loads(res.stdout)
@@ -176,7 +188,7 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
 
 
 def test_architect_recovers_requirement_from_first_line(tmp_path, monkeypatch):
-    """`architect --spec <existing file>` with requirement omitted recovers it
+    """`architect --design_file <existing file>` with requirement omitted recovers it
     from the file's first line (stripping a leading '# 設計:' marker).
     Uses an isolated ledger (SUPER_AGENT_LEDGER) rather than the shared
     real ledger, which is prone to Windows PermissionError when open elsewhere."""
@@ -184,7 +196,7 @@ def test_architect_recovers_requirement_from_first_line(tmp_path, monkeypatch):
     ledger = tmp_path / "events.jsonl"
     spec = tmp_path / "header-design.md"
     spec.write_text("# 設計: サンプルWeb API\n\n## エンドポイント\nGET /health\n", encoding="utf-8")
-    _run("architect", "--spec", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
+    _run("architect", "--design_file", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
     lg = ledger.read_text(encoding="utf-8")
     assert '"goal": "サンプルWeb API"' in lg or '"goal":"サンプルWeb API"' in lg
 
@@ -196,13 +208,13 @@ def test_architect_recovers_requirement_from_plain_first_line(tmp_path, monkeypa
     ledger = tmp_path / "events.jsonl"
     spec = tmp_path / "plain-design.md"
     spec.write_text("素のテキストの1行目\n\n本文\n", encoding="utf-8")
-    _run("architect", "--spec", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
+    _run("architect", "--design_file", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
     lg = ledger.read_text(encoding="utf-8")
     assert '"goal": "素のテキストの1行目"' in lg or '"goal":"素のテキストの1行目"' in lg
 
 
 def test_architect_requires_requirement_when_spec_missing(tmp_path, monkeypatch):
-    """Without --spec (or a non-existent --spec target), requirement is still
+    """Without --design_file (or a non-existent --design_file target), requirement is still
     mandatory: the CLI must fail fast rather than silently proceeding empty."""
     monkeypatch.chdir(REPO)
     ledger = tmp_path / "events.jsonl"
@@ -240,4 +252,124 @@ def test_log_shows_judgment_when_present(tmp_path, monkeypatch):
             ledger.write_text(backup, encoding="utf-8")
         elif had:
             ledger.unlink()
+
+
+def test_plan_guard_a_rejects_existing_auto_named_tasks_file(tmp_path, monkeypatch):
+    """`plan --design_file X "<req>"` (no --task_file): if the auto-named task path
+    already has a file, `plan` must fail instead of silently reusing it or
+    picking a `-2` suffix (task files no longer use unique_path's
+    collision-avoiding numbering)."""
+    from harness.core.invoke import default_task_path, slugify
+
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    spec = tmp_path / "design.md"
+    spec.write_text("# 設計: サンプル\n", encoding="utf-8")
+    requirement = "Add login feature"
+    collide = default_task_path(str(spec), slugify(requirement))
+    collide.parent.mkdir(parents=True)
+    collide.write_text("# already here\n", encoding="utf-8")
+
+    res = _run("plan", requirement, "--design_file", str(spec), "--dry-run",
+              expect_rc=1, env={"SUPER_AGENT_LEDGER": str(ledger)})
+    j = json.loads(res.stdout)
+    assert j["ok"] is False
+    assert "already exists" in j["error"]
+
+
+def test_plan_guard_b_rejects_task_file_registered_under_other_design(tmp_path, monkeypatch):
+    """`plan --design_file Y --task_file T`: if the ledger already has T registered under
+    a DIFFERENT design_file X, this must fail (reusing a task file across two
+    designs would silently merge unrelated task DAGs)."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    design_x = tmp_path / "x.md"
+    design_x.write_text("# 設計: X\n", encoding="utf-8")
+    design_y = tmp_path / "y.md"
+    design_y.write_text("# 設計: Y\n", encoding="utf-8")
+    tasks_t = tmp_path / "t.md"
+    tasks_t.write_text(_sample_tasks_md(), encoding="utf-8")
+
+    # seed the ledger: T is already registered under design_x
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps({"design_file": str(design_x.resolve()),
+                   "task_file": str(tasks_t.resolve()),
+                   "events": [{"event_id": "T-seed:1", "type": "task.created"}]},
+                  ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run("plan", "--design_file", str(design_y), "--task_file", str(tasks_t), "--dry-run",
+              expect_rc=1, env={"SUPER_AGENT_LEDGER": str(ledger)})
+    j = json.loads(res.stdout)
+    assert j["ok"] is False
+    assert "design_file" in j["error"]
+
+
+def test_plan_guard_b_allows_reuse_under_same_design(tmp_path, monkeypatch):
+    """Same setup, but --design_file matches the design_file already recorded for T:
+    this must still succeed and reuse the tasks file (no vendor call)."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    design_x = tmp_path / "x.md"
+    design_x.write_text("# 設計: X\n", encoding="utf-8")
+    tasks_t = tmp_path / "t.md"
+    tasks_t.write_text(_sample_tasks_md(), encoding="utf-8")
+
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps({"design_file": str(design_x.resolve()),
+                   "task_file": str(tasks_t.resolve()),
+                   "events": [{"event_id": "T-seed:1", "type": "task.created"}]},
+                  ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run("plan", "--design_file", str(design_x), "--task_file", str(tasks_t), "--dry-run",
+              env={"SUPER_AGENT_LEDGER": str(ledger)})
+    out = json.loads(res.stdout)
+    assert out["decompose"].get("reused_tasks_file") is True
+    assert out["schedule"]["ok"] is True
+
+
+def test_plan_resolves_spec_from_ledger_via_tasks(tmp_path, monkeypatch):
+    """`plan --task_file T` (no --design_file): if T is already registered in the
+    ledger, --design_file is auto-resolved to its recorded design_file instead of
+    erroring out."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    design_x = tmp_path / "x.md"
+    design_x.write_text("# 設計: X\n", encoding="utf-8")
+    tasks_t = tmp_path / "t.md"
+    tasks_t.write_text(_sample_tasks_md(), encoding="utf-8")
+
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps({"design_file": str(design_x.resolve()),
+                   "task_file": str(tasks_t.resolve()),
+                   "events": [{"event_id": "T-seed:1", "type": "task.created"}]},
+                  ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run("plan", "--task_file", str(tasks_t), "--dry-run",
+              env={"SUPER_AGENT_LEDGER": str(ledger)})
+    out = json.loads(res.stdout)
+    assert out["decompose"].get("reused_tasks_file") is True
+
+
+def test_plan_tasks_only_unregistered_still_errors(tmp_path, monkeypatch):
+    """`plan --task_file T` where T is a real file but NOT registered in the
+    ledger under any design: resolve_spec() can't recover a design_file, so
+    this must still fail (a truly first-time file, not a reuse)."""
+    monkeypatch.chdir(REPO)
+    ledger = tmp_path / "events.jsonl"
+    tasks_t = tmp_path / "t.md"
+    tasks_t.write_text(_sample_tasks_md(), encoding="utf-8")
+    res = _run("plan", "--task_file", str(tasks_t), "--dry-run",
+              expect_rc=1, env={"SUPER_AGENT_LEDGER": str(ledger)})
+    j = json.loads(res.stdout)
+    assert j["ok"] is False
+    assert "cannot determine design_file" in j["error"]
 

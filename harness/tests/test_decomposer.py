@@ -81,10 +81,70 @@ def test_structural_check_ok():
     assert structural_check(tasks, reg) == []
 
 
+# ---- decompose() design_file propagation (regression: CLAUDE.md「decompose()
+# だけが design_file を受け取れずチャンクが分裂する」バグ) ----
+class _StubSeq:
+    """Minimal seq stand-in: records every propose() call's kwargs."""
+    def __init__(self):
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def propose(self, task_id, type_, **fields):
+        self.calls.append((task_id, type_, fields))
+
+
+def test_decompose_propagates_design_file_to_all_events(monkeypatch):
+    """decompose(design_file=...) must tag every ledger event it proposes
+    with that design_file (not just some), so they all land in the same
+    (design_file, task_file) chunk instead of splintering off into a
+    design_file="" chunk."""
+    from harness.roles import decomposer
+
+    fake_result = {
+        "result": {
+            "tasks": [{
+                "task_id": "T1", "goal": "g",
+                "acceptance": [{"verb": "pytest", "args": ["tests/"], "expect_exit": 0}],
+                "depends_on": [], "touch_allow": ["src/a.py"],
+            }]
+        }
+    }
+    monkeypatch.setattr(decomposer, "invoke", lambda *a, **k: fake_result)
+
+    seq = _StubSeq()
+    out = decomposer.decompose("T-parent", "req", vendor="claude", seq=seq,
+                               design_file="docs/design/x.md")
+    assert out["ok"] is True
+    assert seq.calls, "expected at least one propose() call"
+    for _tid, _typ, fields in seq.calls:
+        assert fields.get("design_file") == "docs/design/x.md"
+    types = [t for _, t, _ in seq.calls]
+    assert "decompose.ok" in types
+    assert "task.created" in types
+
+
+def test_decompose_propagates_design_file_on_rejection(monkeypatch):
+    """Same guarantee on the structural-check-failed path (decompose.rejected)."""
+    from harness.roles import decomposer
+
+    fake_result = {"result": {"tasks": [{"task_id": "T1", "goal": "g", "acceptance": []}]}}
+    monkeypatch.setattr(decomposer, "invoke", lambda *a, **k: fake_result)
+
+    seq = _StubSeq()
+    out = decomposer.decompose("T-parent", "req", vendor="claude", seq=seq,
+                               design_file="docs/design/y.md")
+    assert out["ok"] is False
+    assert seq.calls and seq.calls[0][1] == "decompose.rejected"
+    assert seq.calls[0][2].get("design_file") == "docs/design/y.md"
+
+
 # ---- CLI dry-run (no vendor call) ----
-def test_plan_dry_run_assembles_prompt(monkeypatch):
+def test_plan_dry_run_assembles_prompt(monkeypatch, tmp_path):
     monkeypatch.chdir(REPO)
-    res = _run("plan", "Web API を作れ", "--dry-run")
+    # --design_file is now required (either explicit or resolved from the ledger via
+    # an existing --task_file); pass an explicit design file here.
+    spec = tmp_path / "design.md"
+    spec.write_text("# 設計: Web API を作れ\n", encoding="utf-8")
+    res = _run("plan", "Web API を作れ", "--design_file", str(spec), "--dry-run")
     out = json.loads(res.stdout)
     assert out["decompose"]["dry_run"] is True
     assert "cmd" in out["decompose"]
@@ -97,7 +157,7 @@ def test_plan_spec_consumes_architect_output(monkeypatch, tmp_path):
     design = "# 設計: Excel等からオントロジーを作りたい\n\n## 入力アダプタ\n...\n"
     spec = tmp_path / "my-design.md"
     spec.write_text(design, encoding="utf-8")
-    res = _run("plan", "--spec", str(spec), "--dry-run")
+    res = _run("plan", "--design_file", str(spec), "--dry-run")
     out = json.loads(res.stdout)
     assert out["decompose"]["dry_run"] is True
     # requirement recovered from the design header -> prompt assembled without error
@@ -105,15 +165,17 @@ def test_plan_spec_consumes_architect_output(monkeypatch, tmp_path):
 
 
 def test_plan_no_requirement_no_spec_errors(monkeypatch):
+    """`plan --dry-run` with neither a requirement nor --design_file/--task_file given
+    can't determine a design_file, so it fails fast (§5 resolve_spec())."""
     monkeypatch.chdir(REPO)
     res = subprocess.run([CVE, "-m", "harness.cli", "plan", "--dry-run"],
                          cwd=str(REPO), capture_output=True, text=True)
     assert res.returncode == 1
-    assert "requirement or --spec is required" in res.stdout
+    assert "cannot determine design_file" in res.stdout
 
 
 def test_decompose_out_writes_markdown(monkeypatch, tmp_path):
-    """--tasks writes the decomposed DAG as Markdown (no vendor call: dry-run can't,
+    """--task_file writes the decomposed DAG as Markdown (no vendor call: dry-run can't,
     so test the renderer directly)."""
     from harness.roles.decomposer import render_tasks_md
     tasks = [{
@@ -131,7 +193,7 @@ def test_decompose_out_writes_markdown(monkeypatch, tmp_path):
 
 
 def test_parse_tasks_md_roundtrip(monkeypatch, tmp_path):
-    """parse_tasks_md reverses render_tasks_md so `plan --tasks <existing>`
+    """parse_tasks_md reverses render_tasks_md so `plan --task_file <existing>`
     can reuse a hand-edited file without calling the vendor."""
     from harness.roles.decomposer import render_tasks_md, parse_tasks_md
     tasks = [
@@ -156,7 +218,9 @@ def test_parse_tasks_md_roundtrip(monkeypatch, tmp_path):
 
 
 def test_plan_reuses_existing_tasks_file(monkeypatch, tmp_path):
-    """`plan --tasks <existing.md>` skips the vendor and schedules directly."""
+    """`plan --design_file X --task_file <existing.md>` skips the vendor and schedules
+    directly (guard B allows it: T is not yet registered in the ledger under
+    any other design_file, so this first use is fine)."""
     from harness.roles.decomposer import render_tasks_md, parse_tasks_md
     tasks = [{
         "task_id": "T1", "goal": "g",
@@ -165,8 +229,10 @@ def test_plan_reuses_existing_tasks_file(monkeypatch, tmp_path):
     }]
     md = tmp_path / "tasks.md"
     md.write_text(render_tasks_md(tasks, "req"), encoding="utf-8")
+    spec = tmp_path / "design.md"
+    spec.write_text("# 設計: req\n", encoding="utf-8")
     monkeypatch.chdir(REPO)
-    res = _run("plan", "--tasks", str(md), "--dry-run")
+    res = _run("plan", "--design_file", str(spec), "--task_file", str(md), "--dry-run")
     out = json.loads(res.stdout)
     # reused_tasks_file marks the no-vendor path
     assert out["decompose"].get("reused_tasks_file") is True

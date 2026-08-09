@@ -2,7 +2,7 @@
 """Architect role (Stage 1, §9 step ①).
 
 Records design decisions to the ledger as ADRs (Architecture Decision Records).
-- Human-supplied design: `architect "<req>" --spec <file>` loads the file and
+- Human-supplied design: `architect "<req>" --design_file <file>` loads the file and
   records it verbatim as an ADR.
 - LLM-proposed design: `architect "<req>"` asks a read-only vendor to propose
   decisions; the structured output is recorded as ADRs.

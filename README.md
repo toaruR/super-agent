@@ -65,17 +65,17 @@ super-agent status
 
 ```bash
 # 既存の設計ファイルをそのまま ADR として台帳に記録（要求文はファイル1行目から復元されるので省略可）
-super-agent architect --spec my-design.md
+super-agent architect --design_file my-design.md
 
 # 設計から一気に分解→worktree→実装→レビュー→統合
 # （既定は各タスク単一チャンネル実装。独立タスクはタスクレベル並列で自動並行）
-super-agent drive --tasks ./probe/sample/my-design-tasks.md
+super-agent drive --task_file ./probe/sample/my-design-tasks.md
 
 # 投機的モード: agy 2 + hermes 3 の5チャンネルで各タスクを競わせ、勝者だけ統合
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:2,hermes:3"
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --implement-vendors "agy:2,hermes:3"
 
 # 投機的モード + タスクレベル並列の両方
-super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
+super-agent drive --task_file ./probe/sample/my-design-tasks-parallel.md \
     --implement-vendors "agy:1,hermes:1" --parallel-tasks
 
 # 単体コマンド（ステージ個別に動かす）

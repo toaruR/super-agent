@@ -285,6 +285,56 @@ def test_extract_session_id() -> None:
     assert _extract_session_id("no id here") is None
 
 
+def test_tasks_dir_for_design() -> None:
+    from harness.core.invoke import tasks_dir_for_design
+    from pathlib import Path
+
+    assert tasks_dir_for_design("docs/design/x.md") == Path("docs/design/x_tasks")
+    # works with a Path object too, and with a design file that has no dir component
+    assert tasks_dir_for_design(Path("x.md")) == Path("x_tasks")
+
+
+def test_default_task_path() -> None:
+    from harness.core.invoke import default_task_path, tasks_dir_for_design
+    from pathlib import Path
+
+    got = default_task_path("docs/design/my-feature.md", "add-login")
+    assert got == Path("docs/design/my-feature_tasks/add-login.md")
+    # always lands under tasks_dir_for_design(design_path) -- no fallback_dir,
+    # no collision-avoiding suffix (guard A handles collisions at the caller)
+    assert got.parent == tasks_dir_for_design("docs/design/my-feature.md")
+
+
+def test_latest_task_file(tmp_path) -> None:
+    import time
+    from harness.core.invoke import latest_task_file
+
+    design_dir = tmp_path / "design"
+    fallback_dir = tmp_path / "legacy_tasks"
+    (design_dir / "a_tasks").mkdir(parents=True)
+    (fallback_dir).mkdir(parents=True)
+
+    old = design_dir / "a_tasks" / "old.md"
+    old.write_text("old", encoding="utf-8")
+    legacy = fallback_dir / "legacy.md"
+    legacy.write_text("legacy", encoding="utf-8")
+    time.sleep(0.02)
+    newest = design_dir / "a_tasks" / "newest.md"
+    newest.write_text("newest", encoding="utf-8")
+
+    got = latest_task_file(design_dir, fallback_dir)
+    assert got == newest
+
+    # missing directories are treated as empty, not an error
+    assert latest_task_file(tmp_path / "nope", tmp_path / "also-nope") is None
+
+    # legacy flat dir alone is still picked up if it's newest
+    time.sleep(0.02)
+    legacy2 = fallback_dir / "legacy2.md"
+    legacy2.write_text("legacy2", encoding="utf-8")
+    assert latest_task_file(design_dir, fallback_dir) == legacy2
+
+
 def test_invoke_retries_on_content_block(monkeypatch) -> None:
     """invoke() must retry (resuming the session) when hermes blocks, then
     succeed on a later attempt instead of returning the blocked response."""

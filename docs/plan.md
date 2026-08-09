@@ -79,12 +79,12 @@ super-agent status
 から始め、その後 LLM に起案させる。
 
 1. `roles/architect.py`: 要求を受け、設計方針を LLM に起案させる（read-only）。
-   最初は人間が `architect --spec <file>` で設計を渡す形でも可。
+   最初は人間が `architect --design_file <file>` で設計を渡す形でも可。
 2. 台帳に `adr.written`（決定内容・根拠）を記録。
 
 **動作確認**:
 ```
-super-agent architect "Web API を作れ" --spec my-design.md
+super-agent architect "Web API を作れ" --design_file my-design.md
 super-agent log <task>     # adr.written があることを確認
 ```
 **完了条件**: 要求から設計決定が台帳に残る。LLM 起案は `--dry-run` でコマンド確認。
@@ -93,7 +93,7 @@ super-agent log <task>     # adr.written があることを確認
 
 ### Stage 2 — ② Decomposer（architectの設計→タスク分解）（✅）
 
-**目標**: `architect` が作った設計ファイル（`--spec`）を受け取り、そこから DAG + acceptance[].verb を出し、構造検査する。
+**目標**: `architect` が作った設計ファイル（`--design_file`）を受け取り、そこから DAG + acceptance[].verb を出し、構造検査する。
 
 1. `roles/decomposer.py`: LLM に分解させ、`{"task_id","goal","acceptance":[{"verb","args"}],"depends_on"}` を返す。
 2. §6.2 構造検査: acceptance 空 / verb 未登録 / DAG 循環 / touch_allow 重複 → 差し戻し。
@@ -156,12 +156,12 @@ git -C <worktree> log --oneline
    - `task/<id>` を `--target`（既定 main）へ `--no-ff` マージ。`conflict` は `--abort` して検知。
    - マージ後 acceptance（CVE）を再実行し GREEN を確認。失敗は `integrated.failed`。
    - 成功で `integrated` 記録＋`git worktree remove --force` 後片付け。
-2. `cli.py` に `integrate --task <id> --tasks <dag> [--target main] [--dry-run]` を追加。
+2. `cli.py` に `integrate --task <id> --task_file <dag> [--target main] [--dry-run]` を追加。
 
 **動作確認**:
 ```
-super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run  # ok:true、worktree は維持
-super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md            # 統合→integrated, worktree 消える
+super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md --dry-run  # ok:true、worktree は維持
+super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md            # 統合→integrated, worktree 消える
 super-agent log <task_id>     # integrated
 git worktree list            # worktree が消えている
 ```
@@ -187,13 +187,13 @@ git worktree list            # worktree が消えている
 **動作確認**:
 ```bash
 # デフォルト: 各タスクを単一チャンネルで実装、独立タスクは自動並行
-super-agent drive --tasks ./probe/sample/my-design-tasks.md
+super-agent drive --task_file ./probe/sample/my-design-tasks.md
 # 投機的モード: 各タスクを roles.implement の全チャンネルで競わせ、勝者を統合
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --speculative
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --speculative
 # 明示的チャンネル数指定でも投機的になる（agy 1 + hermes 1 = 2チャンネル競争）
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
 # implement チャンネルのモデル/effort を CLI で上書き（全チャンネルに適用）
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --model tencent/hy3:free --effort high
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --model tencent/hy3:free --effort high
 # worktree 確認: 実行中は各タスク/チャンネルの worktree が並び、終了後は綺麗に消える
 git worktree list
 ```

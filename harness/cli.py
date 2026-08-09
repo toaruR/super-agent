@@ -21,8 +21,11 @@ import sys
 import uuid
 from pathlib import Path
 
-from harness.core.invoke import resolve_role, load_path_defaults, slugify, unique_path, latest_file
-from harness.core.ledger import Ledger, Sequencer
+from harness.core.invoke import (
+    resolve_role, load_path_defaults, slugify, unique_path,
+    default_task_path, latest_task_file,
+)
+from harness.core.ledger import Ledger, Sequencer, _same_path
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
 from harness.roles.decomposer import decompose as decomposer_decompose
@@ -36,7 +39,7 @@ from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 # design.md / tasks.md のデフォルト出力先（harness/config/paths.yaml）。
-# --spec / --tasks を省略したとき、architect/plan 系コマンドがここへ書き出す。
+# --design_file / --task_file を省略したとき、architect/plan 系コマンドがここへ書き出す。
 PATH_DEFAULTS = load_path_defaults(CONFIG_DIR)
 # Ledger path can be overridden via SUPER_AGENT_LEDGER (used for sample/fixture
 # ledgers without touching the real append-only events.jsonl).
@@ -73,34 +76,100 @@ def ensure_ledger() -> Sequencer:
     return Sequencer(str(LEDGER_PATH))
 
 
-def resolve_tasks_arg(tasks_arg: str | None) -> str | None:
-    """--tasks fallback for read-only consumer commands (implement/integrate/
-    review-task): if omitted, use the most recently written file under
-    paths.yaml's tasks_dir. Returns None if none can be found (caller reports
+def resolve_task_file_arg(task_file_arg: str | None) -> str | None:
+    """--task_file fallback for read-only consumer commands (implement/integrate/
+    review-task): if omitted, use the most recently written task file, either
+    under `<design_dir>/*_tasks/` (new layout) or paths.yaml's tasks_dir
+    (legacy flat layout). Returns None if none can be found (caller reports
     the "not found" error using whatever string it prefers)."""
-    if tasks_arg:
-        return tasks_arg
-    fallback = latest_file(PATH_DEFAULTS["tasks_dir"])
+    if task_file_arg:
+        return task_file_arg
+    fallback = latest_task_file(PATH_DEFAULTS["design_dir"], PATH_DEFAULTS["tasks_dir"])
     return str(fallback) if fallback else None
+
+
+def resolve_design_file_arg(args: argparse.Namespace, seq: Sequencer) -> str | None:
+    """Resolve --design_file for `plan`/`drive`, in priority order:
+
+    1. args.design_file, if explicitly given.
+    2. If --design_file is omitted but --task_file points at an existing file, look up
+       its design_file in the ledger (Sequencer.resolve_design_file — the
+       reverse of resolve_task_file). This recovers an already-established
+       design/task association instead of asking the user to re-supply it or
+       inventing a new design path.
+    3. None if neither yields anything (caller decides how to handle that:
+       `plan` errors out, `drive` falls back to auto-naming a new design_file).
+    """
+    if args.design_file:
+        return args.design_file
+    if args.task_file and Path(args.task_file).exists():
+        found = seq.resolve_design_file(str(Path(args.task_file).resolve()))
+        if found:
+            return found
+    return None
+
+
+def check_task_file(tasks_path: str, design_path: str | None, seq: Sequencer,
+                    *, auto_named: bool) -> str | None:
+    """Guard the --task_file path before any write happens. Returns an error
+    string, or None if the path is fine to proceed with.
+
+    Guard A (auto_named=True): the caller computed `tasks_path` itself (user
+    omitted --task_file). If a file already sits at that exact auto-named path,
+    error out rather than silently reusing it or picking a `-2` suffix (the
+    task-file equivalent of `unique_path()`'s collision-avoidance is
+    intentionally NOT used here).
+
+    Guard B (auto_named=False): the user explicitly pointed --task_file at an
+    existing file. If the ledger already has a design_file recorded for that
+    task_file, and it doesn't match `design_path` (path-normalized
+    comparison), error out — reusing a task file across two different
+    designs would silently merge unrelated task DAGs into the ledger.
+    """
+    p = Path(tasks_path)
+    if auto_named:
+        if p.exists():
+            return (f"task file already exists at the auto-named path {tasks_path}; "
+                     "pass --task_file explicitly to reuse it, or remove it first")
+        return None
+    if p.exists():
+        recorded = seq.resolve_design_file(str(p.resolve()))
+        if recorded and design_path and not _same_path(recorded, design_path):
+            return (f"--task_file {tasks_path} is already registered in the ledger under "
+                     f"design_file={recorded!r}, which does not match this design_file="
+                     f"{design_path!r}")
+    return None
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
     """Stage 3 (§9 ③): decompose a requirement/design, then schedule worktrees + leases.
 
     Combines Stage 2 (decompose) and Stage 3 (scheduler) in one call.
+
+    --design_file is required (either explicitly, or recoverable from the ledger via
+    --task_file pointing at an already-registered file — see resolve_design_file_arg()).
+    Task files now live at <design_stem>_tasks/<slug>.md, next to the design
+    file, so plan needs a design_file settled before it can pick a default
+    --task_file path.
     """
-    # --spec is read-only input here (plan never writes a design file). Given:
-    # must exist (typo protection). Omitted: proceed with no spec text —
-    # `plan "<requirement>"` alone must keep working with no design file at all
-    # (unlike --tasks, there's no single "the" design doc to guess by default).
-    spec_text = ""
-    if args.spec:
-        p = Path(args.spec)
-        if not p.exists():
-            print(json.dumps({"ok": False, "error": f"spec file not found: {args.spec}"},
-                             ensure_ascii=False, indent=2))
-            return 1
-        spec_text = p.read_text(encoding="utf-8", errors="ignore")
+    seq = ensure_ledger()
+
+    args.design_file = resolve_design_file_arg(args, seq)
+    if not args.design_file:
+        print(json.dumps({"ok": False,
+                          "error": "cannot determine design_file: pass --design_file explicitly, "
+                                   "or point --task_file at a file already registered in the ledger"},
+                         ensure_ascii=False, indent=2))
+        return 1
+
+    # --design_file is read-only input here (plan never writes a design file). Given:
+    # must exist (typo protection).
+    p = Path(args.design_file)
+    if not p.exists():
+        print(json.dumps({"ok": False, "error": f"design_file not found: {args.design_file}"},
+                         ensure_ascii=False, indent=2))
+        return 1
+    spec_text = p.read_text(encoding="utf-8", errors="ignore")
 
     requirement = args.requirement or ""
     if not requirement and spec_text:
@@ -109,17 +178,22 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 requirement = line[len("# 設計:"):].strip()
                 break
 
-    # --tasks omitted: auto-name a fresh file under paths.yaml's tasks_dir
-    # (slug + collision-avoiding suffix). Since it's guaranteed not to exist
-    # yet, this always takes the decompose-via-vendor branch below.
-    if not args.tasks:
-        args.tasks = str(unique_path(PATH_DEFAULTS["tasks_dir"], slugify(requirement or "tasks")))
+    # --task_file omitted: auto-name a fresh file under <design_stem>_tasks/
+    # (no collision-avoiding suffix — guard A below rejects an existing file
+    # at this path instead of silently picking `-2`).
+    auto_named = not args.task_file
+    if auto_named:
+        args.task_file = str(default_task_path(args.design_file, slugify(requirement or "tasks")))
 
-    seq = ensure_ledger()
+    guard_err = check_task_file(args.task_file, args.design_file, seq, auto_named=auto_named)
+    if guard_err:
+        print(json.dumps({"ok": False, "error": guard_err}, ensure_ascii=False, indent=2))
+        return 1
+
     seq.start()
 
-    # --- tasks source: reuse --tasks file if it already exists (no vendor) ---
-    tasks_file = Path(args.tasks)
+    # --- tasks source: reuse --task_file file if it already exists (no vendor) ---
+    tasks_file = Path(args.task_file)
     if tasks_file.exists():
         tasks = parse_tasks_md(str(tasks_file))
         # light structural validation so a hand-edited file still routes safely
@@ -128,33 +202,32 @@ def cmd_plan(args: argparse.Namespace) -> int:
         errs = structural_check(tasks, registry)
         task_id = f"T-{uuid.uuid4().hex[:8]}"
         if errs:
-            if seq is not None:
-                seq.propose(task_id, "decompose.rejected", errors=errs)
+            seq.propose(task_id, "decompose.rejected", errors=errs,
+                        design_file=args.design_file, task_file=str(tasks_file.resolve()))
             seq.stop()
             print(json.dumps({"ok": False, "errors": errs, "tasks": tasks},
                              ensure_ascii=False, indent=2))
             return 0
         out = {"ok": True, "tasks": tasks, "reused_tasks_file": True}
-        if seq is not None:
-            seq.propose(task_id, "decompose.ok", n_tasks=len(tasks),
-                        source="tasks.md")
+        seq.propose(task_id, "decompose.ok", n_tasks=len(tasks), source="tasks.md",
+                    design_file=args.design_file, task_file=str(tasks_file.resolve()))
     else:
         # decompose via vendor (creates the task DAG)
         if not requirement:
-            print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
+            print(json.dumps({"ok": False, "error": "requirement or --design_file is required"},
                              ensure_ascii=False, indent=2))
             seq.stop()
             return 1
         task_id = f"T-{uuid.uuid4().hex[:8]}"
         seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
-                    design_ref=args.spec or "")
+                    design_file=args.design_file, task_file=str(tasks_file.resolve()))
         out = decomposer_decompose(
             task_id, requirement,
             vendor=resolve_role("design", CONFIG_DIR, explicit_vendor=args.vendor,
                                 explicit_model=getattr(args, "model", None),
                                 explicit_effort=getattr(args, "effort", None))["vendor"],
             existing_design=spec_text, dry_run=args.dry_run,
-            model=getattr(args, "model", None), seq=seq,
+            model=getattr(args, "model", None), seq=seq, design_file=args.design_file,
         )
         if not out.get("ok"):
             seq.stop()
@@ -165,16 +238,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
         task_id, out.get("tasks", []),
         vendor=resolve_role("implement", CONFIG_DIR, explicit_vendor=args.vendor)["vendor"],
         role="implementer", lease_seconds=args.lease, root=args.root,
-        dry_run=args.dry_run, seq=seq,
+        dry_run=args.dry_run, seq=seq, design_file=args.design_file,
     )
     seq.stop()
 
-    if args.tasks and not args.dry_run and out.get("ok") and not out.get("reused_tasks_file"):
-        tasks_out = Path(args.tasks)
+    if args.task_file and not args.dry_run and out.get("ok") and not out.get("reused_tasks_file"):
+        tasks_out = Path(args.task_file)
         tasks_out.parent.mkdir(parents=True, exist_ok=True)
         tasks_out.write_text(
             render_tasks_md(out.get("tasks", []), requirement), encoding="utf-8")
-        print(f"# tasks written to {args.tasks}", file=sys.stderr)
+        print(f"# tasks written to {args.task_file}", file=sys.stderr)
 
     print(json.dumps({"decompose": out, "schedule": sched}, ensure_ascii=False, indent=2))
     return 0
@@ -183,28 +256,28 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_architect(args: argparse.Namespace) -> int:
     """Stage 1 (§9 ①): record design decisions as ADRs on the ledger.
 
-    With --spec <file> that already exists: record the human-supplied design
+    With --design_file <file> that already exists: record the human-supplied design
     verbatim; requirement is optional (recovered from the file's first line
     if omitted, stripping a leading '# 設計:' marker if present).
-    Without an existing --spec file: requirement is required — a read-only
+    Without an existing --design_file file: requirement is required — a read-only
     vendor proposes ADRs, saved as a new, non-colliding file under
     paths.yaml's design_dir (or just dry-run the prompt).
     """
-    spec_exists = args.spec is not None and Path(args.spec).exists()
+    spec_exists = args.design_file is not None and Path(args.design_file).exists()
     requirement = args.requirement
     if spec_exists and not requirement:
-        text = Path(args.spec).read_text(encoding="utf-8", errors="ignore")
+        text = Path(args.design_file).read_text(encoding="utf-8", errors="ignore")
         first_line = text.splitlines()[0].strip() if text.splitlines() else ""
         if first_line.startswith("# 設計:"):
             first_line = first_line[len("# 設計:"):].strip()
         requirement = first_line
     if not spec_exists and not requirement:
         print(json.dumps({"ok": False,
-                          "error": "requirement is required unless --spec points to an existing design file"},
+                          "error": "requirement is required unless --design_file points to an existing design file"},
                          ensure_ascii=False, indent=2))
         return 1
-    if args.spec is None:
-        args.spec = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(requirement)))
+    if args.design_file is None:
+        args.design_file = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(requirement)))
     seq = ensure_ledger()
     seq.start()
     task_id = f"T-{uuid.uuid4().hex[:8]}"
@@ -217,7 +290,7 @@ def cmd_architect(args: argparse.Namespace) -> int:
         task_id,
         requirement,
         r["vendor"],
-        spec_path=args.spec,
+        spec_path=args.design_file,
         dry_run=args.dry_run,
         model=r["model"],
         effort=r["effort"],
@@ -231,19 +304,19 @@ def cmd_architect(args: argparse.Namespace) -> int:
 def cmd_implement(args: argparse.Namespace) -> int:
     """Stage 4 (§9 ④): implement a single task inside its worktree, then commit.
 
-    Reads the task spec from --tasks, finds the task by --task, and runs the
+    Reads the task spec from --task_file, finds the task by --task, and runs the
     Implementer vendor inside workspaces/<task> (the worktree from `plan`).
     """
-    args.tasks = resolve_tasks_arg(args.tasks)
-    tasks_file = Path(args.tasks) if args.tasks else None
+    args.task_file = resolve_task_file_arg(args.task_file)
+    tasks_file = Path(args.task_file) if args.task_file else None
     if not tasks_file or not tasks_file.exists():
-        print(json.dumps({"ok": False, "error": f"tasks file not found: {args.tasks}"},
+        print(json.dumps({"ok": False, "error": f"tasks file not found: {args.task_file}"},
                          ensure_ascii=False, indent=2))
         return 1
     tasks = parse_tasks_md(str(tasks_file))
     task = next((t for t in tasks if t["task_id"] == args.task), None)
     if task is None:
-        print(json.dumps({"ok": False, "error": f"task {args.task} not in {args.tasks}"},
+        print(json.dumps({"ok": False, "error": f"task {args.task} not in {args.task_file}"},
                          ensure_ascii=False, indent=2))
         return 1
 
@@ -281,18 +354,18 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     """Stage 5 (plan.md): merge an implemented task's worktree into the target
     branch, re-verify acceptance, then tear down the worktree.
 
-    Resolves the task spec from --tasks, finds the worktree from --worktree or
+    Resolves the task spec from --task_file, finds the worktree from --worktree or
     workspaces/<task>, and merges branch task/<task> into --target.
     """
-    args.tasks = resolve_tasks_arg(args.tasks)
-    tasks_file = Path(args.tasks) if args.tasks else None
+    args.task_file = resolve_task_file_arg(args.task_file)
+    tasks_file = Path(args.task_file) if args.task_file else None
     if not tasks_file or not tasks_file.exists():
-        print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
+        print(f"error: tasks file not found: {args.task_file}", file=sys.stderr)
         return 2
     tasks = parse_tasks_md(str(tasks_file))
     task = next((t for t in tasks if t["task_id"] == args.task), None)
     if task is None:
-        print(f"error: task {args.task} not in {args.tasks}", file=sys.stderr)
+        print(f"error: task {args.task} not in {args.task_file}", file=sys.stderr)
         return 2
 
     worktree = args.worktree or str(Path("workspaces") / args.task)
@@ -325,18 +398,32 @@ def cmd_drive(args: argparse.Namespace) -> int:
     Pass --speculative to fan each task out across multiple channels and
     integrate only the first reviewer-approved one.
 
-    If --tasks does not exist, decompose from --spec first (creating worktrees).
+    If --task_file does not exist, decompose from --design_file first (creating worktrees).
 
-    Both --spec (design_file) and --tasks (task_file) are required identifiers
+    Both --design_file and --task_file are required identifiers
     (driving a task needs its design + task root to exist as bookkeeping
-    labels), but both are auto-named under paths.yaml's design_dir/tasks_dir
-    when omitted, so this never fails for that reason alone.
+    labels), but both are auto-named when omitted, so this never fails for
+    that reason alone: --design_file falls back to resolve_design_file_arg() (ledger lookup via
+    --task_file, else a freshly auto-named design_dir path), and --task_file falls
+    back to <design_stem>_tasks/<slug>.md next to whatever --design_file resolved to.
     """
-    if not args.spec:
-        args.spec = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(args.requirement or "drive")))
-    if not args.tasks:
-        args.tasks = str(unique_path(PATH_DEFAULTS["tasks_dir"], slugify(args.requirement or "drive")))
     seq = ensure_ledger()
+
+    resolved_spec = resolve_design_file_arg(args, seq)
+    if resolved_spec:
+        args.design_file = resolved_spec
+    elif not args.design_file:
+        args.design_file = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(args.requirement or "drive")))
+
+    auto_named = not args.task_file
+    if auto_named:
+        args.task_file = str(default_task_path(args.design_file, slugify(args.requirement or "drive")))
+
+    guard_err = check_task_file(args.task_file, args.design_file, seq, auto_named=auto_named)
+    if guard_err:
+        print(json.dumps({"ok": False, "error": guard_err}, ensure_ascii=False, indent=2))
+        return 1
+
     seq.start()
     implement_channels = None
     if args.implement_vendors:
@@ -352,8 +439,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
     )
     out = drive(
         requirement=args.requirement or "",
-        spec_path=args.spec,
-        tasks_path=args.tasks,
+        spec_path=args.design_file,
+        tasks_path=args.task_file,
         target_branch=args.target,
         seq=seq,
         dry_run=args.dry_run,
@@ -366,7 +453,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         adaptive=getattr(args, "adaptive", True),
         implement_model=args.model,
         implement_effort=args.effort,
-        task_file=str(Path(args.tasks).resolve()),
+        task_file=str(Path(args.task_file).resolve()),
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -379,22 +466,22 @@ def cmd_review(args: argparse.Namespace) -> int:
     """Run the verification pipeline (CVE -> brief -> review -> adjudicate)
     against a worktree / case directory. This is the '⑤⑥⑦⑨' part of §9.
 
-    With --task <id> --tasks <dag.md>, the acceptance and worktree path are
+    With --task <id> --task_file <dag.md>, the acceptance and worktree path are
     resolved from the implemented task (Stage 4 -> Stage 5 handoff).
     """
     # Stage 5 handoff: resolve acceptance + worktree from the task DAG
     # (only `review-task` declares --task; plain `review <dir>` doesn't, so
     # getattr's None default routes it to the `else` branch below)
     if getattr(args, "task", None):
-        args.tasks = resolve_tasks_arg(getattr(args, "tasks", None))
-        tasks_file = Path(args.tasks) if args.tasks else None
+        args.task_file = resolve_task_file_arg(getattr(args, "task_file", None))
+        tasks_file = Path(args.task_file) if args.task_file else None
         if not tasks_file or not tasks_file.exists():
-            print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
+            print(f"error: tasks file not found: {args.task_file}", file=sys.stderr)
             return 2
         tasks = parse_tasks_md(str(tasks_file))
         task = next((t for t in tasks if t["task_id"] == args.task), None)
         if task is None:
-            print(f"error: task {args.task} not in {args.tasks}", file=sys.stderr)
+            print(f"error: task {args.task} not in {args.task_file}", file=sys.stderr)
             return 2
         target = Path(args.worktree) if args.worktree else (Path("workspaces") / args.task)
         # recover a stale/missing worktree from its branch before reviewing
@@ -622,9 +709,9 @@ def main(argv: list[str] | None = None) -> int:
 
     a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
     a.add_argument("requirement", nargs="?", default="",
-                   help="requirement text (optional if --spec points to an existing design "
+                   help="requirement text (optional if --design_file points to an existing design "
                         "file; recovered from the file's first line if omitted there)")
-    a.add_argument("--spec", default=None,
+    a.add_argument("--design_file", default=None,
                    help="human-supplied design file (recorded verbatim). If it doesn't exist, "
                         "an LLM proposes it and it is saved as a new, non-colliding "
                         f"file under paths.yaml's design_dir ({PATH_DEFAULTS['design_dir']}).")
@@ -637,17 +724,20 @@ def main(argv: list[str] | None = None) -> int:
 
     pl = sub.add_parser("plan", help="decompose + schedule worktrees/leases (Stage 3)")
     pl.add_argument("requirement", nargs="?", default="",
-                   help="requirement text (optional if --spec is given)")
-    pl.add_argument("--spec", default=None,
+                   help="requirement text (optional if --design_file is given)")
+    pl.add_argument("--design_file", default=None,
                    help="design file from `architect` (requirement recovered from its '# 設計:' header). "
-                        "Optional — if omitted, no existing design is read.")
+                        "Required: either pass it explicitly, or point --task_file at a file already "
+                        "registered in the ledger (its design_file is looked up automatically). "
+                        "`plan` no longer works with neither given.")
     pl.add_argument("--vendor", default=None)
     pl.add_argument("--model", default=None, help="override the vendor's default model")
     pl.add_argument("--effort", default=None, help="override the vendor's default effort")
-    pl.add_argument("--tasks", default=None,
+    pl.add_argument("--task_file", default=None,
                    help="write the decomposed task DAG as Markdown to this file. If omitted, "
-                        "auto-named (slug of the requirement, collision-avoided) under "
-                        f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
+                        "auto-named (slug of the requirement) under <design_stem>_tasks/, next to "
+                        "--design_file (no collision-avoiding suffix: an existing file at that path is an "
+                        "error — pass --task_file explicitly to reuse it).")
     pl.add_argument("--lease", type=int, default=3600,
                    help="lease duration in seconds (default 3600)")
     pl.add_argument("--root", default="workspaces",
@@ -671,10 +761,11 @@ def main(argv: list[str] | None = None) -> int:
 
     rt = sub.add_parser("review-task", help="review an implemented task (Stage 5 handoff)")
     rt.add_argument("--task", required=True, help="task id to review (Stage 5 handoff from implement)")
-    rt.add_argument("--tasks", default=None,
+    rt.add_argument("--task_file", default=None,
                     help="decomposed task DAG (to resolve --task's acceptance + worktree). "
-                         "If omitted, falls back to the most recently written file under "
-                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
+                         "If omitted, falls back to the most recently written task file, "
+                         f"searching both <design_dir>/*_tasks/ ({PATH_DEFAULTS['design_dir']}) "
+                         f"and paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}, legacy layout).")
     rt.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     rt.add_argument("--reviewer", default=None)
@@ -687,10 +778,11 @@ def main(argv: list[str] | None = None) -> int:
 
     im = sub.add_parser("implement", help="implement a task in its worktree + commit (Stage 4)")
     im.add_argument("--task", required=True, help="task id to implement (e.g. T1)")
-    im.add_argument("--tasks", default=None,
+    im.add_argument("--task_file", default=None,
                     help="decomposed task DAG (to look up the task spec). "
-                         "If omitted, falls back to the most recently written file under "
-                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
+                         "If omitted, falls back to the most recently written task file, "
+                         f"searching both <design_dir>/*_tasks/ ({PATH_DEFAULTS['design_dir']}) "
+                         f"and paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}, legacy layout).")
     im.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     im.add_argument("--vendor", default=None)
@@ -702,10 +794,11 @@ def main(argv: list[str] | None = None) -> int:
 
     ig = sub.add_parser("integrate", help="merge implemented task into target + tear down (Stage 5)")
     ig.add_argument("--task", required=True, help="task id to integrate (e.g. T1)")
-    ig.add_argument("--tasks", default=None,
+    ig.add_argument("--task_file", default=None,
                     help="decomposed task DAG (to look up the task spec). "
-                         "If omitted, falls back to the most recently written file under "
-                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
+                         "If omitted, falls back to the most recently written task file, "
+                         f"searching both <design_dir>/*_tasks/ ({PATH_DEFAULTS['design_dir']}) "
+                         f"and paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}, legacy layout).")
     ig.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     ig.add_argument("--target", default="main",
@@ -715,15 +808,17 @@ def main(argv: list[str] | None = None) -> int:
     ig.set_defaults(func=cmd_integrate)
 
     dr = sub.add_parser("drive", help="drive implement->review->integrate for every task in the DAG (Stage B)")
-    dr.add_argument("--requirement", default="", help="requirement text (used when --tasks is missing)")
-    dr.add_argument("--spec", default=None,
-                    help="design file to decompose from when --tasks is missing. If omitted, "
-                         "auto-named (slug of --requirement, collision-avoided) under "
-                         f"paths.yaml's design_dir ({PATH_DEFAULTS['design_dir']}).")
-    dr.add_argument("--tasks", default=None,
-                    help="decomposed task DAG (created from --spec if missing). If omitted, "
-                         "auto-named (slug of --requirement, collision-avoided) under "
-                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
+    dr.add_argument("--requirement", default="", help="requirement text (used when --task_file is missing)")
+    dr.add_argument("--design_file", default=None,
+                    help="design file to decompose from when --task_file is missing. If omitted, "
+                         "resolved from the ledger when --task_file already points at a registered "
+                         "file; otherwise auto-named (slug of --requirement, collision-avoided) "
+                         f"under paths.yaml's design_dir ({PATH_DEFAULTS['design_dir']}).")
+    dr.add_argument("--task_file", default=None,
+                    help="decomposed task DAG (created from --design_file if missing). If omitted, "
+                         "auto-named (slug of --requirement) under <design_stem>_tasks/, next to "
+                         "--design_file (no collision-avoiding suffix: an existing file at that path is "
+                         "an error unless --task_file is passed explicitly to reuse it).")
     dr.add_argument("--target", default="main",
                     help="integration target branch (default: main)")
     dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")

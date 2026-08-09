@@ -93,8 +93,8 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 | コマンド | 役割 | § |
 |---|---|---|
 | `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.1 |
-| `drive --tasks <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.2 |
-| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.3 |
+| `drive --task_file <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.2 |
+| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--task_file` 既存なら分解をスキップ | 2.3 |
 | `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.4 |
 | `review-task --task T1` | 実装済みタスクを読み取り専用でレビュー（Stage 5＝⑤⑥⑦） | 2.5 |
 | `integrate --task T1` | 実装済みタスクを統合ブランチへマージ＋後片付け（Stage 5＝⑧） | 2.6 |
@@ -106,33 +106,33 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 ### 2.1 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
 ```bash
-super-agent architect ["<要求>"] [--spec <file>] [--vendor claude] [--dry-run]
+super-agent architect ["<要求>"] [--design_file <file>] [--vendor claude] [--dry-run]
 ```
 
 | オプション | 意味 |
 |---|---|
-| `--spec` | 設計ファイル。`<file>` が無ければ LLM で起案してそのパスに作成（後で編集可）。既存ならそのまま記録（推奨・確実） |
-| `--vendor` | 起案させるベンダー（既定 `claude`）。`--spec` 無し、または `<file>` が無い時のみ使用 |
+| `--design_file` | 設計ファイル。`<file>` が無ければ LLM で起案してそのパスに作成（後で編集可）。既存ならそのまま記録（推奨・確実） |
+| `--vendor` | 起案させるベンダー（既定 `claude`）。`--design_file` 無し、または `<file>` が無い時のみ使用 |
 | `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
 
 **何をするか**：要求を受け、設計決定を **ADR（Architecture Decision Record）** として
 台帳に `adr.written` イベントで記録します（§9 の①）。後から `log <task>` で
 「何を・なぜ決めたか」を辿れます。
 
-**`"<要求>"` は `--spec` が既存ファイルを指す場合は省略可**（`plan` と同様）。省略時は
+**`"<要求>"` は `--design_file` が既存ファイルを指す場合は省略可**（`plan` と同様）。省略時は
 ファイルの**1行目**から復元します（先頭が `# 設計:` ならそのプレフィックスを取り除いた
-残りを使用）。`--spec` が無い／ファイルがまだ無い場合（LLM に起案させる場合）は、起案の
+残りを使用）。`--design_file` が無い／ファイルがまだ無い場合（LLM に起案させる場合）は、起案の
 入力として要求文が必須なので `"<要求>"` は省略できません（省略するとエラーを返します）。
 
 **例（人間の設計をそのまま記録 — 最も確実）**：
 ```bash
-super-agent architect "Web API を作れ" --spec my-design.md
+super-agent architect "Web API を作れ" --design_file my-design.md
 # → 既存ならその内容を記録。無ければ LLM が起案して my-design.md を作成し記録
 ```
 
 **例（既存ファイルなら要求文を省略できる）**：
 ```bash
-super-agent architect --spec my-design.md
+super-agent architect --design_file my-design.md
 # my-design.md の1行目が「# 設計: Web API を作れ」なら goal は「Web API を作れ」に復元される
 # 1行目にその印が無ければ、1行目の文字列をそのまま goal として使う
 ```
@@ -143,7 +143,7 @@ super-agent architect "Web API を作れ" --dry-run
 # → {"source": "llm(dry)", "cmd": [...]}  # 実際に呼ぶコマンドを確認（ファイルは作らない）
 ```
 
-> `--spec` なしで LLM に起案させる場合、ベンダーは **read-only**（実装しない）で
+> `--design_file` なしで LLM に起案させる場合、ベンダーは **read-only**（実装しない）で
 > 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
 
 
@@ -151,8 +151,8 @@ super-agent architect "Web API を作れ" --dry-run
 
 `plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して**実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
 
-- `--tasks <md>`: 分解済みタスク DAG。`--tasks` が存在しない場合は `--spec` から分解→worktree 作成→`<md>` に書き出します。
-- `--spec <md>`: 設計ファイル（`--tasks` が無い時に使用）。
+- `--task_file <md>`: 分解済みタスク DAG。`--task_file` が存在しない場合は `--design_file` から分解→worktree 作成→`<md>` に書き出します。
+- `--design_file <md>`: 設計ファイル（`--task_file` が無い時に使用）。
 - `--target <branch>`: 統合先ブランチ（既定 `main`）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
 - `--model` / `--effort`: **implement チャンネル全てのモデル / effort を一括上書き**（既定は `vendors.yaml` の `roles.implement` 各チャンネル値）。短名（例: `hy3:Free`）も可 — コード側 `normalize_model()` が実名（例: `tencent/hy3:free`）に自動正規化される。review ベンダーは影響しない。
@@ -169,16 +169,16 @@ super-agent architect "Web API を作れ" --dry-run
 
 ```bash
 # デフォルト: 各タスクを単一チャンネルで実装、独立タスクは自動並行
-super-agent drive --tasks ./probe/sample/my-design-tasks.md
+super-agent drive --task_file ./probe/sample/my-design-tasks.md
 
 # 投機的モード: 各タスクを roles.implement の全5チャンネルで競わせ、勝者を統合
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --speculative
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --speculative
 
 # 明示的チャンネル指定でも投機的になる（agy 1 + hermes 1 = 2チャンネル競争）
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --implement-vendors "agy:1,hermes:1"
 
 # dry-run（fan-out だけ確認、ベンダーは呼ばない）
-super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
+super-agent drive --task_file ./probe/sample/my-design-tasks.md --dry-run
 ```
 
 > 実行後は各タスクの全チャンネル worktree が自動で破棄される（敗者チャンネルも残らない）。
@@ -188,25 +188,25 @@ super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
 ### 2.3 `super-agent plan` — 分解(②)＋編成・worktree・リース(③)
 
 `plan` は Stage 2（decomposer）と Stage 3（scheduler）を連続実行します。
-`--tasks` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
+`--task_file` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
 
 ```bash
-# ① 分解だけ（--tasks に書き出し。このとき worktree は作らない）
-super-agent plan --spec my-design.md --tasks my-design-tasks.md --dry-run
+# ① 分解だけ（--task_file に書き出し。このとき worktree は作らない）
+super-agent plan --design_file my-design.md --task_file my-design-tasks.md --dry-run
 # ② tasks.md を人間がレビュー/編集した後、分解をスキップして worktree だけ作る
-super-agent plan --tasks my-design-tasks.md
+super-agent plan --task_file my-design-tasks.md
 # ③ 通常運用：設計から一気に分解→worktree作成→リース発行
-super-agent plan --spec my-design.md --tasks my-design-tasks.md
+super-agent plan --design_file my-design.md --task_file my-design-tasks.md
 ```
 
 | コマンド | vendor呼ぶ？ | worktree作る？ | 使い道 |
 |---|---|---|---|
-| `plan --spec X --tasks Y`（Y未作成） | ✔ | ✔ | 通常運用（分解→作業台） |
-| `plan --spec X --tasks Y --dry-run` | × | ×（計画のみ） | 構成確認 |
-| `plan --tasks Y`（Y既存） | × | ✔ | tasks.mdからworktreeだけ作る |
+| `plan --design_file X --task_file Y`（Y未作成） | ✔ | ✔ | 通常運用（分解→作業台） |
+| `plan --design_file X --task_file Y --dry-run` | × | ×（計画のみ） | 構成確認 |
+| `plan --task_file Y`（Y既存） | × | ✔ | tasks.mdからworktreeだけ作る |
 
-`--tasks` が**既存ファイル**ならそれを読み込んで（人手編集も反映）、vendor を呼ばずに
-worktree/リースだけ作成します。`--tasks` が無い / 未作成なら vendor で分解してから進みます。
+`--task_file` が**既存ファイル**ならそれを読み込んで（人手編集も反映）、vendor を呼ばずに
+worktree/リースだけ作成します。`--task_file` が無い / 未作成なら vendor で分解してから進みます。
 
 **構造検査（機械強制・H2 含む、再利用時も適用）**：
 - `acceptance` が空でない
@@ -227,15 +227,15 @@ worktree/リースだけ作成します。`--tasks` が無い / 未作成なら 
 
 ```bash
 # tasks.md から T1 を探し、workspaces/T1 で実装→コミット
-super-agent implement --task T1 --tasks my-design-tasks.md
+super-agent implement --task T1 --task_file my-design-tasks.md
 # ドライラン（プロンプト組み立てのみ）
-super-agent implement --task T1 --tasks my-design-tasks.md --dry-run
+super-agent implement --task T1 --task_file my-design-tasks.md --dry-run
 ```
 
 | オプション | 意味 |
 |---|---|
 | `--task` | 実装するタスクID（必須） |
-| `--tasks` | タスク定義を探す DAG（既定 `probe/sample/my-design-tasks.md`） |
+| `--task_file` | タスク定義を探す DAG（既定 `probe/sample/my-design-tasks.md`） |
 | `--worktree` | worktree パス（既定 `workspaces/<task>`）。**省略時は `src/` からの絶対パスに解決される**（相対パスだとベンダーがカレントに出力をネストする不具合があったため） |
 | `--vendor` | Implementer ベンダー（既定 `vendors.yaml` の `roles.implement` 先頭チャンネル） |
 | `--model` | Implementer のモデルを上書き（既定は `roles.implement` のモデル）。`vendors.yaml` の `hy3:Free` のような短名も可 — コード側 `normalize_model()` が `tencent/hy3:free` 等の実名に自動正規化される |
@@ -254,15 +254,15 @@ tasks.md から自動解決されます（Implementer と**別ベンダー**、�
 
 ```bash
 # implement した T1 をレビュー（CVE実行→brief→read-onlyレビュー→裁定）
-super-agent review-task --task T1 --tasks my-design-tasks.md --reviewer codex
+super-agent review-task --task T1 --task_file my-design-tasks.md --reviewer codex
 # ドライラン（CVEは走るがレビュア呼び出しをスキップ）
-super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
+super-agent review-task --task T1 --task_file my-design-tasks.md --dry-run
 ```
 
 | オプション | 意味 |
 |---|---|
 | `--task` | レビューするタスクID（④の成果物、必須） |
-| `--tasks` | タスク定義 DAG（acceptance + worktree 解決用） |
+| `--task_file` | タスク定義 DAG（acceptance + worktree 解決用） |
 | `--worktree` | worktree パス（既定 `workspaces/<task>`） |
 | `--reviewer` | レビュア（Implementer と別であること／既定 `codex`） |
 | `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力 |
@@ -280,17 +280,17 @@ super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
 
  ```bash
  # 統合シミュレーション（git/worktree は触らない。ok:true が返る）
- super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run
+ super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md --dry-run
 
  # 実際の統合：task/T1 を main へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
- super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+ super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md
  # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "main", "commit": "..."}
  ```
 
  | オプション | 意味 |
  |---|---|
  | `--task` | 統合するタスクID |
- | `--tasks` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
+ | `--task_file` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
  | `--target` | 統合先ブランチ（既定 `main`）。**現在の本流ブランチは `master`** なので、実運用では `--target master` を指定する（コードの既定値は `main` のまま） |
  | `--worktree` | worktree パス（既定 `workspaces/<task>`；無ければ `task/<id>` から再作成） |
  | `--dry-run` | マージ/後片付けを実行せず計画のみ表示 |
@@ -504,9 +504,15 @@ super-agent log T-XXXX
 | `vendors.yaml` | ベンダーの呼び出し方（構造化出力・再開・権限）＋ `roles.implement` / `roles.review` のチャンネル構成 | ベンダー追加時／チャンネル構成変更時 |
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック | マシンが変わった時 |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） | 新しい検証種別を足す時 |
-| `paths.yaml` | `design_dir` / `tasks_dir`：`architect`/`plan`/`drive` 等が `--spec`/`--tasks` 省略時に書き出すデフォルト出力先ディレクトリ | 出力先ディレクトリ規約を変える時 |
+| `paths.yaml` | `design_dir`：`architect`/`plan`/`drive` が `--design_file` 省略時に書き出すデフォルト出力先ディレクトリ。`tasks_dir` はタスクファイルの新規書き出し先ではなく、`implement`/`integrate`/`review-task` の `--task_file` 省略時フォールバック走査（旧フラット配置の残骸を拾う用）専用 | 出力先ディレクトリ規約を変える時 |
 
-> **`paths.yaml`**：ファイル名ではなく**ディレクトリ**のみを指定する。実際のファイル名は要求文（`--requirement`）からのスラッグ＋重複回避の連番（`<slug>.md` → 既存なら `<slug>-2.md` → …）で自動生成される（`harness/core/invoke.py` の `slugify()`/`unique_path()`）。`architect "<要求>"`（`--spec` 省略）と `plan`/`drive`（`--tasks` 省略、`drive` は `--spec` も）は、それぞれ `design_dir`（既定 `docs/design`）/ `tasks_dir`（既定 `docs/tasks`）配下に新規ファイルを自動命名して書き出す。`--spec`/`--tasks` を明示すればそちらが優先される。読み取り専用の消費コマンド（`implement`/`integrate`/`review-task`）は `--tasks` 省略時、`tasks_dir` 配下で最終更新が最も新しいファイル（`latest_file()`）にフォールバックする。`plan` の `--spec` は入力専用（既存 design を読むだけ）なので自動生成の対象外：明示すればファイルが無いとエラー、省略すれば既存 design 無しのまま要求文だけで進む。
+> **タスクファイルはデザインファイルに従属する（`<design のstem>_tasks/` 配下）**：`design_dir/my-feature.md` の場合、そのタスクファイルは `design_dir/my-feature_tasks/<slug>.md` に置かれる（`harness/core/invoke.py` の `tasks_dir_for_design()`/`default_task_path()`）。デザイン側の `design_dir`（既定 `docs/design`、`architect "<要求>"`/`--design_file` 省略時のみ使用）は従来どおり要求文のスラッグ＋重複回避の連番（`<slug>.md` → 既存なら `<slug>-2.md` → …、`slugify()`/`unique_path()`）で自動命名されるが、**タスク側は連番を使わない**：既定パスに既にファイルがあれば `plan`/`drive` はエラーで中止する（ガードA。再利用したいなら `--task_file` で明示指定する）。
+>
+> **`plan`/`drive` は `--design_file` が確定していることが前提**：`plan` は `--design_file` 省略時、`--task_file` が台帳に登録済みの既存ファイルを指していればその `design_file` を台帳から逆引きして自動解決する（`resolve_design_file_arg()`）。それも無理なら**エラーで中止**する — `plan "<要求文>"` 単体（`--design_file`/`--task_file` とも省略）はもう動かない（破壊的変更）。`drive` は同じ逆引きを試み、それでも解決できなければ従来どおり `design_dir` 配下に新規ファイルを自動命名する。
+>
+> **ガードB**：`--task_file` に既存ファイルを明示指定したとき、台帳に記録されているそのファイルの `design_file` と今回の `design_file` が異なればエラーで中止する（同一 design での再利用は従来どおり許可）。
+>
+> 読み取り専用の消費コマンド（`implement`/`integrate`/`review-task`）は `--task_file` 省略時、`design_dir/*_tasks/*.md` と `tasks_dir`（既定 `docs/tasks`、旧フラット配置の残骸用）の両方を走査して最終更新が最も新しいファイル（`latest_task_file()`）にフォールバックする。`plan` の `--design_file` は入力専用（既存 design を読むだけ）なので自動生成の対象外：明示すればファイルが無いとエラー、`resolve_design_file_arg()` で解決できなければ上記のとおりエラーになる。
 
 > **モデル名はコード側で正規化される**：`vendors.yaml` には OpenRouter の短名（例: `hy3:Free`）をそのまま書ける。実行時に `harness/core/invoke.py` の `normalize_model()` が実名（`tencent/hy3:free`）へ自動変換するため、yaml を実名に書き換える必要はない。未知の名前はそのまま通る（404 になるのは yaml の書き間違いやカタログ不在時のみ）。
 >
@@ -543,7 +549,7 @@ python -m pytest harness/tests/ -q
 
 **実装済み（Stage 0〜6 + Stage B 並列）**:
 - `architect` / `plan` / `implement` / `review` / `integrate` / `evolve` / `dashboard` の全コマンド
-- `review`: implement の成果物（worktree）に対して `--task T1 --tasks my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）
+- `review`: implement の成果物（worktree）に対して `--task T1 --task_file my-design-tasks.md` で回せる（read-only 別ベンダー、CVE 証拠のみで裁定）
 - `drive`: デフォルトは単一チャンネル実装＋タスクレベル並列。投機的マルチチャンネルは `--speculative` で opt-in
 - `evolve`: 台帳から失敗パターンを拾い自己改良を提案
 

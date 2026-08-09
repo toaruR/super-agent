@@ -193,7 +193,7 @@ def test_plan_cli_dry_run(monkeypatch, tmp_path):
     design = "# 設計: 単語数カウントCLIを作る\n\npytest のみで充分。\n"
     spec = tmp_path / "d.md"
     spec.write_text(design, encoding="utf-8")
-    res = _run("plan", "--spec", str(spec), "--dry-run")
+    res = _run("plan", "--design_file", str(spec), "--dry-run")
     out = json.loads(res.stdout)
     assert "decompose" in out and "schedule" in out
     assert out["schedule"]["ok"] is True

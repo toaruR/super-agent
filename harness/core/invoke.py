@@ -200,11 +200,17 @@ DEFAULT_PATHS = {
 def load_path_defaults(config_dir: str | Path) -> dict:
     """`design_dir` / `tasks_dir` defaults from `paths.yaml`.
 
-    Single source of truth for where `architect`/`plan`/`drive` write
-    design.md-/tasks.md-style docs when --spec / --tasks are omitted on the
-    CLI. Falls back to DEFAULT_PATHS if paths.yaml is missing or a key is
-    absent. The actual *filename* inside each directory is chosen per-call by
-    `unique_path()` (slug + collision-avoiding suffix), not fixed here.
+    `design_dir` is where `architect`/`plan`/`drive` write design.md-style
+    docs when --design_file is omitted (still `unique_path()` slug + suffix).
+
+    `tasks_dir` is NOT where `plan`/`drive` write task files anymore — task
+    files now live next to their design file, under `<design_stem>_tasks/`
+    (see `tasks_dir_for_design()` / `default_task_path()`). `tasks_dir` is
+    kept only as (a) the fallback directory `latest_task_file()` also scans
+    for legacy flat task files, and (b) the directory read-only consumer
+    commands (`implement`/`integrate`/`review-task`) would use if a design
+    was never involved. Falls back to DEFAULT_PATHS if paths.yaml is missing
+    or a key is absent.
     """
     path = Path(config_dir) / "paths.yaml"
     data = {}
@@ -238,13 +244,49 @@ def unique_path(dir_path: str | Path, stem: str, suffix: str = ".md") -> Path:
 
 def latest_file(dir_path: str | Path, pattern: str = "*.md") -> Path | None:
     """Most recently written file matching `pattern` in `dir_path`, or None
-    if the directory is missing/empty. Used as the --tasks fallback for
+    if the directory is missing/empty. Used as the --task_file fallback for
     read-only consumer commands (implement/integrate/review-task) when the
-    caller doesn't pass --tasks explicitly."""
+    caller doesn't pass --task_file explicitly."""
     dir_path = Path(dir_path)
     if not dir_path.is_dir():
         return None
     candidates = list(dir_path.glob(pattern))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def tasks_dir_for_design(design_path: str | Path) -> Path:
+    """The task-file folder for a given design file: `<design>_tasks/`,
+    a sibling of the design file itself (not under paths.yaml's tasks_dir).
+    Pure computation — does not create the directory."""
+    d = Path(design_path)
+    return d.parent / f"{d.stem}_tasks"
+
+
+def default_task_path(design_path: str, stem: str) -> Path:
+    """The default (auto-named) task-file path for a given design file +
+    slug stem: `<design>_tasks/<stem>.md`. Pure computation — does not create
+    the directory or check for collisions (callers must run guard A: if this
+    path already exists, that's an error, not a signal to pick `-2`, `-3`...
+    like `unique_path()` does for design files)."""
+    return tasks_dir_for_design(design_path) / f"{stem}.md"
+
+
+def latest_task_file(design_dir: str | Path, fallback_dir: str | Path) -> Path | None:
+    """Most recently written task file, searching both the new layout
+    (`<design_dir>/*_tasks/*.md`) and the legacy flat layout (`<fallback_dir>
+    /*.md`, paths.yaml's tasks_dir). Used as the --task_file fallback for
+    read-only consumer commands (implement/integrate/review-task) when the
+    caller doesn't pass --task_file explicitly. Returns None if neither yields
+    anything; missing directories are treated as empty (not an error)."""
+    design_dir = Path(design_dir)
+    fallback_dir = Path(fallback_dir)
+    candidates: list[Path] = []
+    if design_dir.is_dir():
+        candidates += list(design_dir.glob("*_tasks/*.md"))
+    if fallback_dir.is_dir():
+        candidates += list(fallback_dir.glob("*.md"))
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)

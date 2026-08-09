@@ -113,8 +113,49 @@ def test_sequencer_order() -> None:
         shutil.rmtree(tmp)
 
 
+def test_resolve_design_file() -> None:
+    """Sequencer.resolve_design_file() is the task -> design mirror of
+    resolve_task_file() (design -> task)."""
+    tmp = tempfile.mkdtemp()
+    try:
+        p = os.path.join(tmp, "events.jsonl")
+        seq = Sequencer(p)
+        seq.start()
+        seq.propose_chunk("design.md", "tasks.md", [{"event_id": "T-1:1", "type": "task.created"}])
+        seq.stop()
+
+        assert seq.resolve_design_file("tasks.md") == "design.md"
+        # unrecorded task_file -> ""
+        assert seq.resolve_design_file("nope.md") == ""
+
+        # relative/absolute mismatch is resolved via path normalization
+        abs_tasks = os.path.abspath("tasks.md")
+        assert seq.resolve_design_file(abs_tasks) == "design.md"
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_resolve_design_file_absolute_recorded() -> None:
+    """Same lookup, but the ledger recorded task_file as an absolute path
+    (as drive.py does) while the caller queries with a relative one."""
+    tmp = tempfile.mkdtemp()
+    try:
+        p = os.path.join(tmp, "events.jsonl")
+        seq = Sequencer(p)
+        seq.start()
+        abs_tasks = os.path.abspath("tasks2.md")
+        seq.propose_chunk("design2.md", abs_tasks, [{"event_id": "T-2:1", "type": "task.created"}])
+        seq.stop()
+
+        assert seq.resolve_design_file("tasks2.md") == "design2.md"
+    finally:
+        shutil.rmtree(tmp)
+
+
 if __name__ == "__main__":
     test_idempotent_dup()
     test_crash_partial_line()
     test_sequencer_order()
+    test_resolve_design_file()
+    test_resolve_design_file_absolute_recorded()
     print("ALL LEDGER TESTS PASSED")

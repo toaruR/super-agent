@@ -234,23 +234,23 @@ verifiers:
 ### 5.1 `architect` — 設計決定を ADR として記録（Stage 1）
 
 ```
-super-agent architect <requirement> [--spec FILE] [--vendor V] [--model M] [--effort E] [--dry-run]
+super-agent architect <requirement> [--design_file FILE] [--vendor V] [--model M] [--effort E] [--dry-run]
 ```
 
 ### 5.2 `plan` — 分解 + スケジュール（Stage 3）
 
 ```
-super-agent plan [<requirement>] [--spec FILE] [--tasks FILE] [--vendor V] [--model M] [--effort E] [--lease N] [--root DIR] [--dry-run]
+super-agent plan [<requirement>] [--design_file FILE] [--task_file FILE] [--vendor V] [--model M] [--effort E] [--lease N] [--root DIR] [--dry-run]
 ```
 
-- `--tasks`: タスク DAG 定義ファイル（存在しない場合は `--spec` から分解して書き出す）。
+- `--task_file`: タスク DAG 定義ファイル（存在しない場合は `--design_file` から分解して書き出す）。
 - `--lease`: リース時間（秒、既定 3600）。
 - `--root`: worktree ルート（既定 `workspaces`）。
 
 ### 5.3 `implement` — タスク実装 + コミット（Stage 4）
 
 ```
-super-agent implement --task <id> [--tasks FILE] [--worktree DIR] [--vendor V] [--model M] [--effort E] [--dry-run]
+super-agent implement --task <id> [--task_file FILE] [--worktree DIR] [--vendor V] [--model M] [--effort E] [--dry-run]
 ```
 
 - 指定タスクを worktree で実装（書き込み可）。`touch_allow` 外の変更は検出される。
@@ -264,11 +264,11 @@ super-agent implement --task <id> [--tasks FILE] [--worktree DIR] [--vendor V] [
 super-agent review <dir> [--accept EXPR] [--expect-exit N] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
 
 # 実装済みタスク（Stage 4 成果物）を tasks.md から解決してレビュー
-super-agent review-task --task ID [--tasks FILE] [--worktree DIR] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
+super-agent review-task --task ID [--task_file FILE] [--worktree DIR] [--reviewer V] [--model M] [--effort E] [--budget N] [--dry-run]
 ```
 
 - `review <dir>`: 位置引数 `dir`（必須）で任意のワークツリー／題材ディレクトリを検証。
-- `review-task --task ID`: `--task`（必須）で指定した実装済みタスクを `--tasks` から acceptance + worktree を解決してレビュー。
+- `review-task --task ID`: `--task`（必須）で指定した実装済みタスクを `--task_file` から acceptance + worktree を解決してレビュー。
 - 読み取り専用ロール。ベンダーには `--mode plan`（agy）等の読み取り専用フラグを付与。
 - 台帳に `verification.run` / `reviewer.invoked`（vendor 記録）/ `judgment`（verdict）を記録。
 - 裁定は CVE の証拠のみで下す。
@@ -276,7 +276,7 @@ super-agent review-task --task ID [--tasks FILE] [--worktree DIR] [--reviewer V]
 ### 5.5 `integrate` — 実装済みタスクの統合（Stage 5）
 
 ```
-super-agent integrate --task <id> [--tasks FILE] [--worktree DIR] [--target BRANCH] [--dry-run]
+super-agent integrate --task <id> [--task_file FILE] [--worktree DIR] [--target BRANCH] [--dry-run]
 ```
 
 - `task/<id>` を `--target`（既定 `main`）へ `--no-ff` マージ。コンフリクトは `--abort` して検知。
@@ -287,7 +287,7 @@ super-agent integrate --task <id> [--tasks FILE] [--worktree DIR] [--target BRAN
 ### 5.6 `drive` — DAG 全タスク一括駆動（Stage B）
 
 ```
-super-agent drive [--requirement TEXT] [--spec FILE] [--tasks FILE] [--target BRANCH]
+super-agent drive [--requirement TEXT] [--design_file FILE] [--task_file FILE] [--target BRANCH]
                   [--vendor V] [--reviewer R] [--model M] [--effort E]
                   [--implement-vendors "agy:2,hermes:3"] [--parallel-tasks] [--speculative]
                   [--adaptive|--no-adaptive] [--max-task-workers N] [--dry-run]

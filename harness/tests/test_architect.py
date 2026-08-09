@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Stage 1 (architect) tests: --spec records verbatim, --dry-run assembles prompt."""
+"""Stage 1 (architect) tests: --design_file records verbatim, --dry-run assembles prompt."""
 from __future__ import annotations
 
 import json
@@ -32,7 +32,7 @@ def test_architect_spec_records_adr(tmp_path, monkeypatch):
     ledger = REPO / "harness" / "ledger" / "events.jsonl"
     if ledger.exists():
         ledger.unlink()
-    res = _run("architect", "Web API を作れ", "--spec", str(spec))
+    res = _run("architect", "Web API を作れ", "--design_file", str(spec))
     adr = json.loads(res.stdout)
     assert adr["source"] == "human"
     assert "FastAPI" in adr["decisions"][0]["decision"]
@@ -47,7 +47,7 @@ def test_architect_spec_missing_creates_via_llm_dry_run(tmp_path, monkeypatch):
     missing = tmp_path / "new-design.md"
     assert not missing.exists()
     # dry_run path: assembles the prompt and reports it without calling vendor
-    res = _run("architect", "Excel からオントロジーを作れ", "--spec", str(missing), "--dry-run")
+    res = _run("architect", "Excel からオントロジーを作れ", "--design_file", str(missing), "--dry-run")
     adr = json.loads(res.stdout)
     assert adr["source"] == "llm(dry)"
     assert "cmd" in adr
@@ -61,7 +61,7 @@ def test_architect_log_shows_adr(monkeypatch):
     if ledger.exists():
         ledger.unlink()
     spec = REPO / "probe" / "n3" / "caseGreen" / "tests" / "test_ok.py"
-    _run("architect", "demo", "--spec", str(spec))
+    _run("architect", "demo", "--design_file", str(spec))
     chunk = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     first_id = chunk["events"][0]["event_id"].split(":")[0]
     out = _run("log", first_id).stdout

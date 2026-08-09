@@ -676,7 +676,7 @@ super-agent status
 | 設計・方針の確認 | `docs/goals/design.md` / `docs/plan.md` を直接参照 | （読み取り。イベント無し） |
 | 進行状態の確認 | `super-agent status` | （読み取り） |
 | 中断・再開・中止 | `pause <task>` / `resume <task>` / `abort <task>` | `task.paused` / `task.resumed` / `task.aborted` |
-| 実装中の計画変更 | `amend <task> --spec <file>` | `task.amended` |
+| 実装中の計画変更 | `amend <task> --design_file <file>` | `task.amended` |
 | 実装後の設計変更 | `evolve --from <fail>` | `design.proposed`（§9.1 承認ゲートと接続） |
 
 > **要求の曖昧さはここに吸収される**: 「要求が曖昧→人間に確認」は独立レイヤではなく、

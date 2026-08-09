@@ -3,7 +3,7 @@
 # Windows cmd/PowerShell users: use super-agent.bat instead (same behavior).
 #
 # Usage:  super-agent <subcommand> [args]
-#   e.g.  super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+#   e.g.  super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md
 #
 # Lives in src/ (next to .cve-venv and the harness package). Prefers the local
 # virtualenv python, falls back to `python` on PATH.
