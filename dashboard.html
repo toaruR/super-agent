@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0f172a; color:#e2e8f0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; padding:2rem; }
+  h1 { font-size:1.5rem; margin:0 0 1.25rem; }
+  h2 { font-size:1.1rem; margin:0 0 .75rem; }
+  .card { background:#1e293b; border:1px solid #334155; border-radius:12px; padding:1.25rem 1.5rem; margin-bottom:1.5rem; }
+  .summary-grid { display:flex; gap:2rem; flex-wrap:wrap; }
+  .metric { min-width:120px; }
+  .metric .num { font-size:1.9rem; font-weight:700; line-height:1.1; }
+  .metric .lbl { color:#94a3b8; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; margin-top:.25rem; }
+  .dist { margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap; }
+  table { width:100%; border-collapse:collapse; background:#1e293b; border:1px solid #334155; border-radius:12px; overflow:hidden; }
+  th, td { text-align:left; padding:.65rem .9rem; border-bottom:1px solid #334155; }
+  th { color:#94a3b8; font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; }
+  tr:last-child td { border-bottom:none; }
+  .badge { display:inline-block; padding:.2rem .65rem; border-radius:999px; font-size:.78rem; font-weight:600; }
+  .badge-green { background:rgba(34,197,94,.18); color:#4ade80; }
+  .badge-blue  { background:rgba(59,130,246,.18); color:#60a5fa; }
+  .badge-red   { background:rgba(239,68,68,.18);  color:#f87171; }
+  .badge-gray  { background:rgba(148,163,184,.18); color:#cbd5e1; }
+
+</style>
+</head>
+<body>
+<h1>Dashboard</h1>
+<div class="card">
+<h2>Progress Summary</h2>
+<div class="summary-grid">
+<div class="metric"><div class="num">4</div><div class="lbl">Logical Tasks</div></div>
+<div class="metric"><div class="num">0</div><div class="lbl">Completed</div></div>
+<div class="metric"><div class="num">0.0%</div><div class="lbl">Progress</div></div>
+</div>
+<div class="dist"><span class="badge badge-blue">leased=2</span><span class="badge badge-gray">brief.built=1</span><span class="badge badge-gray">created=1</span></div>
+</div>
+<table>
+<thead><tr><th>Task ID</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>PA</td><td><span class="badge badge-blue">Leased</span></td></tr>
+<tr><td>PB</td><td><span class="badge badge-blue">Leased</span></td></tr>
+<tr><td>T-8aa629dc</td><td><span class="badge badge-gray">brief.built</span></td></tr>
+<tr><td>T-T-21511e73</td><td><span class="badge badge-gray">Created</span></td></tr>
+</tbody>
+</table>
+</body>
+</html>

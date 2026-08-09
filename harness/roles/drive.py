@@ -432,6 +432,7 @@ def uuid_short() -> str:
 def render_tasks_md_safe(tasks: list[dict], requirement: str, path: Path) -> None:
     try:
         from harness.roles.decomposer import render_tasks_md
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_tasks_md(tasks, requirement), encoding="utf-8")
     except Exception:
         pass

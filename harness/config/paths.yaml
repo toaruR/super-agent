@@ -1,0 +1,7 @@
+# architect が生成する設計ファイル（design.md 相当）と、
+# plan/decomposer が生成するタスク DAG ファイル（tasks.md 相当）の
+# デフォルト出力先ディレクトリ。CLI で --spec / --tasks を省略したときに使われる。
+# ファイル名は要求文からのスラッグ＋重複回避の連番で自動生成される（固定ファイル名ではない）。
+# 明示的に --spec / --tasks を渡せばここより優先される。
+design_dir: docs/design
+tasks_dir: docs/tasks

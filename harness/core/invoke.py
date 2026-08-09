@@ -12,6 +12,7 @@ Two modes:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,65 @@ def load_role_defaults(config_dir: str | Path) -> dict[str, dict]:
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     return data.get("roles", {}) or {}
+
+
+DEFAULT_PATHS = {
+    "design_dir": "docs/design",
+    "tasks_dir": "docs/tasks",
+}
+
+
+def load_path_defaults(config_dir: str | Path) -> dict:
+    """`design_dir` / `tasks_dir` defaults from `paths.yaml`.
+
+    Single source of truth for where `architect`/`plan`/`drive` write
+    design.md-/tasks.md-style docs when --spec / --tasks are omitted on the
+    CLI. Falls back to DEFAULT_PATHS if paths.yaml is missing or a key is
+    absent. The actual *filename* inside each directory is chosen per-call by
+    `unique_path()` (slug + collision-avoiding suffix), not fixed here.
+    """
+    path = Path(config_dir) / "paths.yaml"
+    data = {}
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    return {**DEFAULT_PATHS, **data}
+
+
+def slugify(text: str, maxlen: int = 40) -> str:
+    """Turn free text into a filesystem-safe stem (used to auto-name design/
+    tasks files). Non-word runs become '-'; falls back to 'untitled' if the
+    result would be empty (e.g. requirement text is all punctuation/empty)."""
+    slug = re.sub(r"[^\w]+", "-", text.strip(), flags=re.UNICODE).strip("-")
+    return (slug[:maxlen].rstrip("-")) or "untitled"
+
+
+def unique_path(dir_path: str | Path, stem: str, suffix: str = ".md") -> Path:
+    """Pick a non-colliding `<dir_path>/<stem><suffix>` path, appending
+    `-2`, `-3`, ... if the plain stem is already taken. Pure computation —
+    does not create the directory or file (callers mkdir+write themselves),
+    so this stays side-effect-free under --dry-run."""
+    dir_path = Path(dir_path)
+    candidate = dir_path / f"{stem}{suffix}"
+    n = 2
+    while candidate.exists():
+        candidate = dir_path / f"{stem}-{n}{suffix}"
+        n += 1
+    return candidate
+
+
+def latest_file(dir_path: str | Path, pattern: str = "*.md") -> Path | None:
+    """Most recently written file matching `pattern` in `dir_path`, or None
+    if the directory is missing/empty. Used as the --tasks fallback for
+    read-only consumer commands (implement/integrate/review-task) when the
+    caller doesn't pass --tasks explicitly."""
+    dir_path = Path(dir_path)
+    if not dir_path.is_dir():
+        return None
+    candidates = list(dir_path.glob(pattern))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def resolve_role(role: str, config_dir: str | Path,

@@ -21,7 +21,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from harness.core.invoke import resolve_role
+from harness.core.invoke import resolve_role, load_path_defaults, slugify, unique_path, latest_file
 from harness.core.ledger import Ledger, Sequencer
 from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
@@ -35,6 +35,9 @@ from harness.roles.improver import mine as improver_mine, report as improver_rep
 from harness.core.verifiers import VerifierRegistry
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
+# design.md / tasks.md のデフォルト出力先（harness/config/paths.yaml）。
+# --spec / --tasks を省略したとき、architect/plan 系コマンドがここへ書き出す。
+PATH_DEFAULTS = load_path_defaults(CONFIG_DIR)
 # Ledger path can be overridden via SUPER_AGENT_LEDGER (used for sample/fixture
 # ledgers without touching the real append-only events.jsonl).
 LEDGER_PATH = Path(os.environ.get("SUPER_AGENT_LEDGER",
@@ -70,11 +73,26 @@ def ensure_ledger() -> Sequencer:
     return Sequencer(str(LEDGER_PATH))
 
 
+def resolve_tasks_arg(tasks_arg: str | None) -> str | None:
+    """--tasks fallback for read-only consumer commands (implement/integrate/
+    review-task): if omitted, use the most recently written file under
+    paths.yaml's tasks_dir. Returns None if none can be found (caller reports
+    the "not found" error using whatever string it prefers)."""
+    if tasks_arg:
+        return tasks_arg
+    fallback = latest_file(PATH_DEFAULTS["tasks_dir"])
+    return str(fallback) if fallback else None
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     """Stage 3 (§9 ③): decompose a requirement/design, then schedule worktrees + leases.
 
     Combines Stage 2 (decompose) and Stage 3 (scheduler) in one call.
     """
+    # --spec is read-only input here (plan never writes a design file). Given:
+    # must exist (typo protection). Omitted: proceed with no spec text —
+    # `plan "<requirement>"` alone must keep working with no design file at all
+    # (unlike --tasks, there's no single "the" design doc to guess by default).
     spec_text = ""
     if args.spec:
         p = Path(args.spec)
@@ -84,19 +102,26 @@ def cmd_plan(args: argparse.Namespace) -> int:
             return 1
         spec_text = p.read_text(encoding="utf-8", errors="ignore")
 
+    requirement = args.requirement or ""
+    if not requirement and spec_text:
+        for line in spec_text.splitlines():
+            if line.startswith("# 設計:"):
+                requirement = line[len("# 設計:"):].strip()
+                break
+
+    # --tasks omitted: auto-name a fresh file under paths.yaml's tasks_dir
+    # (slug + collision-avoiding suffix). Since it's guaranteed not to exist
+    # yet, this always takes the decompose-via-vendor branch below.
+    if not args.tasks:
+        args.tasks = str(unique_path(PATH_DEFAULTS["tasks_dir"], slugify(requirement or "tasks")))
+
     seq = ensure_ledger()
     seq.start()
 
     # --- tasks source: reuse --tasks file if it already exists (no vendor) ---
-    tasks_file = Path(args.tasks) if args.tasks else None
-    if tasks_file and tasks_file.exists():
+    tasks_file = Path(args.tasks)
+    if tasks_file.exists():
         tasks = parse_tasks_md(str(tasks_file))
-        requirement = args.requirement or ""
-        if not requirement and spec_text:
-            for line in spec_text.splitlines():
-                if line.startswith("# 設計:"):
-                    requirement = line[len("# 設計:"):].strip()
-                    break
         # light structural validation so a hand-edited file still routes safely
         config_dir = Path(__file__).resolve().parent / "config"
         registry = VerifierRegistry(config_dir / "verifiers.yaml")
@@ -115,12 +140,6 @@ def cmd_plan(args: argparse.Namespace) -> int:
                         source="tasks.md")
     else:
         # decompose via vendor (creates the task DAG)
-        requirement = args.requirement or ""
-        if not requirement and spec_text:
-            for line in spec_text.splitlines():
-                if line.startswith("# 設計:"):
-                    requirement = line[len("# 設計:"):].strip()
-                    break
         if not requirement:
             print(json.dumps({"ok": False, "error": "requirement or --spec is required"},
                              ensure_ascii=False, indent=2))
@@ -151,7 +170,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
     seq.stop()
 
     if args.tasks and not args.dry_run and out.get("ok") and not out.get("reused_tasks_file"):
-        Path(args.tasks).write_text(
+        tasks_out = Path(args.tasks)
+        tasks_out.parent.mkdir(parents=True, exist_ok=True)
+        tasks_out.write_text(
             render_tasks_md(out.get("tasks", []), requirement), encoding="utf-8")
         print(f"# tasks written to {args.tasks}", file=sys.stderr)
 
@@ -163,8 +184,11 @@ def cmd_architect(args: argparse.Namespace) -> int:
     """Stage 1 (§9 ①): record design decisions as ADRs on the ledger.
 
     With --spec <file>: record the human-supplied design verbatim.
-    Without: ask a read-only vendor to propose ADRs (or just dry-run the prompt).
+    Without: ask a read-only vendor to propose ADRs, saved as a new,
+    non-colliding file under paths.yaml's design_dir (or just dry-run the prompt).
     """
+    if args.spec is None:
+        args.spec = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(args.requirement)))
     seq = ensure_ledger()
     seq.start()
     task_id = f"T-{uuid.uuid4().hex[:8]}"
@@ -194,6 +218,7 @@ def cmd_implement(args: argparse.Namespace) -> int:
     Reads the task spec from --tasks, finds the task by --task, and runs the
     Implementer vendor inside workspaces/<task> (the worktree from `plan`).
     """
+    args.tasks = resolve_tasks_arg(args.tasks)
     tasks_file = Path(args.tasks) if args.tasks else None
     if not tasks_file or not tasks_file.exists():
         print(json.dumps({"ok": False, "error": f"tasks file not found: {args.tasks}"},
@@ -243,8 +268,9 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     Resolves the task spec from --tasks, finds the worktree from --worktree or
     workspaces/<task>, and merges branch task/<task> into --target.
     """
-    tasks_file = Path(args.tasks)
-    if not tasks_file.exists():
+    args.tasks = resolve_tasks_arg(args.tasks)
+    tasks_file = Path(args.tasks) if args.tasks else None
+    if not tasks_file or not tasks_file.exists():
         print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
         return 2
     tasks = parse_tasks_md(str(tasks_file))
@@ -285,17 +311,15 @@ def cmd_drive(args: argparse.Namespace) -> int:
 
     If --tasks does not exist, decompose from --spec first (creating worktrees).
 
-    Both --spec (design_file) and --tasks (task_file) are REQUIRED: driving a
-    task needs its design + task root to exist.
+    Both --spec (design_file) and --tasks (task_file) are required identifiers
+    (driving a task needs its design + task root to exist as bookkeeping
+    labels), but both are auto-named under paths.yaml's design_dir/tasks_dir
+    when omitted, so this never fails for that reason alone.
     """
     if not args.spec:
-        print(json.dumps({"ok": False, "error": "--spec (design_file) is required"},
-                         ensure_ascii=False, indent=2))
-        return 1
+        args.spec = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(args.requirement or "drive")))
     if not args.tasks:
-        print(json.dumps({"ok": False, "error": "--tasks (task_file) is required"},
-                         ensure_ascii=False, indent=2))
-        return 1
+        args.tasks = str(unique_path(PATH_DEFAULTS["tasks_dir"], slugify(args.requirement or "drive")))
     seq = ensure_ledger()
     seq.start()
     implement_channels = None
@@ -343,9 +367,12 @@ def cmd_review(args: argparse.Namespace) -> int:
     resolved from the implemented task (Stage 4 -> Stage 5 handoff).
     """
     # Stage 5 handoff: resolve acceptance + worktree from the task DAG
-    if getattr(args, "task", None) and getattr(args, "tasks", None):
-        tasks_file = Path(args.tasks)
-        if not tasks_file.exists():
+    # (only `review-task` declares --task; plain `review <dir>` doesn't, so
+    # getattr's None default routes it to the `else` branch below)
+    if getattr(args, "task", None):
+        args.tasks = resolve_tasks_arg(getattr(args, "tasks", None))
+        tasks_file = Path(args.tasks) if args.tasks else None
+        if not tasks_file or not tasks_file.exists():
             print(f"error: tasks file not found: {args.tasks}", file=sys.stderr)
             return 2
         tasks = parse_tasks_md(str(tasks_file))
@@ -579,7 +606,10 @@ def main(argv: list[str] | None = None) -> int:
 
     a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
     a.add_argument("requirement")
-    a.add_argument("--spec", default=None, help="human-supplied design file (recorded verbatim)")
+    a.add_argument("--spec", default=None,
+                   help="human-supplied design file (recorded verbatim). If omitted, "
+                        "an LLM proposes it and it is saved as a new, non-colliding "
+                        f"file under paths.yaml's design_dir ({PATH_DEFAULTS['design_dir']}).")
     a.add_argument("--vendor", default=None)
     a.add_argument("--model", default=None, help="override the vendor's default model")
     a.add_argument("--effort", default=None, help="override the vendor's default effort")
@@ -591,12 +621,15 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("requirement", nargs="?", default="",
                    help="requirement text (optional if --spec is given)")
     pl.add_argument("--spec", default=None,
-                   help="design file from `architect` (requirement recovered from its '# 設計:' header)")
+                   help="design file from `architect` (requirement recovered from its '# 設計:' header). "
+                        "Optional — if omitted, no existing design is read.")
     pl.add_argument("--vendor", default=None)
     pl.add_argument("--model", default=None, help="override the vendor's default model")
     pl.add_argument("--effort", default=None, help="override the vendor's default effort")
     pl.add_argument("--tasks", default=None,
-                   help="write the decomposed task DAG as Markdown to this file")
+                   help="write the decomposed task DAG as Markdown to this file. If omitted, "
+                        "auto-named (slug of the requirement, collision-avoided) under "
+                        f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
     pl.add_argument("--lease", type=int, default=3600,
                    help="lease duration in seconds (default 3600)")
     pl.add_argument("--root", default="workspaces",
@@ -620,8 +653,10 @@ def main(argv: list[str] | None = None) -> int:
 
     rt = sub.add_parser("review-task", help="review an implemented task (Stage 5 handoff)")
     rt.add_argument("--task", required=True, help="task id to review (Stage 5 handoff from implement)")
-    rt.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
-                    help="decomposed task DAG (to resolve --task's acceptance + worktree)")
+    rt.add_argument("--tasks", default=None,
+                    help="decomposed task DAG (to resolve --task's acceptance + worktree). "
+                         "If omitted, falls back to the most recently written file under "
+                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
     rt.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     rt.add_argument("--reviewer", default=None)
@@ -634,8 +669,10 @@ def main(argv: list[str] | None = None) -> int:
 
     im = sub.add_parser("implement", help="implement a task in its worktree + commit (Stage 4)")
     im.add_argument("--task", required=True, help="task id to implement (e.g. T1)")
-    im.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
-                    help="decomposed task DAG (to look up the task spec)")
+    im.add_argument("--tasks", default=None,
+                    help="decomposed task DAG (to look up the task spec). "
+                         "If omitted, falls back to the most recently written file under "
+                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
     im.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     im.add_argument("--vendor", default=None)
@@ -647,8 +684,10 @@ def main(argv: list[str] | None = None) -> int:
 
     ig = sub.add_parser("integrate", help="merge implemented task into target + tear down (Stage 5)")
     ig.add_argument("--task", required=True, help="task id to integrate (e.g. T1)")
-    ig.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
-                    help="decomposed task DAG (to look up the task spec)")
+    ig.add_argument("--tasks", default=None,
+                    help="decomposed task DAG (to look up the task spec). "
+                         "If omitted, falls back to the most recently written file under "
+                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
     ig.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
     ig.add_argument("--target", default="main",
@@ -659,9 +698,14 @@ def main(argv: list[str] | None = None) -> int:
 
     dr = sub.add_parser("drive", help="drive implement->review->integrate for every task in the DAG (Stage B)")
     dr.add_argument("--requirement", default="", help="requirement text (used when --tasks is missing)")
-    dr.add_argument("--spec", default=None, help="design file to decompose from when --tasks is missing")
-    dr.add_argument("--tasks", default="probe/sample/my-design-tasks.md",
-                    help="decomposed task DAG (created from --spec if missing)")
+    dr.add_argument("--spec", default=None,
+                    help="design file to decompose from when --tasks is missing. If omitted, "
+                         "auto-named (slug of --requirement, collision-avoided) under "
+                         f"paths.yaml's design_dir ({PATH_DEFAULTS['design_dir']}).")
+    dr.add_argument("--tasks", default=None,
+                    help="decomposed task DAG (created from --spec if missing). If omitted, "
+                         "auto-named (slug of --requirement, collision-avoided) under "
+                         f"paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}).")
     dr.add_argument("--target", default="main",
                     help="integration target branch (default: main)")
     dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")
