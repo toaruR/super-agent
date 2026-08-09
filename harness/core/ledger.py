@@ -152,6 +152,10 @@ class Sequencer:
         self._queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # design_file -> task_file, populated synchronously in propose_chunk()
+        # so resolve_task_file() doesn't have to wait for the background
+        # writer thread to flush a just-proposed chunk to disk (race fix).
+        self._task_file_cache: dict[str, str] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -171,6 +175,8 @@ class Sequencer:
 
     def propose_chunk(self, design_file: str, task_file: str,
                       events: list[dict[str, Any]]) -> None:
+        if task_file:
+            self._task_file_cache[design_file] = task_file
         self._queue.put({
             "design_file": design_file,
             "task_file": task_file,
@@ -208,7 +214,15 @@ class Sequencer:
 
         Used by propose() so downstream roles can recover task_file from the
         ledger instead of receiving it as a function argument.
+
+        Checks the in-memory cache first: propose_chunk() writes to it
+        synchronously, but the actual disk write happens later on the
+        background writer thread, so a disk-only lookup here would race
+        against very recently queued (not-yet-flushed) proposals.
         """
+        cached = self._task_file_cache.get(design_file)
+        if cached:
+            return cached
         for chunk in self._ledger.load():
             if chunk.get("design_file") == design_file and chunk.get("task_file"):
                 return chunk["task_file"]
