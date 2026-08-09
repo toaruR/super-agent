@@ -185,7 +185,8 @@ def test_drive_speculative_flag_fans_out_all_channels() -> None:
          mock.patch.object(drive, "implement") as m_impl, \
          mock.patch.object(drive, "run_pipeline", return_value={"verdict": "fail"}), \
          mock.patch.object(drive, "integrate", return_value={"ok": True}), \
-         mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
+         mock.patch.object(drive, "create_worktree",
+                          return_value={"ok": True, "path": "workspaces/T1"}), \
          mock.patch.object(drive, "schedule"), \
          mock.patch.object(drive, "parse_tasks_md", return_value=[
              {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},

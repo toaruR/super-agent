@@ -11,7 +11,22 @@ from __future__ import annotations
 
 import subprocess
 import time
+import zlib
 from pathlib import Path
+
+
+def effective_worktree_id(task_id: str, design_file: str = "") -> str:
+    """task_id, tagged with an 8 hex-char CRC32 of design_file when given.
+
+    Used for the worktree path (workspaces/<id>) and branch (task/<id>) so the
+    same task_id from a different design/task file never collapses onto the
+    same worktree. Callers that need to reconstruct the branch name elsewhere
+    (e.g. integrator.py) must pass the same design_file to get the same id.
+    """
+    if not design_file:
+        return task_id
+    tag = f"{zlib.crc32(design_file.encode('utf-8')):08x}"
+    return f"{task_id}__{tag}"
 
 
 def topo_order(tasks: list[dict]) -> list[str]:
@@ -67,19 +82,25 @@ def topo_layers(tasks: list[dict]) -> list[list[str]]:
     return [layer for layer in layers if layer]
 
 
-def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: bool = False) -> dict:
+def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: bool = False,
+                     design_file: str = "") -> dict:
     """Create `git worktree add <root>/<task_id> -b task/<task_id>`.
 
     `git` is injectable for testing; defaults to subprocess. Returns a dict
     with path/branch/ok/error. When dry_run, plans the command without running it.
+
+    `design_file`, when given, appends a CRC32 tag to task_id so the same
+    task_id from a different design/task file never reuses this worktree
+    (see the "reuse" branches below).
 
     Idempotent & robust to stale state:
       - if the branch is already checked out in another worktree, reuse it;
       - if the branch already exists (not checked out), add without `-b`;
       - otherwise create a fresh branch.
     """
-    path = str(Path(root, task_id).as_posix())
-    branch = f"task/{task_id}"
+    eff_id = effective_worktree_id(task_id, design_file)
+    path = str(Path(root, eff_id).as_posix())
+    branch = f"task/{eff_id}"
     cmd = ["git", "worktree", "add", path, "-b", branch]
     if dry_run:
         return {"path": path, "branch": branch, "ok": True, "cmd": cmd, "dry_run": True}
@@ -154,20 +175,24 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
 
 
 def teardown_worktree(task_id: str, root: str = "workspaces",
-                       git=None, dry_run: bool = False) -> dict:
+                       git=None, dry_run: bool = False, design_file: str = "") -> dict:
     """Remove a task's worktree (and its branch) if present. Idempotent.
 
     Used to clean up per-task/per-channel worktrees after integration so loser
     channels don't linger. Safe to call when the worktree was already removed
     (e.g. by the integrator) — it no-ops in that case.
 
+    `design_file` must match what was passed to the create_worktree() call
+    that made this worktree, so the same CRC32 tag resolves the same path.
+
     On Windows, `git worktree remove` can leave orphaned metadata under
     `.git/worktrees/<id>` (which makes Git GUIs like Fork report
     "Invalid refs"). We prune before/after and, as a last resort, delete the
     stale metadata directory directly so the repo stays GUI-clean.
     """
-    path = str(Path(root, task_id).as_posix())
-    branch = f"task/{task_id}"
+    eff_id = effective_worktree_id(task_id, design_file)
+    path = str(Path(root, eff_id).as_posix())
+    branch = f"task/{eff_id}"
     if dry_run:
         return {"ok": True, "cmd": ["git", "worktree", "remove", "--force", path],
                 "dry_run": True}
@@ -258,11 +283,12 @@ def schedule(task_id: str, tasks: list[dict], vendor: str = "claude",
         if dry_run:
             if seq is not None:
                 seq.propose(tid, "task.scheduled", dry_run=True,
-                            worktree_cmd=create_worktree(tid, root, dry_run=True)["cmd"],
+                            worktree_cmd=create_worktree(tid, root, dry_run=True,
+                                                          design_file=design_file)["cmd"],
                             design_file=design_file)
             continue
         if create_worktrees:
-            wt = create_worktree(tid, root)
+            wt = create_worktree(tid, root, design_file=design_file)
             if wt["ok"]:
                 if seq is not None:
                     seq.propose(tid, "worktree.created", path=wt["path"], branch=wt["branch"],

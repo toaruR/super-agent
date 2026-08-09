@@ -48,7 +48,11 @@ def _resolve_acceptance(task: dict, tasks_text: str | None = None) -> list[dict]
 
 
 def _channel_worktree_id(task_id: str, vendor: str, idx: int) -> str:
-    """Composite id so each (task, channel) owns an isolated worktree/branch."""
+    """Composite id so each (task, channel) owns an isolated worktree/branch.
+
+    design_file disambiguation is handled separately by create_worktree()'s
+    own `design_file` param (CRC32 tag), not baked in here.
+    """
     return f"{task_id}__{vendor}_{idx}"
 
 
@@ -221,8 +225,9 @@ def drive(
             if single_path:
                 # Backward-compatible single-channel path: use the plain worktree/branch.
                 ch = channels[0]
-                wt = str(Path("workspaces").resolve() / tid)
-                cw = create_worktree(tid, root="workspaces", dry_run=dry_run)
+                cw = create_worktree(tid, root="workspaces", dry_run=dry_run,
+                                      design_file=spec_path or "")
+                wt = str(Path(cw["path"]).resolve())
                 if not cw.get("ok"):
                     return {"vendor": ch["vendor"], "model": ch["model"],
                             "effort": ch["effort"], "task_id": tid,
@@ -239,8 +244,9 @@ def drive(
                 # Multi-channel: one worktree/branch per (task, channel).
                 def _run_channel(i: int, ch: dict) -> dict:
                     cid = _channel_worktree_id(tid, ch["vendor"], i)
-                    wt = str(Path("workspaces").resolve() / cid)
-                    cw = create_worktree(cid, root="workspaces", dry_run=dry_run)
+                    cw = create_worktree(cid, root="workspaces", dry_run=dry_run,
+                                          design_file=spec_path or "")
+                    wt = str(Path(cw["path"]).resolve())
                     if not cw.get("ok"):
                         return {"vendor": ch["vendor"], "model": ch["model"],
                                 "effort": ch["effort"], "task_id": cid,
@@ -401,7 +407,8 @@ def drive(
         # cleanup: remove all channel worktrees/branches for this task
         if not dry_run:
             for cid in channel_ids:
-                teardown_worktree(cid, root="workspaces", dry_run=dry_run)
+                teardown_worktree(cid, root="workspaces", dry_run=dry_run,
+                                   design_file=spec_path or "")
         results.append(entry)
 
     # Restore the caller's branch so drive() doesn't leave the repo on the

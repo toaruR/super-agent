@@ -17,6 +17,7 @@ from typing import Any
 
 from harness.core.cve import CVE
 from harness.core.ledger import Sequencer
+from harness.roles.scheduler import effective_worktree_id
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
@@ -71,7 +72,8 @@ def integrate(
     emit = (lambda tid, typ, **kw: seq.propose(tid, typ, design_file=design_file, **kw)) if seq is not None \
         else (lambda *a, **k: None)
     wt = Path(worktree_path)
-    branch = f"task/{task_id}"
+    eff_id = effective_worktree_id(task_id, design_file)
+    branch = f"task/{eff_id}"
     touch_allow = set(task.get("touch_allow", []) or [])
     acceptance = task.get("acceptance", []) or []
 
@@ -90,7 +92,7 @@ def integrate(
     # 2) merge task/<id> into target_branch
     emit(task_id, "integration.merge", target=target_branch, branch=branch)
     # ensure we are on the target branch inside the main repo (use repo root)
-    repo_root = wt.parent.parent if str(wt).endswith(task_id) else wt
+    repo_root = wt.parent.parent if str(wt).endswith(eff_id) else wt
     # the worktree is checked out at branch; merge into target from the main checkout
     # auto-create the target branch if it does not exist yet (e.g. a fresh
     # feature branch): try to check out the existing branch first; if that
