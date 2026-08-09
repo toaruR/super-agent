@@ -91,14 +91,6 @@ def test_review_task_handoff_resolves_worktree_and_acceptance(tmp_path, monkeypa
     # test_log_shows_judgment_when_present (assumed/returned judgment path)
 
 
-def test_show_design_and_plan(monkeypatch):
-    monkeypatch.chdir(REPO)
-    d = _run("show", "design").stdout
-    assert "ゴール" in d or "評価" in d
-    pl = _run("show", "plan").stdout
-    assert "Stage" in pl
-
-
 def test_status_runs(monkeypatch):
     monkeypatch.chdir(REPO)
     out = _run("status").stdout

@@ -62,7 +62,6 @@ src/harness/
 1. `cli.py` に `review <dir>` サブコマンドを追加（既存 `review_flow.run_pipeline` を呼ぶ）。
    - `super-agent review probe/n3/caseGreen` で CVE→簡報→レビュー→裁定が走る。
 2. `cli.py` に `log <task>` サブコマンドを追加（台帳から特定タスクのイベント列を表示）。
-3. `cli.py` に `show design` / `show plan` を追加（L6 読み取り操作の先行実装）。
 
 **動作確認**:
 ```

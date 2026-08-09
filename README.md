@@ -78,7 +78,6 @@ super-agent drive --tasks ./probe/sample/my-design-tasks-parallel.md \
 super-agent review   probe/n3/caseGreen            # 検証パイプライン（CVE→簡報→裁定）
 super-agent status                                # 台帳の最近のイベント
 super-agent log T-XXXX                            # 指定タスクの全イベント
-super-agent show design | plan                    # 設計／計画の read-only 表示
 super-agent evolve --dry-run                      # 台帳から失敗パターンを拾い自己改良を提案
 ```
 

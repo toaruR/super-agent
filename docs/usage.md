@@ -92,80 +92,18 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 
 | コマンド | 役割 | § |
 |---|---|---|
-| `review <dir>` | 検証パイプラインを走らせる（Stage 0＝⑤⑥⑦⑨） | 2.1 |
-| `status` | 台帳の最近のイベントを表示 | 2.2 |
-| `log <task>` | 指定タスクの全イベントを表示 | 2.3 |
-| `show design\|plan` | 設計ゴール／実装計画を read-only 表示（L6） | 2.4 |
-| `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.5 |
-| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.6 |
-| `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.7 |
-| `integrate --task T1` | 実装済みタスクを統合ブランチへマージ＋後片付け（Stage 5＝⑧） | 2.9 |
-| `drive --tasks <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.10 |
-| `evolve` | 台帳から失敗パターンを拾い自己改良を提案（Stage 6＝⑩） | 2.11 |
+| `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.1 |
+| `drive --tasks <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.2 |
+| `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--tasks` 既存なら分解をスキップ | 2.3 |
+| `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.4 |
+| `review-task --task T1` | 実装済みタスクを読み取り専用でレビュー（Stage 5＝⑤⑥⑦） | 2.5 |
+| `integrate --task T1` | 実装済みタスクを統合ブランチへマージ＋後片付け（Stage 5＝⑧） | 2.6 |
+| `evolve` | 台帳から失敗パターンを拾い自己改良を提案（Stage 6＝⑩） | 2.7 |
+| `dashboard` | 台帳からダッシュボード生成 | 2.8 |
+| `status` | 台帳の最近のイベントを表示 | 2.9 |
+| `log <task>` | 指定タスクの全イベントを表示 | 2.10 |
 
-### 2.1 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
-
-```bash
-super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy|hermes] [--dry-run]
-```
-
-| オプション | 意味 |
-|---|---|
-| `<dir>` | 検証するワークツリー／題材ディレクトリ（必須） |
-| `--accept` | 受理テスト指定 `"verb arg1 arg2"`（既定 `pytest tests/`）。期待終了コードは `--expect-exit` |
-| `--reviewer` | レビュアベンダー（既定 `codex`） |
-| `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力。裁定は `judgment_unavailable` になる |
-
-**何をするか**：`run_pipeline` を呼び、CVE→簡報→レビュー→裁定を台帳駆動で実行。
-JSON で裁定を標準出力に出します。
-
-> **注**：実装済みタスク（④）を tasks.md から解決してレビューする場合は `super-agent review-task --task T1`（§2.8）を使う。`review` と `review-task` は別コマンド。
-
-**例**：
-```bash
-super-agent review probe/n3/caseGreen --reviewer codex --dry-run
-# → verdict/judgment_unavailable, tree_hash が束縛される
-```
-
-### 2.2 `super-agent status` — 台帳の状態を表示
-
-```bash
-super-agent status
-```
-
-台帳に記録された全イベントを（クラッシュセーフに）読み出して表示します。
-```
-events in ledger: 2
-  T-418dd0b1:1 task.created
-  T-418dd0b1:2 agent.invoked
-```
-
-### 2.3 `super-agent log <task>` — 指定タスクの全イベント
-
-```bash
-super-agent log T-XXXX
-```
-
-指定タスクID（接頭辞でも可）の全イベントを、付随データ付きで表示します。
-```
-events for T-XXXX: 5
-  T-XXXX:1 verification.run {"tree_hash": "3309...", "cve_ok": true}
-  T-XXXX:2 brief.built {"tokens_est": 1327}
-  T-XXXX:3 reviewer.invoked {"vendor": "codex"}
-  T-XXXX:4 reviewer.skipped {"reason": "dry_run"}
-  T-XXXX:5 judgment {"verdict": "judgment_unavailable", "tree_hash": "3309..."}
-```
-
-### 2.4 `super-agent show design|plan` — 設計／計画の表示（L6 読み取り）
-
-```bash
-super-agent show design   # docs/goals/design.md を表示
-super-agent show plan     # docs/plan.md を表示
-```
-
-読み取り専用。台帳イベントは発生しません（L6 の `show` 操作）。
-
-### 2.5 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
+### 2.1 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
 ```bash
 super-agent architect "<要求>" [--spec <file>] [--vendor claude] [--dry-run]
@@ -197,127 +135,7 @@ super-agent architect "Web API を作れ" --dry-run
 > 推論のみ行います。曖昧な点は `open_questions` に挙げさせ、人間が `amend`（未実装）で確定します。
 
 
-### 2.6 `super-agent plan` — 分解(②)＋編成・worktree・リース(③)
-
-`plan` は Stage 2（decomposer）と Stage 3（scheduler）を連続実行します。
-`--tasks` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
-
-```bash
-# ① 分解だけ（--tasks に書き出し。このとき worktree は作らない）
-super-agent plan --spec my-design.md --tasks my-design-tasks.md --dry-run
-# ② tasks.md を人間がレビュー/編集した後、分解をスキップして worktree だけ作る
-super-agent plan --tasks my-design-tasks.md
-# ③ 通常運用：設計から一気に分解→worktree作成→リース発行
-super-agent plan --spec my-design.md --tasks my-design-tasks.md
-```
-
-| コマンド | vendor呼ぶ？ | worktree作る？ | 使い道 |
-|---|---|---|---|
-| `plan --spec X --tasks Y`（Y未作成） | ✔ | ✔ | 通常運用（分解→作業台） |
-| `plan --spec X --tasks Y --dry-run` | × | ×（計画のみ） | 構成確認 |
-| `plan --tasks Y`（Y既存） | × | ✔ | tasks.mdからworktreeだけ作る |
-
-`--tasks` が**既存ファイル**ならそれを読み込んで（人手編集も反映）、vendor を呼ばずに
-worktree/リースだけ作成します。`--tasks` が無い / 未作成なら vendor で分解してから進みます。
-
-**構造検査（機械強制・H2 含む、再利用時も適用）**：
-- `acceptance` が空でない
-- `acceptance[].verb` が `verifiers.yaml` に登録済み（未登録 verb は差し戻し＝インジェクション排除）
-- `acceptance[].args` はリスト
-- DAG に循環が無い
-- 並列タスク間で `touch_allow` が重複しない
-
-各タスクに対して `git worktree add workspaces/<task_id> -b task/<task_id>` で作業ツリーを作成
-（§3.1 隔離）、台帳に `worktree.created` と `task.leased`（lease_until, touch_allow 付き）を記録します。
-冪等：再実行しても既存 worktree/ブランチを再利用・または prune して再作成します。
-
-
-### 2.7 `super-agent implement` — タスク実装＋コミット（④）
-
-`plan` が作った worktree 内で、指定タスクを Implementer ベンダーに実装させ、harness が
-コミットします（§3.1 隔離＋§6.2 `touch_allow` 制約）。
-
-```bash
-# tasks.md から T1 を探し、workspaces/T1 で実装→コミット
-super-agent implement --task T1 --tasks my-design-tasks.md
-# ドライラン（プロンプト組み立てのみ）
-super-agent implement --task T1 --tasks my-design-tasks.md --dry-run
-```
-
-| オプション | 意味 |
-|---|---|
-| `--task` | 実装するタスクID（必須） |
-| `--tasks` | タスク定義を探す DAG（既定 `probe/sample/my-design-tasks.md`） |
-| `--worktree` | worktree パス（既定 `workspaces/<task>`）。**省略時は `src/` からの絶対パスに解決される**（相対パスだとベンダーがカレントに出力をネストする不具合があったため） |
-| `--vendor` | Implementer ベンダー（既定 `vendors.yaml` の `roles.implement` 先頭チャンネル） |
-| `--model` | Implementer のモデルを上書き（既定は `roles.implement` のモデル）。`vendors.yaml` の `hy3:Free` のような短名も可 — コード側 `normalize_model()` が `tencent/hy3:free` 等の実名に自動正規化される |
-| `--effort` | Implementer の effort を上書き（既定は `roles.implement` の effort） |
-| `--dry-run` | プロンプト組み立てのみ（vendor/git は呼ばない） |
-
-**何をするか**：タスクの `goal`・`acceptance`・`touch_allow` をプロンプトに入れ、ベンダーを
-worktree 内で実行。`touch_allow` 以外のファイルは触らせません。実装後、harness が
-`git add <touch_allow>` → `commit` し、台帳に `artifact.produced`（paths, commit）と
-`task.implemented`（commit, tree_hash）を記録します。`tree_hash` は §3.2 の証拠束縛です。
-
-### 2.8 `super-agent review-task` — 実装済みタスクの読み取り専用レビュー（⑤⑥⑦）
-
-実装済みタスク（④）を、`--task` で直接レビューできます。acceptance と worktree パスは
-tasks.md から自動解決されます（Implementer と**別ベンダー**、かつ read-only が強制）。
-
-```bash
-# implement した T1 をレビュー（CVE実行→brief→read-onlyレビュー→裁定）
-super-agent review-task --task T1 --tasks my-design-tasks.md --reviewer codex
-# ドライラン（CVEは走るがレビュア呼び出しをスキップ）
-super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
-```
-
-| オプション | 意味 |
-|---|---|
-| `--task` | レビューするタスクID（④の成果物、必須） |
-| `--tasks` | タスク定義 DAG（acceptance + worktree 解決用） |
-| `--worktree` | worktree パス（既定 `workspaces/<task>`） |
-| `--reviewer` | レビュア（Implementer と別であること／既定 `codex`） |
-| `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力 |
-
-**何をするか**：CVE で検証（§3.2 証拠束縛）→ 差分＋証拠ログ＋受入基則のみを brief に渡して
-レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
- 台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
-
-> **注**：任意のディレクトリを直接検証したい場合は `super-agent review <dir>`（§2.1）を使う。`review` と `review-task` は別コマンド。
-
-### 2.9 `super-agent integrate` — 実装済みタスクの統合（⑧ Stage 5）
-
- 実装・レビューを通ったタスクの worktree ブランチ（`task/<id>`）を統合ブランチへマージし、
- 統合後も acceptance が GREEN か再検証してから worktree を片付けます。
-
- ```bash
- # 統合シミュレーション（git/worktree は触らない。ok:true が返る）
- super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run
-
- # 実際の統合：task/T1 を main へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
- super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
- # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "main", "commit": "..."}
- ```
-
- | オプション | 意味 |
- |---|---|
- | `--task` | 統合するタスクID |
- | `--tasks` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
- | `--target` | 統合先ブランチ（既定 `main`）。**現在の本流ブランチは `master`** なので、実運用では `--target master` を指定する（コードの既定値は `main` のまま） |
- | `--worktree` | worktree パス（既定 `workspaces/<task>`；無ければ `task/<id>` から再作成） |
- | `--dry-run` | マージ/後片付けを実行せず計画のみ表示 |
-
- **何をするか**：
-
- 1. `touch_allow` 外の変更を検出 → `integration.touch_violation` で差し戻し（実装者が許可外を触っていないか）
- 2. `task/<id>` を `--target` へ `--no-ff` マージ。`conflict` は `--abort` して検知（台帳に `conflict`）
- 3. マージ後に CVE で acceptance を再実行。失敗は `integrated.failed`
- 4. 成功で `integrated` を記録、`git worktree remove --force` で後片付け
-
- > **注意**：実行（dry-run なし）すると worktree が削除されます。T1/T2 のように残しておきたい
- > ワークツリーがある場合は `--dry-run` で確認してください。
-
-### 2.10 `super-agent drive` — DAG 全タスクを一括駆動（Stage B）
+### 2.2 `super-agent drive` — DAG 全タスクを一括駆動（Stage B）
 
 `plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して**実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
 
@@ -355,7 +173,127 @@ super-agent drive --tasks ./probe/sample/my-design-tasks.md --dry-run
 
 > **ベンダー呼び出しの自動リトライ**: 実装者（hermes 等）がコンテンツポリシーでブロックされた場合、super-agent は同一セッションを再開して自動でリトライする（人間の「続けて」と等価）。ブロックしなければ1回で終わり、正常系は遅くならない。挙動の詳細は `docs/spec.md` の「ベンダー呼び出しの自動リトライ」参照。
 
-### 2.11 `super-agent evolve` — 自己改良（⑩ Stage 6）
+### 2.3 `super-agent plan` — 分解(②)＋編成・worktree・リース(③)
+
+`plan` は Stage 2（decomposer）と Stage 3（scheduler）を連続実行します。
+`--tasks` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
+
+```bash
+# ① 分解だけ（--tasks に書き出し。このとき worktree は作らない）
+super-agent plan --spec my-design.md --tasks my-design-tasks.md --dry-run
+# ② tasks.md を人間がレビュー/編集した後、分解をスキップして worktree だけ作る
+super-agent plan --tasks my-design-tasks.md
+# ③ 通常運用：設計から一気に分解→worktree作成→リース発行
+super-agent plan --spec my-design.md --tasks my-design-tasks.md
+```
+
+| コマンド | vendor呼ぶ？ | worktree作る？ | 使い道 |
+|---|---|---|---|
+| `plan --spec X --tasks Y`（Y未作成） | ✔ | ✔ | 通常運用（分解→作業台） |
+| `plan --spec X --tasks Y --dry-run` | × | ×（計画のみ） | 構成確認 |
+| `plan --tasks Y`（Y既存） | × | ✔ | tasks.mdからworktreeだけ作る |
+
+`--tasks` が**既存ファイル**ならそれを読み込んで（人手編集も反映）、vendor を呼ばずに
+worktree/リースだけ作成します。`--tasks` が無い / 未作成なら vendor で分解してから進みます。
+
+**構造検査（機械強制・H2 含む、再利用時も適用）**：
+- `acceptance` が空でない
+- `acceptance[].verb` が `verifiers.yaml` に登録済み（未登録 verb は差し戻し＝インジェクション排除）
+- `acceptance[].args` はリスト
+- DAG に循環が無い
+- 並列タスク間で `touch_allow` が重複しない
+
+各タスクに対して `git worktree add workspaces/<task_id> -b task/<task_id>` で作業ツリーを作成
+（§3.1 隔離）、台帳に `worktree.created` と `task.leased`（lease_until, touch_allow 付き）を記録します。
+冪等：再実行しても既存 worktree/ブランチを再利用・または prune して再作成します。
+
+
+### 2.4 `super-agent implement` — タスク実装＋コミット（④）
+
+`plan` が作った worktree 内で、指定タスクを Implementer ベンダーに実装させ、harness が
+コミットします（§3.1 隔離＋§6.2 `touch_allow` 制約）。
+
+```bash
+# tasks.md から T1 を探し、workspaces/T1 で実装→コミット
+super-agent implement --task T1 --tasks my-design-tasks.md
+# ドライラン（プロンプト組み立てのみ）
+super-agent implement --task T1 --tasks my-design-tasks.md --dry-run
+```
+
+| オプション | 意味 |
+|---|---|
+| `--task` | 実装するタスクID（必須） |
+| `--tasks` | タスク定義を探す DAG（既定 `probe/sample/my-design-tasks.md`） |
+| `--worktree` | worktree パス（既定 `workspaces/<task>`）。**省略時は `src/` からの絶対パスに解決される**（相対パスだとベンダーがカレントに出力をネストする不具合があったため） |
+| `--vendor` | Implementer ベンダー（既定 `vendors.yaml` の `roles.implement` 先頭チャンネル） |
+| `--model` | Implementer のモデルを上書き（既定は `roles.implement` のモデル）。`vendors.yaml` の `hy3:Free` のような短名も可 — コード側 `normalize_model()` が `tencent/hy3:free` 等の実名に自動正規化される |
+| `--effort` | Implementer の effort を上書き（既定は `roles.implement` の effort） |
+| `--dry-run` | プロンプト組み立てのみ（vendor/git は呼ばない） |
+
+**何をするか**：タスクの `goal`・`acceptance`・`touch_allow` をプロンプトに入れ、ベンダーを
+worktree 内で実行。`touch_allow` 以外のファイルは触らせません。実装後、harness が
+`git add <touch_allow>` → `commit` し、台帳に `artifact.produced`（paths, commit）と
+`task.implemented`（commit, tree_hash）を記録します。`tree_hash` は §3.2 の証拠束縛です。
+
+### 2.5 `super-agent review-task` — 実装済みタスクの読み取り専用レビュー（⑤⑥⑦）
+
+実装済みタスク（④）を、`--task` で直接レビューできます。acceptance と worktree パスは
+tasks.md から自動解決されます（Implementer と**別ベンダー**、かつ read-only が強制）。
+
+```bash
+# implement した T1 をレビュー（CVE実行→brief→read-onlyレビュー→裁定）
+super-agent review-task --task T1 --tasks my-design-tasks.md --reviewer codex
+# ドライラン（CVEは走るがレビュア呼び出しをスキップ）
+super-agent review-task --task T1 --tasks my-design-tasks.md --dry-run
+```
+
+| オプション | 意味 |
+|---|---|
+| `--task` | レビューするタスクID（④の成果物、必須） |
+| `--tasks` | タスク定義 DAG（acceptance + worktree 解決用） |
+| `--worktree` | worktree パス（既定 `workspaces/<task>`） |
+| `--reviewer` | レビュア（Implementer と別であること／既定 `codex`） |
+| `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力 |
+
+**何をするか**：CVE で検証（§3.2 証拠束縛）→ 差分＋証拠ログ＋受入基則のみを brief に渡して
+レビュアが読み取り専用で所見を出す → 裁定は**CVE の証拠のみ**で下す（レビュアの実行環境は
+ 台帳に `verification.run` / `reviewer.invoked` / `judgment` を記録。
+
+> **注**：任意のディレクトリを直接検証したい場合は `super-agent review <dir>`（§2.11）を使う。`review` と `review-task` は別コマンド。
+
+### 2.6 `super-agent integrate` — 実装済みタスクの統合（⑧ Stage 5）
+
+ 実装・レビューを通ったタスクの worktree ブランチ（`task/<id>`）を統合ブランチへマージし、
+ 統合後も acceptance が GREEN か再検証してから worktree を片付けます。
+
+ ```bash
+ # 統合シミュレーション（git/worktree は触らない。ok:true が返る）
+ super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md --dry-run
+
+ # 実際の統合：task/T1 を main へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
+ super-agent integrate --task T1 --tasks ./probe/sample/my-design-tasks.md
+ # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "main", "commit": "..."}
+ ```
+
+ | オプション | 意味 |
+ |---|---|
+ | `--task` | 統合するタスクID |
+ | `--tasks` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
+ | `--target` | 統合先ブランチ（既定 `main`）。**現在の本流ブランチは `master`** なので、実運用では `--target master` を指定する（コードの既定値は `main` のまま） |
+ | `--worktree` | worktree パス（既定 `workspaces/<task>`；無ければ `task/<id>` から再作成） |
+ | `--dry-run` | マージ/後片付けを実行せず計画のみ表示 |
+
+ **何をするか**：
+
+ 1. `touch_allow` 外の変更を検出 → `integration.touch_violation` で差し戻し（実装者が許可外を触っていないか）
+ 2. `task/<id>` を `--target` へ `--no-ff` マージ。`conflict` は `--abort` して検知（台帳に `conflict`）
+ 3. マージ後に CVE で acceptance を再実行。失敗は `integrated.failed`
+ 4. 成功で `integrated` を記録、`git worktree remove --force` で後片付け
+
+ > **注意**：実行（dry-run なし）すると worktree が削除されます。T1/T2 のように残しておきたい
+ > ワークツリーがある場合は `--dry-run` で確認してください。
+
+### 2.7 `super-agent evolve` — 自己改良（⑩ Stage 6）
 
 台帳（`harness/ledger/events.jsonl`）を読み、再発している失敗パターンから
 `acceptance` テンプレまたは憲法への昇格を提案します（G6 自己改良）。
@@ -389,7 +327,7 @@ super-agent evolve --dry-run
 > 失敗パターンがしきい値（3回）に満たない場合は「何も提案しない」と表示されます。
 > 提案はあくまで**案**であり、実際の acceptance ルール／憲法の変更は人間がレビューして反映します。
 
-### 2.13 `super-agent dashboard` — 台帳からダッシュボード生成
+### 2.8 `super-agent dashboard` — 台帳からダッシュボード生成
 
 ```
 super-agent dashboard [--format md|html|both] [--out <path>]
@@ -415,11 +353,64 @@ super-agent dashboard --format both --out ./out/
 
 > ステータスは `build_model()` が状態遷移の優先順位（integrated > implemented > …）で決定する。詳細は `docs/spec.md` §9 参照。
 
+### 2.9 `super-agent status` — 台帳の状態を表示
+
+```bash
+super-agent status
+```
+
+台帳に記録された全イベントを（クラッシュセーフに）読み出して表示します。
+```
+events in ledger: 2
+  T-418dd0b1:1 task.created
+  T-418dd0b1:2 agent.invoked
+```
+
+### 2.10 `super-agent log <task>` — 指定タスクの全イベント
+
+```bash
+super-agent log T-XXXX
+```
+
+指定タスクID（接頭辞でも可）の全イベントを、付随データ付きで表示します。
+```
+events for T-XXXX: 5
+  T-XXXX:1 verification.run {"tree_hash": "3309...", "cve_ok": true}
+  T-XXXX:2 brief.built {"tokens_est": 1327}
+  T-XXXX:3 reviewer.invoked {"vendor": "codex"}
+  T-XXXX:4 reviewer.skipped {"reason": "dry_run"}
+  T-XXXX:5 judgment {"verdict": "judgment_unavailable", "tree_hash": "3309..."}
+```
+
+### 2.11 `super-agent review <dir>` — 検証パイプライン（⑤⑥⑦⑨）
+
+```bash
+super-agent review <dir> [--accept "pytest tests/"] [--reviewer codex|claude|agy|hermes] [--dry-run]
+```
+
+| オプション | 意味 |
+|---|---|
+| `<dir>` | 検証するワークツリー／題材ディレクトリ（必須） |
+| `--accept` | 受理テスト指定 `"verb arg1 arg2"`（既定 `pytest tests/`）。期待終了コードは `--expect-exit` |
+| `--reviewer` | レビュアベンダー（既定 `codex`） |
+| `--dry-run` | **何も実行しない**（CVE 検証・レビュア呼び出しともスキップ）。計画のみ出力。裁定は `judgment_unavailable` になる |
+
+**何をするか**：`run_pipeline` を呼び、CVE→簡報→レビュー→裁定を台帳駆動で実行。
+JSON で裁定を標準出力に出します。
+
+> **注**：実装済みタスク（④）を tasks.md から解決してレビューする場合は `super-agent review-task --task T1`（§2.5）を使う。`review` と `review-task` は別コマンド。
+
+**例**：
+```bash
+super-agent review probe/n3/caseGreen --reviewer codex --dry-run
+# → verdict/judgment_unavailable, tree_hash が束縛される
+```
+
 ## 3. 検証パイプラインを動かす（Stage C）
 
 
 `run` はまだ検証を走らせません。**実際の「CVE実行→レビュー→裁定」**は
-`super-agent review <dir>`（§2.2）が `run_pipeline` を呼び出して行います。
+`super-agent review <dir>`（§2.11）が `run_pipeline` を呼び出して行います。
 ここでは題材と、レビュアも本番呼び出す場合の挙動を補足します。
 
 ### 3.1 テスト題材（probe/n3/）
@@ -542,7 +533,7 @@ python -m pytest harness/tests/ -q
 - `evolve`: 台帳から失敗パターンを拾い自己改良を提案
 
 **未実装（将来の Stage）**:
-- `pause` / `resume` / `abort` / `amend` コマンド（Stage D' 操作面。`show design|plan` は実装済み）
+- `pause` / `resume` / `abort` / `amend` コマンド（Stage D' 操作面）
 - 予算上限での自動停止・承認キュー（Stage D。予算計算は実装済み、承認キューは未実施）
 - レビュアの OS レベル隔離（Stage F）
 

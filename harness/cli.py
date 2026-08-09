@@ -2,14 +2,13 @@
 """CLI entry point for the super-agent harness.
 
 Stage A: ledger + vendor adapter (run/status).
-Stage 0: review/log/show — drive the verification pipeline and inspect the ledger.
+Stage 0: review/log — drive the verification pipeline and inspect the ledger.
 
 Usage:
   python -m harness.cli run "<requirement>" [--vendor claude|codex|agy|hermes] [--dry-run]
   python -m harness.cli review <dir> [--accept pytest tests/] [--reviewer codex|claude|agy|hermes] [--dry-run]
   python -m harness.cli status
   python -m harness.cli log <task>
-  python -m harness.cli show design|plan
   python -m harness.cli dashboard [--format md|html|both] [--out <path>]
 """
 from __future__ import annotations
@@ -40,8 +39,6 @@ CONFIG_DIR = Path(__file__).resolve().parent / "config"
 # ledgers without touching the real append-only events.jsonl).
 LEDGER_PATH = Path(os.environ.get("SUPER_AGENT_LEDGER",
                                   str(Path(__file__).resolve().parent / "ledger" / "events.jsonl")))
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCS = REPO_ROOT / "docs"
 
 
 def ensure_worktree(task_id: str, root: str = "workspaces") -> str | None:
@@ -506,22 +503,6 @@ def cmd_log(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_show(args: argparse.Namespace) -> int:
-    """Read-only view of design/plan. L6 'show' operation (no ledger event)."""
-    if args.what == "design":
-        path = DOCS / "goals" / "design.md"
-        print(f"# 設計のゴールと評価ルーブリック\n# {path}\n")
-        print(path.read_text(encoding="utf-8", errors="ignore")[:2000])
-    elif args.what == "plan":
-        path = DOCS / "plan.md"
-        print(f"# 実装計画\n# {path}\n")
-        print(path.read_text(encoding="utf-8", errors="ignore")[:2000])
-    else:
-        print(f"unknown show target: {args.what}", file=sys.stderr)
-        return 2
-    return 0
-
-
 def cmd_evolve(args: argparse.Namespace) -> int:
     """Stage 6 (§9 ⑩): mine the ledger for recurring failures and propose
     self-improvements. With --dry-run, only prints proposals; otherwise also
@@ -722,10 +703,6 @@ def main(argv: list[str] | None = None) -> int:
     l = sub.add_parser("log", help="show ledger events for a task prefix")
     l.add_argument("task", help="task id prefix, e.g. T-abc123")
     l.set_defaults(func=cmd_log)
-
-    sh = sub.add_parser("show", help="read-only view of design/plan (L6)")
-    sh.add_argument("what", choices=["design", "plan"])
-    sh.set_defaults(func=cmd_show)
 
     ev = sub.add_parser("evolve", help="mine ledger for recurring failures and propose self-improvements (Stage 6)")
     ev.add_argument("--dry-run", action="store_true",
