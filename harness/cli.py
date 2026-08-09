@@ -422,12 +422,88 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+# Lifecycle events that mark a meaningful transition in a task's progress.
+# Used by cmd_status to render the "milestone log" (the progression-relevant
+# subset of the ledger, not every low-level event).
+_MILESTONE_TYPES = (
+    "task.created",
+    "task.scheduled",
+    "task.leased",
+    "task.implemented",
+    "implement.ok",
+    "artifact.produced",
+    "review.pass",
+    "review.fail",
+    "integrate.ok",
+    "integrate.error",
+    "judgment",
+)
+
+# Statuses that count as "done" for the overall progress rate.
+_DONE_STATUSES = ("integrated", "passed")
+
+
 def cmd_status(args: argparse.Namespace) -> int:
+    """Show an overall progress summary, the logical task list, and the
+    milestone log derived from the ledger.
+
+    Three sections (task requirement):
+      1. progress summary  — overall completion rate across logical tasks
+      2. logical tasks     — one line per task_id with its resolved status
+      3. milestone log     — lifecycle-transition events in ledger order
+    """
     lg = Ledger(str(LEDGER_PATH))
     events = lg.load_flat()
     print(f"events in ledger: {len(events)}")
-    for ev in events[-20:]:
-        print(f"  {ev.get('event_id')} {ev.get('type')}")
+
+    # The dashboard role module is the single source of truth for the
+    # task_id -> status aggregation (state-transition priority). Reuse it
+    # rather than re-deriving status here so status semantics stay in sync.
+    from harness.roles.dashboard import build_model
+
+    model = build_model(events)
+
+    # --- 1) overall progress summary ---
+    total = len(model)
+    if total:
+        status_counts: dict[str, int] = {}
+        for s in model.values():
+            status_counts[s] = status_counts.get(s, 0) + 1
+        done = sum(1 for s in model.values() if s in _DONE_STATUSES)
+        rate = done / total * 100.0
+        top = ", ".join(f"{s}={c}" for s, c in sorted(
+            status_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        print(f"\n# Progress summary")
+        print(f"  logical tasks: {total}")
+        print(f"  done ({'/'.join(_DONE_STATUSES)}): {done}")
+        print(f"  overall progress: {done}/{total} ({rate:.1f}%)")
+        print(f"  by status: {top}")
+    else:
+        print(f"\n# Progress summary")
+        print(f"  logical tasks: 0")
+        print(f"  overall progress: 0/0 (0.0%)")
+
+    # --- 2) logical task list ---
+    print(f"\n# Logical tasks")
+    if model:
+        for task_id, status in sorted(model.items()):
+            print(f"  {task_id}\t{status}")
+    else:
+        print("  (no logical tasks recorded)")
+
+    # --- 3) milestone log (lifecycle transitions, newest 20) ---
+    print(f"\n# Milestone log")
+    milestones = [e for e in events if e.get("type") in _MILESTONE_TYPES]
+    if milestones:
+        for ev in milestones[-20:]:
+            extra = {k: v for k, v in ev.items()
+                     if k not in ("event_id", "type", "ts",
+                                  "design_file", "task_file")}
+            print(f"  {ev.get('event_id')} {ev.get('type')} "
+                  f"{json.dumps(extra, ensure_ascii=False)}")
+    else:
+        print("  (no milestones recorded)")
+
     return 0
 
 
