@@ -81,6 +81,33 @@ def test_structural_check_ok():
     assert structural_check(tasks, reg) == []
 
 
+# ---- test-file protection (implementer must not be able to rewrite the very
+# test it's graded by; see this session's design discussion on self-scoring) ----
+def test_structural_check_rejects_touch_allow_on_own_test_file():
+    from harness.roles.decomposer import structural_check, VerifierRegistry
+    reg = VerifierRegistry(REPO / "harness" / "config" / "verifiers.yaml")
+    tasks = [
+        {"task_id": "T1", "goal": "g",
+         "acceptance": [{"verb": "pytest", "args": ["tests/test_core.py", "-k", "test_x"]}],
+         "touch_allow": ["src/a.py", "tests/test_core.py"]},
+    ]
+    errs = structural_check(tasks, reg)
+    assert any("テストファイル" in e for e in errs)
+
+
+def test_structural_check_allows_lint_verb_on_touch_allow_file():
+    """mypy/ruff args name the *implementation* file under check, which
+    legitimately belongs in touch_allow — must not be flagged as protection."""
+    from harness.roles.decomposer import structural_check, VerifierRegistry
+    reg = VerifierRegistry(REPO / "harness" / "config" / "verifiers.yaml")
+    tasks = [
+        {"task_id": "T1", "goal": "g",
+         "acceptance": [{"verb": "mypy", "args": ["src/a.py"]}],
+         "touch_allow": ["src/a.py"]},
+    ]
+    assert structural_check(tasks, reg) == []
+
+
 # ---- decompose() design_file propagation (regression: CLAUDE.md「decompose()
 # だけが design_file を受け取れずチャンクが分裂する」バグ) ----
 class _StubSeq:
@@ -199,7 +226,10 @@ def test_parse_tasks_md_roundtrip(monkeypatch, tmp_path):
     tasks = [
         {"task_id": "T1", "goal": "core を実装",
          "acceptance": [{"verb": "pytest", "args": ["tests/test_core.py"], "expect_exit": 0}],
-         "depends_on": [], "touch_allow": ["wclite/core.py"]},
+         "depends_on": [], "touch_allow": ["wclite/core.py"],
+         "rubric": [{"criterion": "edge case handled", "weight": 60},
+                    {"criterion": "test not modified", "weight": 40}],
+         "rubric_threshold": 75},
         {"task_id": "T2", "goal": "cli を実装",
          "acceptance": [{"verb": "pytest", "args": ["tests/test_cli.py"], "expect_exit": 0}],
          "depends_on": ["T1"], "touch_allow": ["wclite/cli.py"]},
@@ -215,6 +245,10 @@ def test_parse_tasks_md_roundtrip(monkeypatch, tmp_path):
     assert back[1]["depends_on"] == ["T1"]
     assert back[0]["acceptance"][0]["verb"] == "pytest"
     assert back[0]["acceptance"][0]["args"] == ["tests/test_core.py"]
+    assert back[0]["rubric_threshold"] == 75
+    assert back[0]["rubric"] == [{"criterion": "edge case handled", "weight": 60},
+                                  {"criterion": "test not modified", "weight": 40}]
+    assert back[1]["rubric"] == []
 
 
 def test_plan_reuses_existing_tasks_file(monkeypatch, tmp_path):

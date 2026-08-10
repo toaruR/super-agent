@@ -225,6 +225,31 @@ verifiers:
 
 **実装**: `harness/core/verifiers.py`（`VerifierRegistry`）、`harness/core/cve.py`（`CVE`）。
 
+### 4.3 rubric（Implementer 自己採点）と受入テスト保護
+
+acceptance は exit_code の pass/fail しか見ないため、「テストの主張を通すためにテスト自体を
+書き換える／緩める」誤魔化しを exit_code だけでは検出できない。これを補う2つの仕組み:
+
+- **受入テストファイル保護**: `decomposer.structural_check` は、acceptance のテストランナー系
+  verb（`pytest`/`unittest`/`node-test`）の args が指すテストファイルが `touch_allow` に含まれて
+  いたらハードエラーで拒否する（`_check_test_protection`）。実装者は自身の受入基準となる
+  テストファイルを一切変更できない。mypy/ruff のように args が「検査対象の実装ファイル」を
+  指す verb は対象外（それらは touch_allow に入っているのが正しい）。
+- **rubric（自己採点）**: タスクは acceptance とは別に `rubric`（`{criterion, weight}` の配列、
+  重み合計100、planner が作成）と `rubric_threshold`（合格ライン）を持てる。
+  `implementer.IMPLEMENT_PROMPT` はこれを提示し、Implementer に「実装 → 受入基準を自分で
+  再実行 → rubric で自己採点 → 合格ラインに達するまで改良」を**同一ショット内**で繰り返させ、
+  最後に `{"self_score": {"total", "threshold", "breakdown"}}` を出力させる。
+  `implementer.implement()` は `invoke.extract_result()` でこの JSON を回収し
+  `task.implemented` イベントの `self_score` フィールドに記録する。
+  **self_score はハーネスの裁定（verdict）を代替しない**——実行と判定の分離（§4冒頭の中心命題）
+  により、最終的な合否は引き続き CVE 証拠のみに基づく `judgment`（review_flow/adjudicate）が
+  決める。rubric はテスト保護と組み合わせることで初めて意味を持つ（テストが保護されていない
+  状態で自己採点だけを導入すると、採点自体も同じ誤魔化しの対象になり得る）。
+
+**実装**: `harness/roles/decomposer.py`（`_check_test_protection`）、
+`harness/roles/implementer.py`（`_fmt_rubric` / `_extract_self_score`）。
+
 ---
 
 ## 5. コマンド仕様

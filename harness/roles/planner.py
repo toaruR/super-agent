@@ -56,6 +56,18 @@ REPLAN_SCHEMA = {
                     },
                     "touch_allow": {"type": "array", "items": {"type": "string"}},
                     "depends_on": {"type": "array", "items": {"type": "string"}},
+                    "rubric": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "criterion": {"type": "string"},
+                                "weight": {"type": "integer"},
+                            },
+                            "required": ["criterion", "weight"],
+                        },
+                    },
+                    "rubric_threshold": {"type": "integer"},
                 },
                 "required": ["task_id", "goal", "acceptance"],
             },
@@ -88,6 +100,9 @@ REPLAN_PROMPT = """\
   （例: `harness/roles/`）。ディレクトリ指定はその配下の他タスクとの touch_allow 重複と
   みなされ並列実行を妨げるため、本当に必要な場合以外は具体的なファイル名を優先する。
 - touch_allow は「このタスクが触ってよいファイル」を列挙（パス単位）。
+- rubric（実装者の自己採点用の質的採点基準、重み合計100・rubric_threshold付き）は
+  変更のないタスクは現在のタスクDAGの内容をそのまま維持し、新規タスク・目標が変わった
+  タスクには新たに作成すること。
 
 【重要】並行処理の可否について以下を判断してください:
 1. 調査が必要な箇所は、本実装タスクの「前」に INVESTIGATION タスクとして切り出し、
@@ -213,11 +228,20 @@ def _merge_oversplit(tasks: list[dict]) -> tuple[list[dict], list[str]]:
         goals = []
         deps: set[str] = set()
         touch: set[str] = set()
+        rubric_items: list[dict] = []
+        seen_criteria: set[str] = set()
+        thresholds: list[int] = []
         for tid in tids:
             t = by_id[tid]
             goals.append(f"[{tid}] {t.get('goal', '')}")
             deps.update(t.get("depends_on", []) or [])
             touch.update(t.get("touch_allow", []) or [])
+            for r in t.get("rubric", []) or []:
+                c = r.get("criterion")
+                if c not in seen_criteria:
+                    seen_criteria.add(c)
+                    rubric_items.append(r)
+            thresholds.append(t.get("rubric_threshold", 80))
         # drop intra-group deps (they are now the same task)
         deps = {d for d in deps if d not in set(tids)}
         # Choose the merge root: prefer the most *foundational* task in the
@@ -234,6 +258,8 @@ def _merge_oversplit(tasks: list[dict]) -> tuple[list[dict], list[str]]:
             "acceptance": [],
             "depends_on": sorted(deps),
             "touch_allow": sorted(touch),
+            "rubric": rubric_items,
+            "rubric_threshold": max(thresholds) if thresholds else 80,
         }
         merged.append(merged_task)
         notes.append(f"過分割をマージ: {', '.join(tids)} → {merge_id}")
@@ -318,6 +344,16 @@ def replan(
     for t in tasks:
         if not t.get("touch_allow"):
             t["touch_allow"] = _allow_by_id.get(t["task_id"], [])
+
+    # Same backfill for rubric: the vendor may drop it for tasks it left
+    # unchanged, but implementer's self-score loop needs it to survive replan.
+    _rubric_by_id = {t["task_id"]: t.get("rubric", []) for t in existing_tasks}
+    _threshold_by_id = {t["task_id"]: t.get("rubric_threshold", 80) for t in existing_tasks}
+    for t in tasks:
+        if not t.get("rubric"):
+            t["rubric"] = _rubric_by_id.get(t["task_id"], [])
+        if not t.get("rubric_threshold"):
+            t["rubric_threshold"] = _threshold_by_id.get(t["task_id"], 80)
 
     # Hard rule: never let over-split tasks (sharing a touch_allow file) run as
     # parallel worktrees — merge them so the failure mode (silent broken merge)

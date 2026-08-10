@@ -182,6 +182,35 @@ def test_replan_backfills_touch_allow_from_existing() -> None:
     assert "harness/roles/dashboard.py" in dash[0]["touch_allow"]
 
 
+def test_replan_backfills_rubric_from_existing() -> None:
+    """The vendor frequently drops rubric for tasks it left unchanged (it
+    reasons about deps/files, not scoring criteria). replan must backfill
+    rubric/rubric_threshold from the original tasks so the implementer's
+    self-score loop survives a replan."""
+    fake = {
+        "ok": True,
+        "tasks": [
+            {"task_id": "dashboard-model", "goal": "g", "acceptance": [],
+             "depends_on": [], "touch_allow": ["harness/roles/dashboard_model.py"]},
+        ],
+        "investigation_needed": [],
+        "notes": "",
+    }
+    existing = [
+        {"task_id": "dashboard-model", "goal": "g", "acceptance": [],
+         "depends_on": [], "touch_allow": ["harness/roles/dashboard_model.py"],
+         "rubric": [{"criterion": "edge cases", "weight": 100}],
+         "rubric_threshold": 70},
+    ]
+    with mock.patch.object(planner_role, "invoke", return_value=fake), \
+         mock.patch.object(planner_role, "load_vendors", return_value={"claude": {}}):
+        rep = planner_role.replan("req", existing, events=[],
+                                  vendor="claude", seq=None, dry_run=False)
+    t = rep["tasks"][0]
+    assert t["rubric"] == [{"criterion": "edge cases", "weight": 100}]
+    assert t["rubric_threshold"] == 70
+
+
 def test_replan_drops_orphan_dependencies() -> None:
     """If the vendor removes a task that others depend on, replan must drop
     the now-orphan depends_on so the DAG stays implementable."""

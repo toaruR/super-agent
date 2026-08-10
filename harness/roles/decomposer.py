@@ -45,6 +45,18 @@ DECOMPOSE_SCHEMA = {
                     },
                     "touch_allow": {"type": "array", "items": {"type": "string"}},
                     "depends_on": {"type": "array", "items": {"type": "string"}},
+                    "rubric": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "criterion": {"type": "string"},
+                                "weight": {"type": "integer"},
+                            },
+                            "required": ["criterion", "weight"],
+                        },
+                    },
+                    "rubric_threshold": {"type": "integer"},
                 },
                 "required": ["task_id", "goal", "acceptance"],
             },
@@ -83,6 +95,18 @@ acceptance を作る際の重要な指針（実装者のワンショット成功
   強制され、1本の曖昧なテストで誤魔化せなくなる。
 - lint/型検査などのコード品質チェックは目的ではない。あくまで目標に書かれた
   振る舞いをコードが実現しているかどうかの検証に集中すること。
+
+rubric（実装者の自己採点用の質的採点基準）について:
+- acceptance（pytest等の自動テスト）は exit_code の pass/fail しか見ないため、
+  「テストの主張を通すことだけを目的にテスト自体やアサーションを緩める／書き換える」
+  誤魔化しを検出できない。rubric はこれを補うための、acceptance とは別の質的観点。
+- 各タスクに rubric を2〜5項目、重み（weight, 合計100）付きで用意すること。例:
+  - 「acceptance のテストファイル・アサーションを一切変更していない」（重み高め、目安20〜30）
+  - 「goal に書かれた振る舞いをテストが直接検証していない部分（エッジケース、異常系）も
+    自分で考慮し実装している」
+  - 「touch_allow の範囲外に一切触れていない」
+  - タスク固有の質的観点（可読性、既存コードとの整合性 等）
+- rubric_threshold（合格ライン、100点満点中の目安70〜85）も指定すること。
 
 要求: {requirement}
 既存の設計: {existing}
@@ -157,6 +181,45 @@ def _check_touch_overlap(tasks: list[dict]) -> list[str]:
     return errs
 
 
+# Verbs that run a specific test-definition file (as opposed to mypy/ruff,
+# whose args name the *implementation* file under check, which legitimately
+# belongs in touch_allow).
+_TEST_VERBS = {"pytest", "unittest", "node-test"}
+
+
+def _acceptance_test_paths(task: dict) -> list[str]:
+    """File-like args from test-runner acceptance criteria (the test
+    definitions that decide pass/fail for this task)."""
+    out = []
+    for a in task.get("acceptance", []):
+        if a.get("verb") not in _TEST_VERBS:
+            continue
+        for tok in a.get("args", []):
+            if tok.startswith("-"):
+                continue
+            if "/" in tok or "\\" in tok:
+                out.append(tok)
+    return out
+
+
+def _check_test_protection(tasks: list[dict]) -> list[str]:
+    """touch_allow must not let a task edit the very test file(s) that grade
+    it (H2-adjacent: otherwise the implementer can "pass" by weakening the
+    test instead of fixing the code, see CLAUDE.md / this session's design
+    discussion on implementer self-scoring)."""
+    errs = []
+    for t in tasks:
+        ta = t.get("touch_allow", []) or []
+        for ap in _acceptance_test_paths(t):
+            for tp in ta:
+                if touch_overlaps(tp, ap):
+                    errs.append(
+                        f"{t['task_id']}: touch_allow '{tp}' が自身の受入基準の"
+                        f"テストファイル '{ap}' と重なる（実装者がテストを書き換えて"
+                        f"誤魔化せてしまう）")
+    return errs
+
+
 def structural_check(tasks: list[dict], registry: VerifierRegistry) -> list[str]:
     """Return a list of error strings (empty = pass)."""
     errs = []
@@ -168,6 +231,7 @@ def structural_check(tasks: list[dict], registry: VerifierRegistry) -> list[str]
     errs += _check_verbs(tasks, registry)
     errs += _check_dag(tasks)
     errs += _check_touch_overlap(tasks)
+    errs += _check_test_protection(tasks)
     return errs
 
 
@@ -193,6 +257,12 @@ def render_tasks_md(tasks: list[dict], requirement: str = "") -> str:
         for a in acc:
             lines.append(f"  - `{a.get('verb', '')}` {' '.join(a.get('args', []))}"
                          f" (expect_exit={a.get('expect_exit', 0)})")
+        rubric = t.get("rubric", [])
+        if rubric:
+            threshold = t.get("rubric_threshold", 80)
+            lines.append(f"- 採点基準 (rubric, 合格ライン: {threshold}点):")
+            for r in rubric:
+                lines.append(f"  - {r.get('criterion', '')} (配点: {r.get('weight', 0)})")
         lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -213,7 +283,7 @@ def parse_tasks_md(path: str) -> list[dict]:
             if cur is not None:
                 tasks.append(cur)
             cur = {"task_id": m.group(1), "acceptance": [], "depends_on": [],
-                   "touch_allow": []}
+                   "touch_allow": [], "rubric": []}
             continue
         if cur is None:
             continue
@@ -227,6 +297,13 @@ def parse_tasks_md(path: str) -> list[dict]:
             ta = line[len("- 触ってよい範囲:"):].strip()
             if ta:
                 cur["touch_allow"] = [t.strip() for t in ta.split(",") if t.strip()]
+        elif line.startswith("- 採点基準"):
+            m3 = re.search(r"合格ライン:\s*(\d+)点", line)
+            cur["rubric_threshold"] = int(m3.group(1)) if m3 else 80
+        elif re.match(r"^\s*-\s+.+\(配点:\s*\d+\)\s*$", line):
+            m3 = re.match(r"^\s*-\s+(.*?)\s*\(配点:\s*(\d+)\)\s*$", line)
+            if m3:
+                cur["rubric"].append({"criterion": m3.group(1), "weight": int(m3.group(2))})
         elif line.lstrip().startswith("- `") and "`" in line[line.find("`")+1:]:
             # acceptance bullet: `verb` args... (expect_exit=N)
             # only the verb is backticked; args follow after the closing backtick
@@ -305,5 +382,7 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
              goal=t.get("goal", ""),
              acceptance=t.get("acceptance", []),
              depends_on=t.get("depends_on", []),
-             touch_allow=t.get("touch_allow", []))
+             touch_allow=t.get("touch_allow", []),
+             rubric=t.get("rubric", []),
+             rubric_threshold=t.get("rubric_threshold", 80))
     return {"ok": True, "tasks": tasks}

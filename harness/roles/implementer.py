@@ -22,7 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from harness.core.invoke import invoke, load_vendors, build_command, normalize_model
+from harness.core.invoke import invoke, load_vendors, build_command, normalize_model, extract_result
 from harness.core.ledger import Sequencer
 
 IMPLEMENT_PROMPT = """\
@@ -44,6 +44,8 @@ IMPLEMENT_PROMPT = """\
 
 # 触ってよい範囲（このリストのファイル以外は作成・変更してはいけない）
 {touch_allow}
+
+{rubric_section}
 
 # 制約
 - 上記 `touch_allow` に列挙されたファイル・パスだけを作成・変更すること。
@@ -71,6 +73,44 @@ def _fmt_design_context(design_context: str) -> str:
     return text if text else "（なし）"
 
 
+def _fmt_rubric(task: dict) -> str:
+    """Self-scoring rubric section (planner-authored, orthogonal to acceptance).
+
+    acceptance only sees pass/fail exit codes, so it can't detect "made the
+    test pass by weakening the test itself" style gaming. The rubric asks the
+    implementer to keep iterating (re-running the real acceptance commands)
+    within this same invocation until it self-scores >= threshold, then
+    report the score as trailing JSON. This score is NOT the harness's
+    verdict (review_flow/adjudicate still gate on real evidence independently)
+    — it's a same-shot quality lever, not a substitute for it.
+    """
+    rubric = task.get("rubric", [])
+    if not rubric:
+        return ""
+    threshold = task.get("rubric_threshold", 80)
+    lines = [
+        f"# 自己採点基準（rubric、合格ライン: {threshold}点/100点）",
+        "実装が終わったら、以下の基準で自己採点し、合計が合格ラインに達するまで",
+        "実装を改良し続けること（受入基準コマンドは自分で実際に再実行して確認すること）。",
+        "touch_allow の範囲外、特に受入基準として使われているテストファイル自体を",
+        "書き換えて点数を稼ぐことは禁止（無意味でもある。自己採点とは独立にハーネス側が",
+        "実受入基準を再実行して裁定するため、テストを緩めても最終的な合否は変わらない）。",
+        "",
+    ]
+    for r in rubric:
+        lines.append(f"- {r.get('criterion', '')} (配点: {r.get('weight', 0)})")
+    lines.append("")
+    lines.append(
+        "改良ループを終えたら、出力の一番最後の行に次のJSONを1行だけ出力すること"
+        "（前後に余計な文字を付けない）:"
+    )
+    lines.append(
+        '{"self_score": {"total": <0-100の整数>, "threshold": ' + str(threshold) +
+        ', "breakdown": [{"criterion": "...", "score": <int>, "weight": <int>}, ...]}}'
+    )
+    return "\n".join(lines)
+
+
 def _fmt_touch_allow(task: dict, worktree: str) -> str:
     """touch_allow を worktree の絶対パス付きで表示（agy 等が cwd を無視する対策）。"""
     out = []
@@ -80,6 +120,21 @@ def _fmt_touch_allow(task: dict, worktree: str) -> str:
         else:
             out.append(f"- {worktree}/{p}")
     return "\n".join(out) if out else "- （なし）"
+
+
+def _extract_self_score(stdout: str, decl) -> dict | None:
+    """Best-effort recovery of the implementer's trailing self-score JSON
+    (see `_fmt_rubric`). Never raises; returns None if the vendor produced no
+    parseable JSON, no `self_score` key, or the task had no rubric at all."""
+    try:
+        parsed = extract_result(stdout, decl.result_path())
+    except Exception:
+        return None
+    if isinstance(parsed, dict):
+        score = parsed.get("self_score")
+        if isinstance(score, dict):
+            return score
+    return None
 
 
 def implement(task_id: str, task: dict, worktree_path: str,
@@ -105,6 +160,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
         touch_allow=_fmt_touch_allow(task, worktree_path),
         worktree=worktree_path,
         design_context=_fmt_design_context(design_context),
+        rubric_section=_fmt_rubric(task),
     )
 
     decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
@@ -136,6 +192,8 @@ def implement(task_id: str, task: dict, worktree_path: str,
             seq.propose(task_id, "implementer.error", error=err, design_file=design_file)
         return {"ok": False, "task_id": task_id, "error": err}
 
+    self_score = _extract_self_score(proc.stdout, decl)
+
     # harness performs the commit (touch_allow allow-list)
     commit = _commit_worktree(task_id, worktree_path, touch_allow, seq)
     if not commit.get("ok"):
@@ -149,6 +207,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
         seq.propose(task_id, "task.implemented",
                     commit=commit.get("commit"),
                     tree_hash=commit.get("tree_hash"),
+                    self_score=self_score,
                     design_file=design_file)
 
     return {
@@ -158,6 +217,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
         "tree_hash": commit.get("tree_hash"),
         "paths": touch_allow,
         "cmd": cmd,
+        "self_score": self_score,
     }
 
 
