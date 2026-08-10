@@ -3,11 +3,18 @@ rem super-agent.bat — thin wrapper: `python -m harness.cli` from the local ven
 rem Usage:  super-agent <subcommand> [args]
 rem   e.g.  super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md
 rem
-rem cd's into src/ (where .cve-venv lives) then calls python.exe, which resolves to
-rem .cve-venv\Scripts\python.exe when that dir is on PATH / current. If not, set PATH
-rem or call super-agent.bat from within the venv-activated shell.
+rem Operates on the CALLER's current directory (the target repo), not on
+rem src/ where this script lives. harness/ (this script's dir, %~dp0) is
+rem resolved via PYTHONPATH instead of `cd`-ing there, so `git worktree` etc.
+rem run against whatever repo you invoked super-agent from.
 
 setlocal
-cd /d "%~dp0" || exit /b 1
-python.exe -m harness.cli %*
+set "SCRIPT_DIR=%~dp0"
+if exist "%SCRIPT_DIR%.cve-venv\Scripts\python.exe" (
+    set "PY=%SCRIPT_DIR%.cve-venv\Scripts\python.exe"
+) else (
+    set "PY=python.exe"
+)
+set "PYTHONPATH=%SCRIPT_DIR%;%PYTHONPATH%"
+"%PY%" -m harness.cli %*
 endlocal

@@ -50,13 +50,37 @@ python -m venv .cve-venv
 ```
 
 ラッパー `super-agent`（bash/git-bash/Linux）または `super-agent.bat`（cmd/PowerShell）を
-`src/` から直接実行する。内部で `python -m harness.cli` を呼ぶ。
+実行する。内部で `python -m harness.cli` を呼ぶ。
+
+**対象リポジトリ＝呼び出したときのカレントディレクトリ**。ラッパーは自分の場所（`src/`）に
+`cd` せず、`PYTHONPATH` 経由で harness モジュールだけを解決するので、`git worktree` などは
+呼び出し元のディレクトリに対して実行される。他のプロジェクトに使うときは、そのプロジェクトの
+ディレクトリに `cd` してから、フルパスまたは PATH 経由でこのラッパーを呼べばよい。
 
 ```bash
-# git-bash / Linux
+# git-bash / Linux（src/ 自身が対象の場合）
 ./super-agent status
 # PowerShell / cmd
 super-agent status
+
+# 他プロジェクトに対して使う場合（そのプロジェクトの git リポジトリ内で）
+cd /path/to/other-project
+/path/to/super-agent/src/super-agent status        # git-bash / Linux
+D:\path\to\super-agent\src\super-agent.bat status   # PowerShell / cmd
+```
+
+`src/` を PATH に通しておけば、フルパス指定なしで `super-agent <サブコマンド>` と短く呼べる
+（ラッパーは PATH 経由で見つかった自分自身の場所から harness モジュールを解決するので、
+どのディレクトリから呼んでも壊れない）。
+
+```powershell
+# PowerShell（永続化・ユーザー環境変数）
+[Environment]::SetEnvironmentVariable("PATH", "$env:PATH;D:\path\to\super-agent\src", "User")
+```
+
+```bash
+# git-bash（~/.bashrc 等に追記）
+export PATH="/path/to/super-agent/src:$PATH"
 ```
 
 ---

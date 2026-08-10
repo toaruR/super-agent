@@ -5,20 +5,23 @@
 # Usage:  super-agent <subcommand> [args]
 #   e.g.  super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md
 #
-# Lives in src/ (next to .cve-venv and the harness package). Prefers the local
-# virtualenv python, falls back to `python` on PATH.
+# Operates on the CALLER's current directory (the target repo), not on
+# src/ where this script lives. harness/ (this script's dir) is resolved via
+# PYTHONPATH instead of `cd`-ing there, so `git worktree` etc. run against
+# whatever repo you invoked super-agent from. Prefers the local virtualenv
+# python, falls back to `python` on PATH.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
 
-if [ -x .cve-venv/Scripts/python.exe ]; then
-  PY=.cve-venv/Scripts/python.exe
-elif [ -x .cve-venv/bin/python ]; then
-  PY=.cve-venv/bin/python
+if [ -x "$SCRIPT_DIR/.cve-venv/Scripts/python.exe" ]; then
+  PY="$SCRIPT_DIR/.cve-venv/Scripts/python.exe"
+elif [ -x "$SCRIPT_DIR/.cve-venv/bin/python" ]; then
+  PY="$SCRIPT_DIR/.cve-venv/bin/python"
 else
   PY=python
 fi
 
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PY" -m harness.cli "$@"

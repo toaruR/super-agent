@@ -34,8 +34,14 @@ git-bash なら `./super-agent status` で実行できます。
 | ベンダーCLI | `claude` / `codex` / `agy` / `hermes` が PATH にあること |
 | OS | Windows（git-bash / PowerShell 両方可） |
 
-**venv を有効化してから `python -m` で実行するのが基本です。コマンド内のパスはすべて
-`src/` からの相対表記**です（例: `probe/n3/caseGreen`）。
+**対象リポジトリ＝ `super-agent` を呼び出したときのカレントディレクトリです。** ラッパー
+（`super-agent`/`super-agent.bat`）は自分の場所（`src/`）に `cd` せず、`PYTHONPATH` 経由で
+harness モジュールだけを解決するので、`git worktree` などの操作は呼び出し元のディレクトリの
+git リポジトリに対して行われる。**他プロジェクトに使うときは、そのプロジェクトのディレクトリに
+`cd` してから、フルパス（または PATH 登録）でこのラッパーを呼べばよい**（詳細は README の
+Installation §）。以下の例は「super-agent 自身を対象に動かす」場合（`src/` に `cd` して実行）
+を前提にしており、コマンド内のパスは `src/` からの相対表記です（例: `probe/n3/caseGreen`）。
+他プロジェクト向けに使う場合は同様に、そのプロジェクトのディレクトリからの相対表記になる。
 
 ### 1.1 VSCode ターミナル（推奨・最も簡単）
 
@@ -82,7 +88,9 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 > .cve-venv/Scripts/python.exe -m pip install pyyaml pytest
 > ```
 
-作業ディレクトリは必ず `src/` の中で行ってください（`harness/` パッケージが解決できるため）。
+`harness/` パッケージ自体はラッパーが `PYTHONPATH` で解決するので作業ディレクトリを問わないが、
+**作業ディレクトリ＝対象リポジトリ**になる点に注意（§1 冒頭を参照）。super-agent 自身を
+対象に動かす（以下の例のように）場合は `src/` の中で実行する。
 
 ---
 
