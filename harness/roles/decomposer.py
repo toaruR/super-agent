@@ -184,7 +184,7 @@ def _check_touch_overlap(tasks: list[dict]) -> list[str]:
 # Verbs that run a specific test-definition file (as opposed to mypy/ruff,
 # whose args name the *implementation* file under check, which legitimately
 # belongs in touch_allow).
-_TEST_VERBS = {"pytest", "unittest", "node-test"}
+_TEST_VERBS = {"pytest", "unittest", "node-test", "jest", "vitest", "phpunit"}
 
 
 def _acceptance_test_paths(task: dict) -> list[str]:

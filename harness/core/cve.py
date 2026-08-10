@@ -11,6 +11,7 @@ verb->argv translation goes through VerifierRegistry so the injection path
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,35 @@ def _load_probe_cve():
 
 
 _probe_cve = _load_probe_cve()
+
+# Node系 verb（verifiers.yaml 参照）。node_modules 未インストールだと
+# 「実装が間違っている」のか「依存が入っていないだけ」なのか証拠から
+# 区別できず、レビュアが誤って fail 判定しかねないので実行前に確認する。
+_NODE_VERBS = {"node-test", "jest", "vitest", "tsc", "eslint"}
+
+
+def _ensure_node_deps(root: Path, acceptance: list[dict[str, Any]]) -> None:
+    """package.json はあるが node_modules が無い場合、TTY なら npm install を
+    y/N で確認する。非対話実行（drive の自動ループ等）では確認せず警告のみ
+    出して先へ進む（検証は自然に失敗し、証拠として記録される）。"""
+    if not any(a.get("verb") in _NODE_VERBS for a in acceptance):
+        return
+    if not (root / "package.json").exists():
+        return
+    if (root / "node_modules").exists():
+        return
+    if sys.stdin.isatty():
+        ans = input(
+            f"[cve] {root} に node_modules がありません。npm install を実行しますか? [y/N]: "
+        ).strip().lower()
+        if ans == "y":
+            subprocess.run(["npm", "install"], cwd=str(root), shell=False)
+            return
+    print(
+        f"[warn] {root}: node_modules が見つかりません。検証前に `npm install` を"
+        f" 実行してください（node-test/jest/vitest/tsc/eslint はこのまま失敗します）。",
+        file=sys.stderr,
+    )
 
 
 class CVE:
@@ -64,9 +94,11 @@ class CVE:
         return argv
 
     def run(self, root: str | Path, acceptance: list[dict[str, Any]]) -> dict[str, Any]:
+        root = Path(root)
+        _ensure_node_deps(root, acceptance)
         probe = [list(c) for c in self.cfg.get("probe", [])]
         argv = self._acceptance_to_argv(acceptance)
-        return _probe_cve.verify(Path(root), argv, probe)
+        return _probe_cve.verify(root, argv, probe)
 
     def hash(self, root: str | Path) -> str:
         return _probe_cve.tree_hash(Path(root))

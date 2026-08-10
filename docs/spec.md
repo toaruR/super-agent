@@ -210,6 +210,12 @@ verifiers:
   ruff:       [".cve-venv/Scripts/python.exe", "-m", "ruff", "check"]
   node-test:  ["node", "--test"]
   go-test:    ["go", "test", "./..."]
+  jest:       ["npx", "jest"]
+  vitest:     ["npx", "vitest", "run"]
+  tsc:        ["npx", "tsc", "--noEmit"]
+  eslint:     ["npx", "eslint"]
+  phpunit:    ["php", "vendor/bin/phpunit"]
+  phpstan:    ["php", "vendor/bin/phpstan", "analyse"]
 ```
 
 - 受入基準は `{"verb": <登録済み verb>, "args": [...], "expect_exit": <int>}` のみ許可。
@@ -219,6 +225,9 @@ verifiers:
 ### 4.2 CVE（Controlled Verification Environment）
 
 - 検証は CVE（ハーネス側が管理する唯一の環境）で実行される。
+- Node系 verb（`node-test`/`jest`/`vitest`/`tsc`/`eslint`）は対象プロジェクトの `node_modules` が
+  前提。無い場合、CVE はTTYなら `npm install` 実行を y/N で確認し、非対話実行（`drive` の自動ループ等）
+  では警告のみ出して検証をそのまま失敗させる（`harness/core/cve.py` の `_ensure_node_deps`）。
 - 環境設定: `verification_env.yaml`（存在しない場合は `verification_env_sample.yaml` にフォールバック、警告出力）。
 - 実行は `probe/n3/cve.py` の `verify` を再利用（pass/fail の判定はしない。判定は adjudicator の責務）。
 - 検証フロー: 許可リスト検証 → CVE で probe+acceptance 実行 → 証拠を台帳に記録 → レビュアが証拠を読んで裁定。
@@ -231,7 +240,7 @@ acceptance は exit_code の pass/fail しか見ないため、「テストの�
 書き換える／緩める」誤魔化しを exit_code だけでは検出できない。これを補う2つの仕組み:
 
 - **受入テストファイル保護**: `decomposer.structural_check` は、acceptance のテストランナー系
-  verb（`pytest`/`unittest`/`node-test`）の args が指すテストファイルが `touch_allow` に含まれて
+  verb（`pytest`/`unittest`/`node-test`/`jest`/`vitest`/`phpunit`）の args が指すテストファイルが `touch_allow` に含まれて
   いたらハードエラーで拒否する（`_check_test_protection`）。実装者は自身の受入基準となる
   テストファイルを一切変更できない。mypy/ruff のように args が「検査対象の実装ファイル」を
   指す verb は対象外（それらは touch_allow に入っているのが正しい）。

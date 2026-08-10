@@ -8,3 +8,13 @@ verifiers:
   ruff: [".cve-venv/Scripts/python.exe", "-m", "ruff", "check"]
   node-test: ["node", "--test"]
   go-test: ["go", "test", "./..."]
+  # JS/TS: 実行対象プロジェクトに node_modules が必要。未インストールの場合
+  # CVE (harness/core/cve.py) がTTYならnpm installをy/Nで確認し、非対話実行
+  # （drive の自動ループ等）では警告のみ出してそのまま検証を失敗させる。
+  jest: ["npx", "jest"]
+  vitest: ["npx", "vitest", "run"]
+  tsc: ["npx", "tsc", "--noEmit"]
+  eslint: ["npx", "eslint"]
+  # PHP
+  phpunit: ["php", "vendor/bin/phpunit"]
+  phpstan: ["php", "vendor/bin/phpstan", "analyse"]

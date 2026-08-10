@@ -512,6 +512,8 @@ super-agent log T-XXXX
 | `vendors.yaml` | ベンダーの呼び出し方（構造化出力・再開・権限）＋ `roles.implement` / `roles.review` のチャンネル構成 | ベンダー追加時／チャンネル構成変更時 |
 | `verification_env.yaml` | CVE（検証環境）の python パス・起動チェック | マシンが変わった時 |
 | `verifiers.yaml` | 許可する検証コマンド（verb ホワイトリスト） | 新しい検証種別を足す時 |
+
+> **Node系 verb（`node-test`/`jest`/`vitest`/`tsc`/`eslint`）を使う場合は、検証対象プロジェクトに事前に依存関係をインストールしておくこと（`npm install` 等で `node_modules` を作る）。** `package.json` はあるが `node_modules` が無い状態で CVE がこれらの verb を実行しようとすると、TTY（対話実行）なら `npm install` を実行するか y/N で確認し、`drive` の自動ループのような非対話実行では警告を出すだけで検証をそのまま失敗させる（`harness/core/cve.py` の `_ensure_node_deps`）。
 | `paths.yaml` | `design_dir`：`architect`/`plan`/`drive` が `--design_file` 省略時に書き出すデフォルト出力先ディレクトリ。`tasks_dir` はタスクファイルの新規書き出し先ではなく、`implement`/`integrate`/`review-task` の `--task_file` 省略時フォールバック走査（旧フラット配置の残骸を拾う用）専用 | 出力先ディレクトリ規約を変える時 |
 
 > **タスクファイルはデザインファイルに従属する（`<design のstem>_tasks/` 配下）**：`design_dir/my-feature.md` の場合、そのタスクファイルは `design_dir/my-feature_tasks/<slug>.md` に置かれる（`harness/core/invoke.py` の `tasks_dir_for_design()`/`default_task_path()`）。デザイン側の `design_dir`（既定 `docs/design`、`architect "<要求>"`/`--design_file` 省略時のみ使用）は従来どおり要求文のスラッグ＋重複回避の連番（`<slug>.md` → 既存なら `<slug>-2.md` → …、`slugify()`/`unique_path()`）で自動命名されるが、**タスク側は連番を使わない**：既定パスに既にファイルがあれば `plan`/`drive` はエラーで中止する（ガードA。再利用したいなら `--task_file` で明示指定する）。
