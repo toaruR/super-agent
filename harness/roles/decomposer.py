@@ -61,6 +61,28 @@ DECOMPOSE_PROMPT = """あなたはタスク分解担当です。要求（と既�
 - 検証できないタスクは作らない（acceptance は空にしない）。
 - depends_on で依存を明示（DAG）。循環は作らない。
 - touch_allow は「このタスクが触ってよいファイル」を列挙（パス単位）。
+  ファイル分割や新規ファイル作成が見込まれる場合は、以下のどちらかで対応すること:
+  (a) 作成される見込みの新規ファイルパスを具体的に予測して列挙する
+      （例: `harness/roles/new_helper.py`）。
+  (b) 予測が難しいほど不確実な場合のみ、親ディレクトリをスラッシュ終わりで指定する
+      （例: `harness/roles/`）。ただしディレクトリ指定はその配下の全ファイルへの
+      アクセスを許可することになるため、他タスクとの並列実行を妨げやすい
+      （同じディレクトリ配下に触れる他タスクと touch_allow 重複とみなされる）。
+      本当に必要な場合以外は (a) の具体的なファイル名指定を優先すること。
+
+acceptance を作る際の重要な指針（実装者のワンショット成功率を上げるため）:
+- 目標（goal）に複数の要素・振る舞いが含まれる場合、acceptance を1本にまとめず、
+  要素ごとに分けて複数本用意すること。
+- pytest の acceptance は `args` に `-k <test関数名>` を含め、その要素が何を検証するのか
+  テスト関数名からわかるようにすること（例: 目標が「進捗率サマリー・タスク一覧・
+  マイルストーンログを出力する」なら、acceptance を
+  `pytest tests/test_x.py -k test_shows_progress_summary`,
+  `pytest tests/test_x.py -k test_shows_task_list`,
+  `pytest tests/test_x.py -k test_shows_milestone_log` の3本に分ける）。
+- これにより実装者は「目標の各要素に対応するテストを個別に書いて満たす」ことを
+  強制され、1本の曖昧なテストで誤魔化せなくなる。
+- lint/型検査などのコード品質チェックは目的ではない。あくまで目標に書かれた
+  振る舞いをコードが実現しているかどうかの検証に集中すること。
 
 要求: {requirement}
 既存の設計: {existing}
@@ -106,13 +128,27 @@ def _check_dag(tasks: list[dict]) -> list[str]:
     return errs
 
 
+def touch_overlaps(p: str, q: str) -> bool:
+    """True if two touch_allow entries overlap: exact match, or one is a
+    directory scope (e.g. `harness/roles/`) containing the other's path
+    (e.g. `harness/roles/foo.py`). Two distinct exact file paths under the
+    same directory (neither is a directory scope of the other) do NOT
+    overlap."""
+    if p == q:
+        return True
+    return q.startswith(p.rstrip("/") + "/") or p.startswith(q.rstrip("/") + "/")
+
+
 def _check_touch_overlap(tasks: list[dict]) -> list[str]:
-    """Parallel tasks (no depends_on link) must not share touch_allow paths."""
+    """Parallel tasks (no depends_on link) must not share touch_allow paths
+    (exact match, or one entry's directory scope containing the other's)."""
     errs = []
     for i in range(len(tasks)):
         for j in range(i + 1, len(tasks)):
             a, b = tasks[i], tasks[j]
-            if set(a.get("touch_allow", [])) & set(b.get("touch_allow", [])):
+            a_paths = a.get("touch_allow", []) or []
+            b_paths = b.get("touch_allow", []) or []
+            if any(touch_overlaps(p, q) for p in a_paths for q in b_paths):
                 if b["task_id"] not in a.get("depends_on", []) and \
                    a["task_id"] not in b.get("depends_on", []):
                     errs.append(

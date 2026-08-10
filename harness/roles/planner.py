@@ -29,7 +29,7 @@ import json
 from pathlib import Path
 
 from harness.core.invoke import invoke, load_vendors
-from harness.roles.decomposer import parse_tasks_md, render_tasks_md
+from harness.roles.decomposer import parse_tasks_md, render_tasks_md, touch_overlaps
 
 # Same shape as DECOMPOSE_SCHEMA, plus replan-specific outputs.
 REPLAN_SCHEMA = {
@@ -83,6 +83,10 @@ REPLAN_PROMPT = """\
   verb は以下のいずれか: {verbs}
 - 検証できないタスクは作らない。
 - depends_on で依存を明示（DAG）。循環は作らない。
+- touch_allow でファイル分割・新規ファイル作成が見込まれる場合、具体的な新規ファイルパスを
+  予測して列挙するか、予測が難しい場合のみ親ディレクトリをスラッシュ終わりで指定する
+  （例: `harness/roles/`）。ディレクトリ指定はその配下の他タスクとの touch_allow 重複と
+  みなされ並列実行を妨げるため、本当に必要な場合以外は具体的なファイル名を優先する。
 - touch_allow は「このタスクが触ってよいファイル」を列挙（パス単位）。
 
 【重要】並行処理の可否について以下を判断してください:
@@ -130,45 +134,14 @@ def _summarize_events(events: list[dict]) -> str:
     return "\n".join(lines) if lines else "（実装イベントなし）"
 
 
-def _detect_oversplit(tasks: list[dict]) -> str:
-    """Heuristic: find groups of tasks that touch the SAME file. Those cannot
-    be parallel worktrees (they can't see each other's edits), so they should
-    be merged or serialized. Surfaces the hint for the planner prompt."""
-    from collections import defaultdict
-    by_file: dict[str, list[str]] = defaultdict(list)
-    for t in tasks:
-        for f in t.get("touch_allow", []) or []:
-            by_file[f].append(t["task_id"])
-    groups = {f: tids for f, tids in by_file.items() if len(tids) > 1}
-    if not groups:
-        return "（なし：各タスクは異なるファイルに触る）"
-    lines = []
-    for f, tids in groups.items():
-        lines.append(f"- {f} を共有: {', '.join(tids)} "
-                     f"→ これらは独立 worktree では互いの成果が見えない。"
-                     f"1タスクにまとめるか depends_on で直列化を推奨。")
-    return "\n".join(lines)
-
-
-def _merge_oversplit(tasks: list[dict]) -> tuple[list[dict], list[str]]:
-    """Auto-merge tasks that share a touch_allow file into one task each.
-
-    Parallel worktrees cannot see each other's edits, so tasks editing the same
-    file must NOT run concurrently. We merge them into a single task (goal =
-    concatenation, depends_on = union, touch_allow = union). Returns the merged
-    task list and a list of human-readable change notes.
-
-    This is a hard rule (not a suggestion) because the failure mode is silent:
-    two worktrees editing the same file produce a broken merge that review may
-    not catch. Design's up-front DAG can't know this; the planner enforces it
-    at execution time.
+def _group_by_touch_overlap(tasks: list[dict]) -> dict[str, list[str]]:
+    """Union-find task_ids whose touch_allow overlaps (exact file match, or
+    one task's directory-scope entry containing the other's path — see
+    decomposer.touch_overlaps). Two tasks whose touch_allow overlaps can't run
+    in separate worktrees (they can't see each other's edits). Returns
+    {root_task_id: [task_id, ...]} for ALL tasks, including singleton groups.
     """
     from collections import defaultdict
-    by_file: dict[str, list[str]] = defaultdict(list)
-    for t in tasks:
-        for f in t.get("touch_allow", []) or []:
-            by_file[f].append(t["task_id"])
-    # groups of task_ids that must be merged (union-find over shared files)
     parent = {t["task_id"]: t["task_id"] for t in tasks}
 
     def find(x):
@@ -182,24 +155,59 @@ def _merge_oversplit(tasks: list[dict]) -> tuple[list[dict], list[str]]:
         if ra != rb:
             parent[ra] = rb
 
-    file_to_tids: dict[str, list[str]] = defaultdict(list)
-    for t in tasks:
-        for f in t.get("touch_allow", []) or []:
-            file_to_tids[f].append(t["task_id"])
-    for tids in file_to_tids.values():
-        for tid in tids[1:]:
-            union(tids[0], tid)
+    for i in range(len(tasks)):
+        for j in range(i + 1, len(tasks)):
+            a, b = tasks[i], tasks[j]
+            a_paths = a.get("touch_allow", []) or []
+            b_paths = b.get("touch_allow", []) or []
+            if any(touch_overlaps(p, q) for p in a_paths for q in b_paths):
+                union(a["task_id"], b["task_id"])
 
     groups: dict[str, list[str]] = defaultdict(list)
     for tid in parent:
         groups[find(tid)].append(tid)
+    return groups
 
+
+def _detect_oversplit(tasks: list[dict]) -> str:
+    """Heuristic: find groups of tasks whose touch_allow overlaps (same file,
+    or a directory scope containing another task's file). Those cannot be
+    parallel worktrees (they can't see each other's edits), so they should be
+    merged or serialized. Surfaces the hint for the planner prompt."""
+    by_id = {t["task_id"]: t for t in tasks}
+    groups = [tids for tids in _group_by_touch_overlap(tasks).values() if len(tids) > 1]
+    if not groups:
+        return "（なし：各タスクは異なるファイル・範囲に触る）"
+    lines = []
+    for tids in groups:
+        paths = sorted({p for tid in tids for p in (by_id[tid].get("touch_allow", []) or [])})
+        lines.append(f"- {', '.join(sorted(tids))} の touch_allow が重なる（{', '.join(paths)}） "
+                     f"→ これらは独立 worktree では互いの成果が見えない。"
+                     f"1タスクにまとめるか depends_on で直列化を推奨。")
+    return "\n".join(lines)
+
+
+def _merge_oversplit(tasks: list[dict]) -> tuple[list[dict], list[str]]:
+    """Auto-merge tasks whose touch_allow overlaps into one task each.
+
+    Parallel worktrees cannot see each other's edits, so tasks whose
+    touch_allow overlaps (same file, or one's directory scope containing the
+    other's file) must NOT run concurrently. We merge them into a single task
+    (goal = concatenation, depends_on = union, touch_allow = union). Returns
+    the merged task list and a list of human-readable change notes.
+
+    This is a hard rule (not a suggestion) because the failure mode is silent:
+    two worktrees editing overlapping paths produce a broken merge that review
+    may not catch. Design's up-front DAG can't know this; the planner enforces
+    it at execution time.
+    """
+    groups = _group_by_touch_overlap(tasks)
     by_id = {t["task_id"]: t for t in tasks}
     merged: list[dict] = []
     notes: list[str] = []
     for root, tids in groups.items():
         if len(tids) == 1:
-            merged.append(by_id[root])
+            merged.append(by_id[tids[0]])
             continue
         # merge the group
         goals = []

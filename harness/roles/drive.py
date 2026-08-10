@@ -243,7 +243,8 @@ def drive(
                 impl = implement(tid, task, wt, vendor=ch["vendor"],
                                  model=ch["model"], effort=ch["effort"],
                                  seq=seq, dry_run=dry_run,
-                                 design_file=spec_path or "")
+                                 design_file=spec_path or "",
+                                 design_context=spec_text)
                 ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
                                    "effort": ch["effort"], "worktree": wt,
                                    "task_id": tid, "impl": impl, "ok": True})
@@ -262,7 +263,8 @@ def drive(
                     impl = implement(cid, task, wt, vendor=ch["vendor"],
                                      model=ch["model"], effort=ch["effort"],
                                      seq=seq, dry_run=dry_run,
-                                     design_file=spec_path or "")
+                                     design_file=spec_path or "",
+                                     design_context=spec_text)
                     return {"vendor": ch["vendor"], "model": ch["model"],
                             "effort": ch["effort"], "worktree": wt,
                             "task_id": cid, "impl": impl, "ok": True}

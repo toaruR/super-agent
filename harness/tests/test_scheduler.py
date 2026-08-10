@@ -168,7 +168,7 @@ def test_create_worktree_does_not_reuse_stale_worktree_on_different_path(tmp_pat
     assert wt["path"].replace("\\", "/") == f"{tmp_path.as_posix()}/T1__agy_0"
 
 
-def test_schedule_dry_run_records_planned_worktree(monkeypatch):
+def test_schedule_dry_run_records_planned_worktree(monkeypatch, tmp_path):
     from harness.roles.scheduler import schedule
     from harness.core.ledger import Sequencer
     tasks = [
@@ -177,13 +177,17 @@ def test_schedule_dry_run_records_planned_worktree(monkeypatch):
         {"task_id": "T2", "goal": "g", "acceptance": [{"verb": "pytest", "args": ["tests/"]}],
          "depends_on": ["T1"], "touch_allow": ["src/b.py"]},
     ]
-    seq = Sequencer(str(REPO / "harness" / "ledger" / "events.jsonl"))
+    ledger_path = tmp_path / "events.jsonl"
+    design_file = "d.md"
+    seq = Sequencer(str(ledger_path))
     seq.start()
-    res = schedule("T-plan", tasks, dry_run=True, seq=seq)
+    res = schedule("T-plan", tasks, dry_run=True, seq=seq, design_file=design_file)
     seq.stop()
     assert res["ok"] is True
     from harness.core.ledger import Ledger
-    ledger = Ledger(str(REPO / "harness" / "ledger" / "events.jsonl"))
+    ledger = Ledger(str(ledger_path))
+    chunks = ledger.load()
+    assert all(c["design_file"] == design_file for c in chunks)
     evs = ledger.load_flat()
     assert any(e["type"] == "task.scheduled" for e in evs)
 

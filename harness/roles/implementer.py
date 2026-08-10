@@ -31,6 +31,10 @@ IMPLEMENT_PROMPT = """\
 # 作業ディレクトリ（絶対パス）
 {worktree}
 
+# 設計（参考。プロジェクト全体の意図・DAG全体像を把握するための文脈。
+# 矛盾する場合は下記のタスク定義（目標・受入基準・touch_allow）を優先すること）
+{design_context}
+
 # タスク
 タスクID: {task_id}
 目標: {goal}
@@ -62,6 +66,11 @@ def _fmt_acceptance(task: dict) -> str:
     return "\n".join(out) if out else "- （なし）"
 
 
+def _fmt_design_context(design_context: str) -> str:
+    text = (design_context or "").strip()
+    return text if text else "（なし）"
+
+
 def _fmt_touch_allow(task: dict, worktree: str) -> str:
     """touch_allow を worktree の絶対パス付きで表示（agy 等が cwd を無視する対策）。"""
     out = []
@@ -76,8 +85,14 @@ def _fmt_touch_allow(task: dict, worktree: str) -> str:
 def implement(task_id: str, task: dict, worktree_path: str,
               vendor: str = "claude", seq: Sequencer | None = None,
               dry_run: bool = False, model: str | None = None,
-              effort: str | None = None, design_file: str = "") -> dict:
+              effort: str | None = None, design_file: str = "",
+              design_context: str = "") -> dict:
     """Implement a single task inside its worktree and commit.
+
+    design_context, if given, is the full design document text (drive()'s
+    spec_text) so the implementer can see the overall intent/DAG context
+    instead of only its own narrow goal string. Not to be confused with
+    design_file (a path, used only for ledger chunk tagging).
 
     Returns a payload with ok/commit/cmd. Records ledger events when seq given.
     """
@@ -89,6 +104,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
         acceptance=_fmt_acceptance(task),
         touch_allow=_fmt_touch_allow(task, worktree_path),
         worktree=worktree_path,
+        design_context=_fmt_design_context(design_context),
     )
 
     decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
