@@ -398,7 +398,7 @@ def drive(
             try:
                 integ = integrate(winner["task_id"], task, winner["worktree"],
                                  target_branch=target_branch, seq=seq, dry_run=dry_run,
-                                 design_file=spec_path or "")
+                                 design_file=spec_path or "", all_tasks=tasks)
                 entry["integrate"] = {"ok": integ.get("ok"),
                                       "commit": integ.get("commit"),
                                       "winner": winner["vendor"]}

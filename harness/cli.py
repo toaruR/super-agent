@@ -383,6 +383,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     out = integrate(
         args.task, task, worktree,
         target_branch=args.target, seq=seq, dry_run=args.dry_run,
+        all_tasks=tasks,
     )
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))

@@ -1,5 +1,10 @@
 __pycache__/
 *.pyc
+*.tmp
+*.log
+.coverage
+coverage.xml
+htmlcov/
 workspaces/
 harness/ledger/
 # 実環境依存の設定（サンプルは verification_env_sample.yaml）。各環境で作成する。
