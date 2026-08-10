@@ -16,6 +16,25 @@ def _default_channels():
 
 
 
+def test_drive_defaults_target_branch_to_design_branch_name() -> None:
+    """No --target given: drive must derive the merge target from spec_path
+    (design_branch_name) instead of falling back to a hardcoded "main" that
+    git would silently auto-create."""
+    from harness.roles.scheduler import design_branch_name
+
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+         mock.patch.object(drive, "integrate") as m_int:
+        m_int.return_value = {"ok": True, "commit": "c2"}
+
+        drive.drive("", "probe/sample/my-design.md", SAMPLE_TASKS, seq=None, dry_run=False)
+
+    expected = design_branch_name("probe/sample/my-design.md")
+    assert expected != "main"
+    assert m_int.call_args.kwargs["target_branch"] == expected
+
+
 def test_drive_calls_pipeline_per_task_in_order() -> None:
     with mock.patch.object(drive, "structural_check", return_value=[]), \
          mock.patch.object(drive, "implement") as m_impl, \

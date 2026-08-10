@@ -30,6 +30,7 @@ from harness.roles.decomposer import (
 from harness.roles import planner as planner_role
 from harness.roles.scheduler import (
     create_worktree,
+    design_branch_name,
     schedule,
     teardown_worktree,
     topo_layers,
@@ -60,7 +61,7 @@ def drive(
     requirement: str,
     spec_path: str | None,
     tasks_path: str,
-    target_branch: str = "main",
+    target_branch: str | None = None,
     seq: Sequencer | None = None,
     dry_run: bool = False,
     implement_vendor: str | None = None,
@@ -108,6 +109,13 @@ def drive(
     tasks_file = Path(tasks_path)
     config_dir = Path(__file__).resolve().parent.parent / "config"
     registry = VerifierRegistry(config_dir / "verifiers.yaml")
+
+    # Default merge target is derived from the design file (design/<stem>-<crc32>)
+    # rather than a hardcoded "main", which git would otherwise auto-create even
+    # when it was never the intended integration branch. Callers that pass
+    # target_branch explicitly (e.g. `--target main`) still take precedence.
+    if target_branch is None:
+        target_branch = design_branch_name(spec_path or "")
 
     # Vendor prompts (decompose / replan) want the design's TEXT, not its path
     # string (a known-fixed bug: existing_design used to be handed spec_path

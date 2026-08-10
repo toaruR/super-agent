@@ -820,8 +820,11 @@ def main(argv: list[str] | None = None) -> int:
                          "auto-named (slug of --requirement) under <design_stem>_tasks/, next to "
                          "--design_file (no collision-avoiding suffix: an existing file at that path is "
                          "an error unless --task_file is passed explicitly to reuse it).")
-    dr.add_argument("--target", default="main",
-                    help="integration target branch (default: main)")
+    dr.add_argument("--target", default=None,
+                    help="integration target branch (default: derived from "
+                         "--design_file as design/<stem>-<crc32>, so drive "
+                         "never auto-creates a stray 'main'; falls back to "
+                         "'main' if no design file is known)")
     dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")
     dr.add_argument("--reviewer", default=None, help="reviewer vendor (default: roles.review)")
     dr.add_argument("--model", default=None,

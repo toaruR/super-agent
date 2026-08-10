@@ -294,6 +294,7 @@ super-agent drive [--requirement TEXT] [--design_file FILE] [--task_file FILE] [
 ```
 
 - `plan`→`implement`→`review`→`integrate` を **DAG（§1「用語: DAG」参照）全タスク**に実行。
+- `--target` 省略時は `--design_file` から導出した `design/<stem>-<crc32>` ブランチが統合先になる（`design_branch_name()`、`harness/roles/scheduler.py`）。存在しなければ自動作成される。`--design_file` 未設定時のみ `main` にフォールバック。固定の統合先（例: `master`）を使いたい場合は `--target` で明示指定する。
 - `--speculative` または `--implement-vendors` で複数チャンネル指定時のみ投機的モード（複数チャンネルが同じタスクを競い、最初に review を通した勝者を統合、他は破棄）。
 - `--parallel-tasks`（既定 ON）: 独立タスクを topo レイヤー単位で並行。
 - `--adaptive` / `--no-adaptive`: 駆動中の再計画スイッチ（§6）。

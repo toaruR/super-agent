@@ -29,6 +29,24 @@ def effective_worktree_id(task_id: str, design_file: str = "") -> str:
     return f"{task_id}__{tag}"
 
 
+def design_branch_name(design_file: str) -> str:
+    """Integration-target branch name derived from a design file.
+
+    drive()'s default merge target used to be a hardcoded "main", which git
+    happily auto-creates on first checkout even when it was never the intended
+    integration branch. Tagging the branch to the design file (CRC32 of its
+    resolved full path, same scheme as effective_worktree_id) keeps re-runs of
+    drive() on the same design_file landing on the same branch, and keeps
+    different design_files from colliding onto one shared "main". Falls back
+    to "main" when no design_file is known (e.g. ad-hoc --requirement runs).
+    """
+    if not design_file:
+        return "main"
+    full_path = str(Path(design_file).resolve())
+    tag = f"{zlib.crc32(full_path.encode('utf-8')):08x}"
+    return f"design/{Path(design_file).stem}-{tag}"
+
+
 def topo_order(tasks: list[dict]) -> list[str]:
     """Return task_ids in dependency order (dependencies first). Cyclic-safe."""
     ids = [t["task_id"] for t in tasks]

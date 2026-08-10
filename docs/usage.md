@@ -153,7 +153,7 @@ super-agent architect "Web API を作れ" --dry-run
 
 - `--task_file <md>`: 分解済みタスク DAG。`--task_file` が存在しない場合は `--design_file` から分解→worktree 作成→`<md>` に書き出します。
 - `--design_file <md>`: 設計ファイル（`--task_file` が無い時に使用）。
-- `--target <branch>`: 統合先ブランチ（既定 `main`）。
+- `--target <branch>`: 統合先ブランチ（既定は `--design_file` から導出する `design/<stem>-<crc32>`。設計ファイル未設定時のみ `main` にフォールバック。存在しないブランチは自動作成される）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
 - `--model` / `--effort`: **implement チャンネル全てのモデル / effort を一括上書き**（既定は `vendors.yaml` の `roles.implement` 各チャンネル値）。短名（例: `hy3:Free`）も可 — コード側 `normalize_model()` が実名（例: `tencent/hy3:free`）に自動正規化される。review ベンダーは影響しない。
 - `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override（投機的モードのトリガー）**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用）。**この指定自体が投機的モードを意味する** — 複数チャンネルが同じタスクを競って実装し、最初に review を通した勝者を統合する。
