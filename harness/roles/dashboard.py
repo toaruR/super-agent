@@ -12,10 +12,21 @@ Improvements (dashboard-improvement design):
   * Dark-mode HTML with colour-coded status badges + a summary card.
   * Markdown output gains a progress-summary section while still emitting the
     ``| task-id | status |`` table (kept for CLI compatibility).
+
+Awareness improvements (dashboard-awareness design):
+  * Stale detection: non-terminal tasks (``created`` / ``scheduled`` /
+    ``leased`` / ``implemented``) whose ``updated_at`` is older than a
+    threshold (default 30 minutes) are flagged ``is_stale`` so a stuck task is
+    not shown with the same badge as a healthy in-progress one.
+  * Failure reason: when a task settles on ``failed``, the reason string of the
+    causing event (``error`` → ``reason`` → ``why``) is kept on the model and
+    surfaced by both renderers.
+  * A colour-coded progress bar in the HTML summary card.
 """
 from __future__ import annotations
 
 import html
+import time
 from datetime import datetime
 from typing import Any
 
@@ -57,6 +68,20 @@ STATUS_RANK = {
 # with harness/cli.py::_DONE_STATUSES.
 _DONE_STATUSES = ("integrated", "passed")
 
+# Statuses that are still "in flight": a task sitting in one of these has work
+# outstanding, so it is a candidate for stale detection. Every other status
+# (integrated / passed / failed / judgment:* / custom) is treated as terminal
+# and is never flagged stale.
+_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "implemented")
+
+# Default stale threshold: a non-terminal task untouched for this long (in
+# seconds) is considered stuck. Overridable per call via build_model(...,
+# stale_after=...); deliberately not config-file driven yet.
+_DEFAULT_STALE_AFTER = 30 * 60
+
+# Event fields consulted, in order, when extracting a failure reason.
+_REASON_FIELDS = ("error", "reason", "why")
+
 # Transient / lifecycle events that must NOT pin a task's status (requirement
 # B: "過渡イベントで状態が止まらず"). They are informational only, so the
 # final status is derived from a terminal event instead of a raw transient type.
@@ -84,6 +109,20 @@ _STATUS_BADGE = {
     "failed": ("Failed", "badge-red"),
     "unknown": ("Unknown", "badge-gray"),
 }
+
+# Colour buckets used by the HTML progress bar. A stale task is pulled out of
+# its status bucket and shown in the dedicated orange one.
+_BAR_BUCKETS = (
+    ("Completed", "bar-green", ("integrated", "passed")),
+    ("In Progress", "bar-blue", ("implemented", "leased")),
+    ("Stale", "bar-orange", ()),
+    ("Failed", "bar-red", ("failed",)),
+    ("Pending", "bar-gray", ("scheduled", "created")),
+)
+
+# Maximum number of characters of a failure reason rendered inline; the full
+# text stays available through the ``title`` attribute.
+_REASON_MAX_LEN = 80
 
 
 def _rank_of(status: str) -> int:
@@ -123,6 +162,56 @@ def _badge(status: str) -> tuple[str, str]:
     if status in _STATUS_BADGE:
         return _STATUS_BADGE[status]
     return status, "badge-gray"
+
+
+def _task_badge(info: dict[str, Any]) -> tuple[str, str]:
+    """Return ``(label, css_class)`` for a task entry's badge.
+
+    A stale task keeps its status label but is rendered in the dedicated
+    orange class so it is visually distinct from a healthy in-progress task.
+    """
+    label, cls = _badge(info["status"])
+    if info.get("is_stale"):
+        return f"{label} (Stale)", "badge-orange"
+    return label, cls
+
+
+def _event_reason(ev: dict[str, Any]) -> str:
+    """Extract a failure reason from an event.
+
+    ``error`` → ``reason`` → ``why``: the first field that carries a truthy
+    value wins. Returns ``""`` when the event carries none of them (callers
+    must not invent a placeholder).
+    """
+    for field in _REASON_FIELDS:
+        value = ev.get(field)
+        if value:
+            return str(value)
+    return ""
+
+
+def _is_stale(
+    status: str | None,
+    updated_at: Any,
+    now_ts: float,
+    stale_after: float,
+) -> bool:
+    """Return True when a non-terminal task has been untouched for too long.
+
+    Only ``created`` / ``scheduled`` / ``leased`` / ``implemented`` qualify;
+    terminal statuses (``integrated`` / ``passed`` / ``failed`` / custom) are
+    never stale. Tasks without a usable ``updated_at`` are not stale either —
+    we cannot prove they are stuck.
+    """
+    if status not in _NON_TERMINAL_STATUSES:
+        return False
+    if not updated_at:
+        return False
+    try:
+        updated = float(updated_at)
+    except (TypeError, ValueError):
+        return False
+    return (now_ts - updated) > stale_after
 
 
 def _event_status(ev: dict[str, Any]) -> tuple[str | None, int]:
@@ -199,6 +288,7 @@ def _empty_task_entry() -> dict[str, Any]:
         "status": None, "_rank": None,
         "design_file": "", "task_file": "",
         "created_at": "", "updated_at": "",
+        "is_stale": False, "reason": "",
     }
 
 
@@ -237,12 +327,16 @@ def _merge_meta(agg: dict[str, Any], entry: dict[str, Any]) -> None:
         agg["updated_at"] = ua
 
 
-def build_model(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def build_model(
+    events: list[dict[str, Any]],
+    now: float | None = None,
+    stale_after: float = _DEFAULT_STALE_AFTER,
+) -> dict[str, dict[str, Any]]:
     """Convert ledger events into a structured model mapping task_id -> info.
 
     Each info dict has keys: ``status``, ``design_file``, ``task_file``,
     ``created_at``, ``updated_at`` (the latter two are unix-epoch seconds, or
-    ``""`` when no event carried a ``ts``).
+    ``""`` when no event carried a ``ts``), ``is_stale`` and ``reason``.
 
     Two passes:
 
@@ -261,14 +355,31 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
        created_at/updated_at span the earliest/latest across itself and all
        sub-channels.
 
+    Finally each logical task is annotated with:
+
+    * ``is_stale``: True when the task sits in a non-terminal status
+      (``created`` / ``scheduled`` / ``leased`` / ``implemented``) and its
+      ``updated_at`` is older than ``stale_after`` seconds relative to ``now``.
+      Terminal statuses (``integrated`` / ``passed`` / ``failed`` / custom) are
+      never stale.
+    * ``reason``: for tasks that settled on ``failed``, the reason string of the
+      causing event (``error`` → ``reason`` → ``why``, first match wins). Left
+      as ``""`` when unavailable or when the task did not fail — never padded
+      with a placeholder.
+
     Args:
         events: List of ledger event dicts.
+        now: Reference timestamp (unix epoch seconds) for stale detection.
+            Defaults to the current wall clock; tests inject a fixed value.
+        stale_after: Stale threshold in seconds (default 30 minutes).
 
     Returns:
         Dict mapping logical task_id to an info dict.
     """
     if not events:
         return {}
+
+    now_ts = time.time() if now is None else float(now)
 
     # Pass 1: raw task id -> strongest status + meta.
     raw: dict[str, dict[str, Any]] = {}
@@ -283,9 +394,21 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         _merge_event_meta(entry, ev)
 
         status, rank = _event_status(ev)
-        if status is not None and (entry["_rank"] is None or rank > entry["_rank"]):
+        if status is None:
+            continue
+        if entry["_rank"] is None or rank > entry["_rank"]:
             entry["status"] = status
             entry["_rank"] = rank
+            if status == "failed":
+                entry["reason"] = _event_reason(ev)
+        elif status == "failed" and not entry["reason"]:
+            # Same-rank failure event: keep the first reason we can find so a
+            # bare `review.fail` doesn't mask a later, detailed error event.
+            entry["reason"] = _event_reason(ev)
+
+    for entry in raw.values():
+        if entry["status"] != "failed":
+            entry["reason"] = ""
 
     # Pass 2: aggregate speculative sub-channels into parent logical tasks.
     aggregated: dict[str, dict[str, Any]] = {}
@@ -300,10 +423,18 @@ def build_model(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if agg["_rank"] is None or entry["_rank"] > agg["_rank"]:
             agg["status"] = entry["status"]
             agg["_rank"] = entry["_rank"]
+            agg["reason"] = entry["reason"]
+        elif entry["status"] == agg["status"] and entry["reason"] and not agg["reason"]:
+            agg["reason"] = entry["reason"]
         _merge_meta(agg, entry)
 
     for entry in aggregated.values():
         entry.pop("_rank", None)
+        if entry["status"] != "failed":
+            entry["reason"] = ""
+        entry["is_stale"] = _is_stale(
+            entry["status"], entry["updated_at"], now_ts, stale_after
+        )
     return aggregated
 
 
@@ -332,27 +463,100 @@ def progress_summary(model: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
     Returns a dict with keys: ``total`` (logical task count), ``done`` (count of
     integrated/passed), ``rate`` (done/total as a percentage, 0.0 when empty),
-    and ``counts`` (status -> count).
+    ``counts`` (status -> count) and ``stale`` (count of tasks flagged
+    ``is_stale``).
     """
     total = len(model)
     counts: dict[str, int] = {}
+    stale = 0
     for info in model.values():
         status = info["status"]
         counts[status] = counts.get(status, 0) + 1
+        if info.get("is_stale"):
+            stale += 1
     done = sum(c for s, c in counts.items() if s in _DONE_STATUSES)
     rate = (done / total * 100.0) if total else 0.0
-    return {"total": total, "done": done, "rate": rate, "counts": counts}
+    return {"total": total, "done": done, "rate": rate,
+            "counts": counts, "stale": stale}
+
+
+def progress_bar_segments(
+    model: dict[str, dict[str, Any]]
+) -> list[tuple[str, str, int, float]]:
+    """Build the segments of the HTML progress bar.
+
+    Returns a list of ``(label, css_class, count, percent)`` tuples ordered as
+    completed → in progress → stale → failed → pending. Stale tasks are counted
+    only in the stale (orange) segment, never in their status bucket, so the
+    percentages always add up to 100. Empty segments are omitted.
+    """
+    total = len(model)
+    if not total:
+        return []
+
+    stale = sum(1 for info in model.values() if info.get("is_stale"))
+    counts: dict[str, int] = {}
+    for info in model.values():
+        if info.get("is_stale"):
+            continue
+        status = info["status"]
+        counts[status] = counts.get(status, 0) + 1
+
+    segments: list[tuple[str, str, int, float]] = []
+    for label, cls, statuses in _BAR_BUCKETS:
+        count = stale if cls == "bar-orange" else sum(
+            counts.get(s, 0) for s in statuses)
+        if count:
+            segments.append((label, cls, count, count / total * 100.0))
+
+    # Anything not covered by a bucket (custom / judgment:* statuses) is shown
+    # in the gray "Other" tail so the bar still totals 100%.
+    bucketed = sum(seg[2] for seg in segments)
+    if bucketed < total:
+        other = total - bucketed
+        segments.append(("Other", "bar-gray", other, other / total * 100.0))
+    return segments
+
+
+def _shorten(text: str, limit: int = _REASON_MAX_LEN) -> str:
+    """Truncate ``text`` to ``limit`` characters with an ellipsis."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _md_status_cell(info: dict[str, Any]) -> str:
+    """Status cell text for the Markdown table.
+
+    Stale rows keep the raw status (CLI consumers grep for ``| id | status |``)
+    and gain a ``⚠ stale`` marker so they are distinguishable from healthy
+    in-progress rows.
+    """
+    status = html.escape(info["status"])
+    if info.get("is_stale"):
+        return f"{status} ⚠ stale"
+    return status
+
+
+def _md_cell(text: str) -> str:
+    """Escape a free-form string for safe inclusion in a Markdown table cell."""
+    return html.escape(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
 def render_markdown(model: dict[str, dict[str, Any]]) -> str:
     """Render the task status model as Markdown.
 
     Emits a progress-summary section followed by the task list grouped into
-    one ``| Task ID | Status | Created At | Updated At |`` table per
+    one ``| Task ID | Status | Created At | Updated At | Reason |`` table per
     design_file (the ``### <design_file>`` heading carries the grouping, so
     the table itself no longer repeats it per row). The
     ``| Task ID | Status |`` prefix of each row is kept for CLI compatibility
     with older consumers of this table.
+
+    Stale rows are marked ``⚠ stale`` in the status column, and failed rows
+    carry the failure reason in the trailing ``Reason`` column (left blank when
+    no reason is available). No visual progress bar is emitted here — the
+    textual distribution is enough for Markdown (design non-goal).
     """
     summary = progress_summary(model)
     lines = ["# Dashboard", ""]
@@ -371,6 +575,8 @@ def render_markdown(model: dict[str, dict[str, Any]]) -> str:
                                key=lambda kv: (-kv[1], kv[0]))
         )
         lines.append(f"- By status: {dist}")
+        if summary["stale"]:
+            lines.append(f"- Stale (no progress for a while): {summary['stale']}")
         lines.append("")
 
     lines.append("## Tasks")
@@ -379,13 +585,14 @@ def render_markdown(model: dict[str, dict[str, Any]]) -> str:
         for design_file, tasks in group_by_design_file(model).items():
             lines.append(f"### {html.escape(design_file)}")
             lines.append("")
-            lines.append("| Task ID | Status | Created At | Updated At |")
-            lines.append("| --- | --- | --- | --- |")
+            lines.append("| Task ID | Status | Created At | Updated At | Reason |")
+            lines.append("| --- | --- | --- | --- | --- |")
             for task_id, info in sorted(tasks.items()):
                 lines.append(
-                    f"| {html.escape(task_id)} | {html.escape(info['status'])} | "
+                    f"| {html.escape(task_id)} | {_md_status_cell(info)} | "
                     f"{html.escape(format_ts(info['created_at']))} | "
-                    f"{html.escape(format_ts(info['updated_at']))} |"
+                    f"{html.escape(format_ts(info['updated_at']))} | "
+                    f"{_md_cell(info.get('reason') or '')} |"
                 )
             lines.append("")
     else:
@@ -415,15 +622,66 @@ _HTML_CSS = """
   .badge-blue  { background:rgba(59,130,246,.18); color:#60a5fa; }
   .badge-red   { background:rgba(239,68,68,.18);  color:#f87171; }
   .badge-gray  { background:rgba(148,163,184,.18); color:#cbd5e1; }
+  .badge-orange { background:rgba(249,115,22,.20); color:#fb923c; }
+  .progress-bar { display:flex; width:100%; height:14px; border-radius:999px; overflow:hidden; background:#0f172a; margin-top:1rem; }
+  .progress-bar .seg { height:100%; }
+  .bar-green  { background:#22c55e; }
+  .bar-blue   { background:#3b82f6; }
+  .bar-orange { background:#f97316; }
+  .bar-red    { background:#ef4444; }
+  .bar-gray   { background:#64748b; }
+  .bar-legend { display:flex; gap:1rem; flex-wrap:wrap; margin-top:.55rem; color:#94a3b8; font-size:.72rem; }
+  .bar-legend .key { display:inline-block; width:.6rem; height:.6rem; border-radius:2px; margin-right:.35rem; }
+  .reason { display:block; margin-top:.3rem; color:#fca5a5; font-size:.72rem; line-height:1.3; max-width:34rem; }
 """
+
+
+def _reason_html(info: dict[str, Any]) -> str:
+    """Render the failure reason under a Failed badge.
+
+    Returns ``""`` when the task carries no reason — nothing is padded in.
+    Long reasons are truncated inline and kept in full in ``title``.
+    """
+    reason = (info.get("reason") or "").strip()
+    if not reason:
+        return ""
+    return (
+        f'<span class="reason" title="{html.escape(reason, quote=True)}">'
+        f'{html.escape(_shorten(reason))}</span>'
+    )
+
+
+def _progress_bar_html(model: dict[str, dict[str, Any]]) -> str:
+    """Render the colour-coded progress bar plus its legend.
+
+    Returns ``""`` for an empty model so the summary card degrades to the
+    existing numbers-only layout.
+    """
+    segments = progress_bar_segments(model)
+    if not segments:
+        return ""
+    bar = "".join(
+        f'<span class="seg {cls}" style="width:{pct:.1f}%" '
+        f'title="{html.escape(label, quote=True)}: {count} ({pct:.1f}%)"></span>'
+        for label, cls, count, pct in segments
+    )
+    legend = "".join(
+        f'<span><span class="key {cls}"></span>{html.escape(label)} {count}</span>'
+        for label, cls, count, _pct in segments
+    )
+    return (
+        f'<div class="progress-bar">{bar}</div>\n'
+        f'<div class="bar-legend">{legend}</div>\n'
+    )
 
 
 def render_html(model: dict[str, dict[str, Any]]) -> str:
     """Render the task status model as a dark-mode HTML dashboard.
 
-    Includes a progress-summary card (total / completed / rate / distribution)
-    and a table of tasks with colour-coded status badges plus design file and
-    created/updated timestamps.
+    Includes a progress-summary card (total / completed / rate / distribution
+    plus a colour-coded progress bar) and a table of tasks with colour-coded
+    status badges — orange for stale tasks — the failure reason under a Failed
+    badge, and design file / created / updated timestamps.
     """
     summary = progress_summary(model)
 
@@ -431,10 +689,11 @@ def render_html(model: dict[str, dict[str, Any]]) -> str:
     for design_file, tasks in group_by_design_file(model).items():
         rows = ""
         for task_id, info in sorted(tasks.items()):
-            label, cls = _badge(info["status"])
+            label, cls = _task_badge(info)
             rows += (
                 f'<tr><td>{html.escape(task_id)}</td>'
-                f'<td><span class="badge {cls}">{html.escape(label)}</span></td>'
+                f'<td><span class="badge {cls}">{html.escape(label)}</span>'
+                f'{_reason_html(info)}</td>'
                 f'<td>{html.escape(format_ts(info["created_at"]))}</td>'
                 f'<td>{html.escape(format_ts(info["updated_at"]))}</td></tr>\n'
             )
@@ -452,6 +711,10 @@ def render_html(model: dict[str, dict[str, Any]]) -> str:
         for k, v in sorted(summary["counts"].items(),
                            key=lambda kv: (-kv[1], kv[0]))
     )
+    if summary["stale"]:
+        dist += (
+            f'<span class="badge badge-orange">stale={summary["stale"]}</span>'
+        )
 
     return (
         "<!DOCTYPE html>\n"
@@ -474,6 +737,7 @@ def render_html(model: dict[str, dict[str, Any]]) -> str:
         f'<div class="metric"><div class="num">{summary["rate"]:.1f}%</div>'
         '<div class="lbl">Progress</div></div>\n'
         '</div>\n'
+        f"{_progress_bar_html(model)}"
         f'<div class="dist">{dist}</div>\n'
         "</div>\n"
         f"{tables}"

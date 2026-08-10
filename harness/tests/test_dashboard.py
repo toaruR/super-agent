@@ -6,10 +6,15 @@ from harness.roles.dashboard import (
     build_model,
     format_ts,
     group_by_design_file,
+    progress_bar_segments,
     progress_summary,
     render_html,
     render_markdown,
 )
+
+# Fixed reference clock used by the stale tests (2021-01-01T00:00:00Z + 1 day).
+NOW = 1609545600.0
+HOUR = 3600.0
 
 
 def _model(**tasks: str) -> dict:
@@ -18,6 +23,7 @@ def _model(**tasks: str) -> dict:
         task_id: {
             "status": status, "design_file": "", "task_file": "",
             "created_at": "", "updated_at": "",
+            "is_stale": False, "reason": "",
         }
         for task_id, status in tasks.items()
     }
@@ -312,3 +318,325 @@ def test_format_ts_formats_epoch() -> None:
     out = format_ts(1609459200)
     assert out != "-"
     assert "2020" in out or "2021" in out  # tz-dependent, just sanity check
+
+
+# --- stale detection (build_model) -----------------------------------------
+
+
+def _stale_events(status_type: str, ts: float) -> list[dict]:
+    return [{"task_id": "T", "type": status_type, "ts": ts}]
+
+
+def test_build_model_flags_stale_non_terminal_task() -> None:
+    """A leased task untouched for longer than the threshold is stale."""
+    model = build_model(_stale_events("task.leased", NOW - HOUR), now=NOW)
+    assert model["T"]["status"] == "leased"
+    assert model["T"]["is_stale"] is True
+
+
+def test_build_model_fresh_non_terminal_task_is_not_stale() -> None:
+    """Within the threshold (default 30 min) the task is healthy."""
+    model = build_model(_stale_events("task.leased", NOW - 60), now=NOW)
+    assert model["T"]["is_stale"] is False
+
+
+def test_build_model_stale_threshold_is_thirty_minutes_by_default() -> None:
+    """Boundary: exactly 30 minutes is not yet stale, 30 min + 1s is."""
+    at_limit = build_model(_stale_events("task.leased", NOW - 1800), now=NOW)
+    just_over = build_model(_stale_events("task.leased", NOW - 1801), now=NOW)
+    assert at_limit["T"]["is_stale"] is False
+    assert just_over["T"]["is_stale"] is True
+
+
+def test_build_model_stale_after_is_overridable() -> None:
+    """The threshold is injectable via the stale_after argument."""
+    events = _stale_events("task.leased", NOW - 300)  # 5 minutes old
+    assert build_model(events, now=NOW)["T"]["is_stale"] is False
+    assert build_model(events, now=NOW, stale_after=60)["T"]["is_stale"] is True
+    assert build_model(events, now=NOW, stale_after=HOUR)["T"]["is_stale"] is False
+
+
+def test_build_model_all_non_terminal_statuses_can_be_stale() -> None:
+    """created / scheduled / leased / implemented are all stale candidates."""
+    for type_, status in (
+        ("task.created", "created"),
+        ("task.scheduled", "scheduled"),
+        ("task.leased", "leased"),
+        ("task.implemented", "implemented"),
+    ):
+        model = build_model(_stale_events(type_, NOW - HOUR), now=NOW)
+        assert model["T"]["status"] == status
+        assert model["T"]["is_stale"] is True, f"{status} should be stale"
+
+
+def test_build_model_terminal_statuses_are_never_stale() -> None:
+    """integrated / passed / failed are terminal: never flagged stale even
+    when their last event is ancient."""
+    for type_, status in (
+        ("integrate.ok", "integrated"),
+        ("review.pass", "passed"),
+        ("review.fail", "failed"),
+    ):
+        model = build_model(_stale_events(type_, NOW - 30 * 24 * HOUR), now=NOW)
+        assert model["T"]["status"] == status
+        assert model["T"]["is_stale"] is False, f"{status} must not be stale"
+
+
+def test_build_model_task_without_ts_is_not_stale() -> None:
+    """No updated_at means we cannot prove the task is stuck."""
+    model = build_model([{"task_id": "T", "type": "task.leased"}], now=NOW)
+    assert model["T"]["updated_at"] == ""
+    assert model["T"]["is_stale"] is False
+
+
+def test_build_model_stale_uses_aggregated_updated_at() -> None:
+    """A logical task is judged on the latest activity across its
+    sub-channels, not on the parent's own (older) event."""
+    events = [
+        {"task_id": "PA", "type": "task.created", "ts": NOW - 10 * HOUR},
+        {"task_id": "PA__hermes_0", "type": "task.leased", "ts": NOW - 60},
+    ]
+    model = build_model(events, now=NOW)
+    assert model["PA"]["updated_at"] == NOW - 60
+    assert model["PA"]["is_stale"] is False
+
+
+def test_build_model_default_now_uses_wall_clock() -> None:
+    """Omitting `now` falls back to the current time (no crash, recent event
+    is not stale)."""
+    import time
+
+    model = build_model([{"task_id": "T", "type": "task.leased", "ts": time.time()}])
+    assert model["T"]["is_stale"] is False
+
+
+# --- failure reason (build_model) ------------------------------------------
+
+
+def test_build_model_extracts_failure_reason_from_error() -> None:
+    events = [
+        {"task_id": "T", "type": "task.leased"},
+        {"task_id": "T", "type": "implementer.error", "error": "vendor exited 1"},
+    ]
+    model = build_model(events, now=NOW)
+    assert model["T"]["status"] == "failed"
+    assert model["T"]["reason"] == "vendor exited 1"
+
+
+def test_build_model_failure_reason_field_priority() -> None:
+    """error → reason → why: the first present field wins."""
+    all_three = build_model(
+        [{"task_id": "T", "type": "review.fail",
+          "error": "E", "reason": "R", "why": "W"}], now=NOW)
+    assert all_three["T"]["reason"] == "E"
+
+    reason_only = build_model(
+        [{"task_id": "T", "type": "review.fail", "reason": "R", "why": "W"}],
+        now=NOW)
+    assert reason_only["T"]["reason"] == "R"
+
+    why_only = build_model(
+        [{"task_id": "T", "type": "review.fail", "why": "W"}], now=NOW)
+    assert why_only["T"]["reason"] == "W"
+
+
+def test_build_model_failure_reason_absent_stays_empty() -> None:
+    """No reason field available → the model must not invent one."""
+    model = build_model([{"task_id": "T", "type": "review.fail"}], now=NOW)
+    assert model["T"]["status"] == "failed"
+    assert model["T"]["reason"] == ""
+
+
+def test_build_model_non_failed_task_has_no_reason() -> None:
+    """An `error` payload on a non-failing task must not leak into reason."""
+    events = [
+        {"task_id": "T", "type": "implementer.error", "error": "transient boom"},
+        {"task_id": "T", "type": "integrate.ok"},
+    ]
+    model = build_model(events, now=NOW)
+    assert model["T"]["status"] == "integrated"
+    assert model["T"]["reason"] == ""
+
+
+def test_build_model_failure_reason_from_judgment_verdict() -> None:
+    events = [
+        {"task_id": "T", "type": "judgment", "verdict": "FAIL",
+         "reason": "acceptance criteria not met"},
+    ]
+    model = build_model(events, now=NOW)
+    assert model["T"]["status"] == "failed"
+    assert model["T"]["reason"] == "acceptance criteria not met"
+
+
+def test_build_model_failure_reason_survives_bare_failure_event() -> None:
+    """A bare `review.fail` followed by a detailed error event keeps the
+    detailed reason (same rank → first available reason wins)."""
+    events = [
+        {"task_id": "T", "type": "review.fail"},
+        {"task_id": "T", "type": "implementer.error", "error": "detailed boom"},
+    ]
+    model = build_model(events, now=NOW)
+    assert model["T"]["status"] == "failed"
+    assert model["T"]["reason"] == "detailed boom"
+
+
+def test_build_model_failure_reason_aggregated_from_subchannel() -> None:
+    events = [
+        {"task_id": "PA", "type": "task.created"},
+        {"task_id": "PA__hermes_0", "type": "implementer.error", "error": "sub boom"},
+    ]
+    model = build_model(events, now=NOW)
+    assert model["PA"]["status"] == "failed"
+    assert model["PA"]["reason"] == "sub boom"
+
+
+# --- progress summary / bar segments ---------------------------------------
+
+
+def test_progress_summary_counts_stale() -> None:
+    model = _model(a="leased", b="integrated")
+    model["a"]["is_stale"] = True
+    s = progress_summary(model)
+    assert s["stale"] == 1
+
+
+def test_progress_bar_segments_empty_model() -> None:
+    assert progress_bar_segments({}) == []
+
+
+def test_progress_bar_segments_percentages_sum_to_100() -> None:
+    model = _model(a="integrated", b="passed", c="implemented",
+                   d="failed", e="scheduled")
+    segments = progress_bar_segments(model)
+    labels = {label: (cls, count) for label, cls, count, _ in segments}
+    assert labels["Completed"] == ("bar-green", 2)
+    assert labels["In Progress"] == ("bar-blue", 1)
+    assert labels["Failed"] == ("bar-red", 1)
+    assert labels["Pending"] == ("bar-gray", 1)
+    assert abs(sum(pct for *_x, pct in segments) - 100.0) < 1e-6
+
+
+def test_progress_bar_segments_stale_has_its_own_bucket() -> None:
+    """A stale task is counted in the orange stale segment, not in the blue
+    in-progress one."""
+    model = _model(a="leased", b="leased")
+    model["a"]["is_stale"] = True
+    segments = progress_bar_segments(model)
+    labels = {label: (cls, count) for label, cls, count, _ in segments}
+    assert labels["Stale"] == ("bar-orange", 1)
+    assert labels["In Progress"] == ("bar-blue", 1)
+
+
+def test_progress_bar_segments_unbucketed_status_goes_to_other() -> None:
+    model = _model(a="integrated", b="custom_status")
+    segments = progress_bar_segments(model)
+    labels = {label: count for label, _cls, count, _pct in segments}
+    assert labels["Other"] == 1
+    assert abs(sum(pct for *_x, pct in segments) - 100.0) < 1e-6
+
+
+# --- HTML rendering: stale / reason / progress bar --------------------------
+
+
+def test_render_html_stale_badge_is_orange_and_labelled() -> None:
+    model = _model(fresh="leased", stuck="leased")
+    model["stuck"]["is_stale"] = True
+    out = render_html(model)
+    assert 'class="badge badge-orange"' in out
+    assert "Stale" in out
+    # the healthy task keeps the blue in-progress badge
+    assert 'class="badge badge-blue"' in out
+
+
+def test_render_html_no_stale_badge_when_nothing_is_stale() -> None:
+    out = render_html(_model(a="leased"))
+    assert "badge-orange" not in out.split("<style>")[-1].split("</style>")[-1]
+
+
+def test_render_html_shows_failure_reason_under_badge() -> None:
+    model = _model(a="failed")
+    model["a"]["reason"] = "vendor exited 1"
+    out = render_html(model)
+    assert 'class="reason"' in out
+    assert "vendor exited 1" in out
+
+
+def test_render_html_long_reason_is_truncated_with_title() -> None:
+    long_reason = "x" * 200
+    model = _model(a="failed")
+    model["a"]["reason"] = long_reason
+    out = render_html(model)
+    # full text preserved in the title attribute
+    assert f'title="{long_reason}"' in out
+    # but the inline text is shortened
+    assert f">{long_reason}<" not in out
+    assert "…" in out
+
+
+def test_render_html_no_reason_element_when_reason_missing() -> None:
+    out = render_html(_model(a="failed"))
+    assert 'class="reason"' not in out
+
+
+def test_render_html_progress_bar_present_with_colour_segments() -> None:
+    model = _model(a="integrated", b="implemented", c="failed", d="scheduled")
+    model["e"] = dict(model["a"], status="leased", is_stale=True)
+    out = render_html(model)
+    assert 'class="progress-bar"' in out
+    assert "bar-green" in out
+    assert "bar-blue" in out
+    assert "bar-red" in out
+    assert "bar-gray" in out
+    assert "bar-orange" in out
+    # existing numeric metrics + distribution badges are preserved
+    assert "Logical Tasks" in out
+    assert "Completed" in out
+    assert 'class="dist"' in out
+
+
+def test_render_html_progress_bar_absent_for_empty_model() -> None:
+    out = render_html({})
+    assert 'class="progress-bar"' not in out
+
+
+def test_render_html_summary_dist_includes_stale_badge() -> None:
+    model = _model(a="leased")
+    model["a"]["is_stale"] = True
+    out = render_html(model)
+    assert "stale=1" in out
+
+
+# --- Markdown rendering: stale / reason -------------------------------------
+
+
+def test_render_markdown_marks_stale_rows() -> None:
+    model = _model(fresh="leased", stuck="leased")
+    model["stuck"]["is_stale"] = True
+    md = render_markdown(model)
+    assert "| stuck | leased ⚠ stale |" in md
+    assert "| fresh | leased |" in md
+    assert "Stale (no progress for a while): 1" in md
+
+
+def test_render_markdown_has_reason_column() -> None:
+    model = _model(a="failed", b="integrated")
+    model["a"]["reason"] = "vendor exited 1"
+    md = render_markdown(model)
+    assert "| Task ID | Status | Created At | Updated At | Reason |" in md
+    assert "vendor exited 1" in md
+    # no reason → the column stays blank, nothing invented
+    assert "| b | integrated | - | - |  |" in md
+
+
+def test_render_markdown_reason_pipes_are_escaped() -> None:
+    model = _model(a="failed")
+    model["a"]["reason"] = "cmd | grep failed"
+    md = render_markdown(model)
+    assert "cmd \\| grep failed" in md
+
+
+def test_render_markdown_table_prefix_stays_cli_compatible() -> None:
+    """Legacy consumers grep for `| <id> | <status> |`; adding the reason
+    column must not break that prefix."""
+    md = render_markdown(_model(**{"task-1": "integrated"}))
+    assert "| task-1 | integrated |" in md
