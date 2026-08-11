@@ -205,3 +205,55 @@ def test_implement_self_score_none_when_vendor_output_unparseable(monkeypatch, t
     out = implement("T1", _task(), str(wt), vendor="claude")
     assert out["ok"] is True
     assert out["self_score"] is None
+
+
+def test_implementer_draft_saved_and_resumed(tmp_path, monkeypatch):
+    """implementer 実行時に途中失敗で .implement_draft が作成され、再実行時にプロンプトへ引き継がれ、
+    成功時に .implement_draft が削除されることを確認する。"""
+    import subprocess as _sp
+    from harness.core.invoke import atomic_write_draft
+    import harness.roles.implementer as impl_mod
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "wclite").mkdir()
+    (wt / "wclite" / "core.py").write_text("x=1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(wt), "init", "-q"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(wt), "config", "user.email", "t@e.st"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(wt), "config", "user.name", "t"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(wt), "commit", "--allow-empty", "-m", "init"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    draft_path = wt / ".implement_draft"
+    prompts_captured = []
+
+    def fake_invoke_fail(decl, prompt, **kw):
+        prompts_captured.append(prompt)
+        dp = kw.get("draft_path")
+        if dp:
+            atomic_write_draft(dp, "途中の思考ログ: コード修正中")
+        raise _sp.TimeoutExpired(cmd=[decl.name], timeout=1800)
+
+    def fake_invoke_pass(decl, prompt, **kw):
+        prompts_captured.append(prompt)
+        (wt / "wclite" / "core.py").write_text("x=2\n", encoding="utf-8")
+        return {"cmd": [decl.name], "returncode": 0, "stdout": "", "stderr": ""}
+
+    # 1. First run: timeout failure, leaves .implement_draft behind
+    monkeypatch.setattr(impl_mod, "invoke", fake_invoke_fail)
+    res1 = impl_mod.implement("T1", _task(), str(wt), vendor="claude")
+    assert res1.get("ok") is False or "error" in res1
+    assert draft_path.exists()
+    assert "途中の思考ログ" in draft_path.read_text(encoding="utf-8")
+
+    # 2. Second run: recovers .implement_draft into prompt and succeeds
+    monkeypatch.setattr(impl_mod, "invoke", fake_invoke_pass)
+    res2 = impl_mod.implement("T1", _task(), str(wt), vendor="agy")
+    assert res2.get("ok") is True
+    assert not draft_path.exists()  # draft deleted after success
+    assert "前回の実装試行での思考ログ・ドラフト" in prompts_captured[-1]
+    assert "途中の思考ログ: コード修正中" in prompts_captured[-1]
+

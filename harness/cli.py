@@ -233,6 +233,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             model=design_role["model"], effort=design_role["effort"],
             seq=seq, design_file=args.design_file,
             timeout=design_role["timeout"],
+            task_file=str(tasks_file.resolve()),
         )
         if not out.get("ok"):
             seq.stop()

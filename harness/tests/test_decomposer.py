@@ -271,3 +271,45 @@ def test_plan_reuses_existing_tasks_file(monkeypatch, tmp_path):
     # reused_tasks_file marks the no-vendor path
     assert out["decompose"].get("reused_tasks_file") is True
     assert out["schedule"]["ok"] is True
+
+
+def test_decomposer_draft_saved_and_resumed(tmp_path, monkeypatch):
+    """decomposer 実行時に途中失敗で .draft が作成され、再実行時にプロンプトへ引き継がれ、
+    成功時に .draft が削除されることを確認する。"""
+    import subprocess as _sp
+    from harness.core.invoke import atomic_write_draft
+    import harness.roles.decomposer as decomp_mod
+
+    task_file = tmp_path / "tasks.md"
+    draft_path = tmp_path / "tasks.md.draft"
+
+    prompts_captured = []
+
+    def fake_invoke_fail(decl, prompt, **kw):
+        prompts_captured.append(prompt)
+        dp = kw.get("draft_path")
+        if dp:
+            atomic_write_draft(dp, "途中の思考ログ: タスク分解案")
+        raise _sp.TimeoutExpired(cmd=[decl.name], timeout=1800)
+
+    def fake_invoke_pass(decl, prompt, **kw):
+        prompts_captured.append(prompt)
+        return {"cmd": [decl.name], "returncode": 0,
+                "result": {"tasks": [{"task_id": "T1", "goal": "goal1",
+                                       "acceptance": [{"verb": "pytest", "args": ["tests/"]}]}]}}
+
+    # 1. First run: timeout failure, leaves .draft behind
+    monkeypatch.setattr(decomp_mod, "invoke", fake_invoke_fail)
+    res1 = decomp_mod.decompose("T1", "要件", "claude", task_file=str(task_file))
+    assert res1.get("ok") is False or "error" in res1
+    assert draft_path.exists()
+    assert "途中の思考ログ" in draft_path.read_text(encoding="utf-8")
+
+    # 2. Second run: recovers .draft into prompt and succeeds
+    monkeypatch.setattr(decomp_mod, "invoke", fake_invoke_pass)
+    res2 = decomp_mod.decompose("T2", "要件", "agy", task_file=str(task_file))
+    assert res2.get("ok") is True
+    assert not draft_path.exists()  # draft deleted after success
+    assert "前回の試行で途中まで作成されたタスク分解ドラフト" in prompts_captured[-1]
+    assert "途中の思考ログ: タスク分解案" in prompts_captured[-1]
+

@@ -152,6 +152,16 @@ def implement(task_id: str, task: dict, worktree_path: str,
 
     Returns a payload with ok/commit/cmd. Records ledger events when seq given.
     """
+    draft_p = Path(worktree_path) / ".implement_draft"
+    if draft_p.exists():
+        draft_text = draft_p.read_text(encoding="utf-8", errors="ignore")
+        notice = (
+            f"\n\n【前回の実装試行での思考ログ・ドラフト（引き継ぎ用）】\n"
+            f"---\n{draft_text}\n---\n"
+            f"前回の試行内容を参考に、未完了の部分を完成させ、指示に従って実装を行ってください。"
+        )
+        design_context = (design_context + notice) if design_context else notice
+
     goal = task.get("goal", "")
     touch_allow = task.get("touch_allow", [])
     prompt = IMPLEMENT_PROMPT.format(
@@ -190,7 +200,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
             decl, prompt, model=model, effort=effort, role="implement",
             worktree=worktree_path, cwd=str(worktree_path),
             timeout=timeout or DEFAULT_TIMEOUT, dry_run=dry_run,
-            progress_cb=progress_cb,
+            progress_cb=progress_cb, draft_path=str(draft_p),
         )
     except FileNotFoundError as e:
         if seq is not None:
@@ -223,6 +233,12 @@ def implement(task_id: str, task: dict, worktree_path: str,
                            detail=str(commit.get("error"))[:200])
         return {"ok": False, "task_id": task_id,
                 "error": commit.get("error"), "vendor_rc": run["returncode"]}
+
+    if draft_p.exists():
+        try:
+            draft_p.unlink()
+        except OSError:
+            pass
 
     if seq is not None:
         seq.propose(task_id, "artifact.produced",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 from harness.core.invoke import invoke, load_vendors
@@ -381,7 +382,8 @@ def _normalize_tasks(tasks: list[dict]) -> None:
 def decompose(task_id: str, requirement: str, vendor: str = "claude",
               existing_design: str = "", dry_run: bool = False,
               seq=None, model: str | None = None, effort: str | None = None,
-              design_file: str = "", timeout: int | None = None) -> dict:
+              design_file: str = "", timeout: int | None = None,
+              task_file: str | None = None) -> dict:
     """Decompose a requirement into a checked task DAG. Returns the payload.
 
     ledger events: task.created per task (after structural check passes).
@@ -395,6 +397,20 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
     emit = (lambda tid, typ, **kw: seq.propose(tid, typ, design_file=design_file, **kw)) \
         if seq is not None else (lambda tid, typ, **kw: None)
     invoke_kwargs = {"timeout": timeout} if timeout is not None else {}
+    if task_file:
+        draft_p = Path(f"{task_file}.draft")
+        if draft_p.exists():
+            draft_text = draft_p.read_text(encoding="utf-8", errors="ignore")
+            notice = (
+                f"\n\n【前回の試行で途中まで作成されたタスク分解ドラフト（引き継ぎ用）】\n"
+                f"---\n{draft_text}\n---\n"
+                f"前回の検討内容を検証・補足・完結させ、重複を避けつつ正しいフォーマットの JSON を出力してください。"
+            )
+            existing_design = (existing_design + notice) if existing_design else notice
+        invoke_kwargs["draft_path"] = str(draft_p)
+    else:
+        draft_p = None
+
     config_dir = Path(__file__).resolve().parent.parent / "config"
     registry = VerifierRegistry(config_dir / "verifiers.yaml")
     verbs = ", ".join(sorted(registry._map.keys()))
@@ -409,7 +425,17 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
     decls = load_vendors(config_dir)
     decl = decls.get(vendor, decls["claude"])
     prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
-    res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="design", dry_run=False, **invoke_kwargs)
+    try:
+        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="design", dry_run=False, **invoke_kwargs)
+    except FileNotFoundError as e:
+        err = str(e)
+        emit(task_id, "decompose.error", error=err)
+        return {"ok": False, "error": err}
+    except subprocess.TimeoutExpired as e:
+        err = f"vendor subprocess timed out after {e.timeout}s"
+        emit(task_id, "decompose.error", error=err)
+        return {"ok": False, "error": err}
+
     parsed = res.get("result") or {}
     if isinstance(parsed, str):
         # vendor returned a JSON string instead of a parsed object
@@ -425,6 +451,12 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
     if errs:
         emit(task_id, "decompose.rejected", errors=errs)
         return {"ok": False, "errors": errs, "tasks": tasks}
+
+    if draft_p and draft_p.exists():
+        try:
+            draft_p.unlink()
+        except OSError:
+            pass
 
     emit(task_id, "decompose.ok", n_tasks=len(tasks))
     for t in tasks:
