@@ -7,8 +7,10 @@
 # vendorサブプロセスの待ち時間（既定 DEFAULT_TIMEOUT=1800秒）を上書きできる。
 # 例: design: { vendor: claude, model: claude-sonnet-5, effort: high, timeout: 3600 }
 roles:
-  design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
-  planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務）
+  # design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
+  # planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務） 
+  design:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  planner:   { vendor: agy,    model: gemini-3.6-flash, effort: high }
   # implement はチャンネルリスト（Stage B 並列(b) のマルチチャンネル実装）。
   # 各エントリが1チャンネル = 独立 worktree で並列実行。チャンネル数 = リスト長。
   # model/effort はチャンネルごとに指定可。単一辞書 {vendor,model,effort} も後方互換。
@@ -125,11 +127,12 @@ agy:
     resume_flag: ["--resume-session-id"]
   permission:
     readonly:
-      - "--mode"
-      - "plan"
+      - "--allowedTools"
+      - "Read,Grep,Glob"
       # worktree の追加は headless の --add-dir {worktree} が担当（implement/reviewer 共通）。
-      # ここでは read-only の --mode plan のみ。agy の --mode plan は編集を硬くブロックする
-      # ため、implement ロールでは build_command が permission_flags を付けない。
+      # claude と同様、--allowedTools Read,Grep,Glob で読取専用ツールに制限する。
+      # 注意: agy の --mode plan は対話型Planningモードを起動し、指示されたJSON形式ではなく
+      # 人間向け対話メッセージを返してしまうため使用しない。
   brief_mode: path
 
 hermes:

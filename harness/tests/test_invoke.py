@@ -63,14 +63,18 @@ def test_codex_command_shape() -> None:
 
 def test_agy_command_shape() -> None:
     d = load_vendors("harness/config")["agy"]
-    # review role: readonly `--mode plan` applied; worktree path is injected via
-    # headless `--add-dir {worktree}` (implementer needs it too, reviewer sees it).
+    # review role: readonly `--allowedTools Read,Grep,Glob` applied (agy's
+    # `--mode plan` is NOT used — it triggers an interactive planning mode
+    # that returns human prose instead of the requested JSON, see
+    # vendors.yaml's agy.permission.readonly comment); worktree path is
+    # injected via headless `--add-dir {worktree}` (implementer needs it
+    # too, reviewer sees it).
     cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="./wt", role="review")
     assert cmd[0] == "agy"
-    assert "--mode" in cmd and "plan" in cmd
+    assert "--allowedTools" in cmd and "Read,Grep,Glob" in cmd
     assert "--add-dir" in cmd and "./wt" in cmd
-    # --mode plan appears once (from permission), --add-dir once (from headless)
-    assert cmd.count("--mode") == 1
+    # --allowedTools appears once (from permission), --add-dir once (from headless)
+    assert cmd.count("--allowedTools") == 1
     assert cmd.count("--add-dir") == 1
     # flag-order requirement (measured live, 2026-08-11): --output-format
     # stream-json MUST precede --print, or agy ignores the prompt entirely and

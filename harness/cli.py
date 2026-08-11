@@ -230,7 +230,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             task_id, requirement,
             vendor=design_role["vendor"],
             existing_design=spec_text, dry_run=args.dry_run,
-            model=getattr(args, "model", None), seq=seq, design_file=args.design_file,
+            model=design_role["model"], effort=design_role["effort"],
+            seq=seq, design_file=args.design_file,
             timeout=design_role["timeout"],
         )
         if not out.get("ok"):

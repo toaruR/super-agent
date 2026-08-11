@@ -138,10 +138,16 @@ def drive(
         tasks = parse_tasks_md(str(tasks_file))
         reused = True
     else:
+        design_role = resolve_role("design", config_dir,
+                                   explicit_vendor=vendor,
+                                   explicit_model=model,
+                                   explicit_effort=effort,
+                                   explicit_timeout=timeout)
         out = decomposer_decompose(
             tid if seq is not None else "T-drive",
-            requirement, vendor=resolve_role("design", config_dir)["vendor"], existing_design=spec_text,
-            dry_run=dry_run, seq=seq, design_file=spec_path or "",
+            requirement, vendor=design_role["vendor"], existing_design=spec_text,
+            dry_run=dry_run, model=design_role["model"], effort=design_role["effort"],
+            seq=seq, design_file=spec_path or "", timeout=design_role["timeout"],
         )
         if not out.get("ok"):
             return {"ok": False, "error": "decompose failed", "detail": out}

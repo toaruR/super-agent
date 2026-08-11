@@ -461,12 +461,13 @@ def build_command(
     # effort args for flag/config styles (model_suffix already folded above)
     if not fold_effort:
         cmd += decl.effort_args(eff)
-    # Permission/readonly flags apply only to read-only roles (design/review).
+    # Permission/readonly flags apply only to read-only roles (design/review/
+    # planner: all three return structured data, never edit files).
     # Implementers must be able to write inside their worktree, so they get none
     # (isolation is via the worktree + --add-dir). Note A-6: even "readonly" flags
     # don't truly block execution for claude/codex, but agy's `--mode plan` *does*
     # hard-block edits, so we must never attach it to an implementer.
-    if role in ("design", "review"):
+    if role in ("design", "review", "planner"):
         cmd += decl.permission_flags(worktree)
     return cmd
 
