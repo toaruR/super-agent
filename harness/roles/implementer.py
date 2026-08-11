@@ -22,8 +22,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from harness.core.invoke import invoke, load_vendors, build_command, normalize_model, extract_result
+from harness.core.invoke import invoke, load_vendors, normalize_model, extract_result, DEFAULT_TIMEOUT
 from harness.core.ledger import Sequencer
+from harness.core.progress import write_progress
 
 IMPLEMENT_PROMPT = """\
 あなたは Implementer です。以下のタスクを実装してください。
@@ -141,7 +142,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
               vendor: str = "claude", seq: Sequencer | None = None,
               dry_run: bool = False, model: str | None = None,
               effort: str | None = None, design_file: str = "",
-              design_context: str = "") -> dict:
+              design_context: str = "", timeout: int | None = None) -> dict:
     """Implement a single task inside its worktree and commit.
 
     design_context, if given, is the full design document text (drive()'s
@@ -168,37 +169,60 @@ def implement(task_id: str, task: dict, worktree_path: str,
     # Normalize known-bad model names (e.g. yaml `hy3:Free` -> `tencent/hy3:free`)
     # so the live vendor call never hits a 404. Code-side alias; yaml untouched.
     model = normalize_model(model)
-    cmd = build_command(decl, prompt, model=model, role="implement",
-                        effort=effort, worktree=worktree_path)
 
-    if dry_run:
-        return {"ok": True, "dry_run": True, "cmd": cmd, "task_id": task_id}
+    # Liveness heartbeat side-channel (docs/design/timeout-liveness-watchdog.md
+    # §0/§3): task_id already includes the sub-channel name (e.g.
+    # `PA__hermes_0`) when drive.py fans out multiple implement channels, so
+    # it doubles as the progress-file key with no extra plumbing.
+    progress_cb = None
+    if seq is not None and not dry_run:
+        ledger_path = seq.path
 
-    # run the vendor inside the worktree
+        def progress_cb(detail: str) -> None:
+            write_progress(task_id, ledger_path, vendor=vendor,
+                           status="running", detail=detail)
+
+    # run the vendor inside the worktree (invoke() owns build_command,
+    # streaming/idle-timeout, and retry-on-content-block; see
+    # harness/core/invoke.py)
     try:
-        proc = subprocess.run(
-            cmd, cwd=str(worktree_path), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", shell=False,
-            stdin=subprocess.DEVNULL,
+        run = invoke(
+            decl, prompt, model=model, effort=effort, role="implement",
+            worktree=worktree_path, cwd=str(worktree_path),
+            timeout=timeout or DEFAULT_TIMEOUT, dry_run=dry_run,
+            progress_cb=progress_cb,
         )
     except FileNotFoundError as e:
         if seq is not None:
             seq.propose(task_id, "implementer.error", error=str(e), design_file=design_file)
         return {"ok": False, "task_id": task_id, "error": str(e)}
-
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout).strip()
+    except subprocess.TimeoutExpired as e:
+        err = f"vendor subprocess timed out after {e.timeout}s"
         if seq is not None:
             seq.propose(task_id, "implementer.error", error=err, design_file=design_file)
         return {"ok": False, "task_id": task_id, "error": err}
 
-    self_score = _extract_self_score(proc.stdout, decl)
+    if dry_run:
+        return {"ok": True, "dry_run": True, "cmd": run["cmd"], "task_id": task_id}
+
+    if run["returncode"] != 0:
+        err = (run["stderr"] or run["stdout"]).strip()
+        if seq is not None:
+            seq.propose(task_id, "implementer.error", error=err, design_file=design_file)
+        if progress_cb is not None:
+            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
+        return {"ok": False, "task_id": task_id, "error": err}
+
+    self_score = _extract_self_score(run["stdout"], decl)
 
     # harness performs the commit (touch_allow allow-list)
     commit = _commit_worktree(task_id, worktree_path, touch_allow, seq)
     if not commit.get("ok"):
+        if progress_cb is not None:
+            write_progress(task_id, seq.path, vendor=vendor, status="error",
+                           detail=str(commit.get("error"))[:200])
         return {"ok": False, "task_id": task_id,
-                "error": commit.get("error"), "vendor_rc": proc.returncode}
+                "error": commit.get("error"), "vendor_rc": run["returncode"]}
 
     if seq is not None:
         seq.propose(task_id, "artifact.produced",
@@ -210,13 +234,16 @@ def implement(task_id: str, task: dict, worktree_path: str,
                     self_score=self_score,
                     design_file=design_file)
 
+    if progress_cb is not None:
+        write_progress(task_id, seq.path, vendor=vendor, status="done", detail="")
+
     return {
         "ok": True,
         "task_id": task_id,
         "commit": commit.get("commit"),
         "tree_hash": commit.get("tree_hash"),
         "paths": touch_allow,
-        "cmd": cmd,
+        "cmd": run["cmd"],
         "self_score": self_score,
     }
 

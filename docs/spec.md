@@ -163,6 +163,7 @@ roles:
 - `implement` は**リスト**。各エントリが1チャンネル（独立 worktree で並列）。単一辞書 `{vendor,model,effort}` も後方互換（1チャンネル化）。
 - cli は `--vendor`/`--model`/`--effort` が未指定のとき、ここから解決する。
 - 現在の既定: `implement` = hermes(hy3:Free)×5、`review` = agy(gemini-3.6-flash)。
+- 各ロール（`implement` はチャンネルごと）に任意で `timeout: <秒>` を指定できる。vendor サブプロセスの絶対タイムアウト（既定 `DEFAULT_TIMEOUT=1800`）を上書きする。主たる停止判定は idle-timeout（§10）であり、`timeout` はその保険。
 
 ### 3.2 ベンダー宣言スキーマ
 
@@ -347,12 +348,13 @@ super-agent evolve [--dry-run]
 ### 5.8 `dashboard` — 台帳可視化
 
 ```
-super-agent dashboard [--format md|html|both] [--out DIR]
+super-agent dashboard [--format md|html|both] [--out DIR] [--watch] [--interval N]
 ```
 
-- 台帳イベントを `build_model()` で task_id → status に集約し、`render_markdown()` / `render_html()` で描画。
+- 台帳イベントを `build_model()` で task_id → status に集約し、`render_markdown()` / `render_html()` で描画。progress サイドチャネル（§10.3）の `last_activity_ts` もマージされ、stale 判定・「Last Activity」列に反映される。
 - `--out` 指定時はファイル書き出し、未指定時は標準出力。
-- 詳細は §9。
+- `--watch`: ループで再生成し続ける（サーバ/websocket なし、`time.sleep()` ループ、Ctrl+C で停止）。`--interval N`（秒、既定 5）と併用。HTML 出力には `<meta http-equiv="refresh" content="N">` を注入しブラウザを自動リロードさせる。
+- 詳細は §9、§10。
 
 ### 5.9 その他
 
@@ -416,6 +418,73 @@ super-agent dashboard [--format md|html|both] [--out DIR]
 
 `harness/roles/dashboard.py`:
 
-- `build_model(events)`: 台帳イベントを task_id → status に集約。**後勝ちではなく状態遷移の優先順位**（integrated > implemented > leased > created 等）で最終ステータスを決定。
-- `render_markdown(model)` / `render_html(model)`: 描画（dashboard.py に実装）。
+- `build_model(events, now=None, stale_after=_DEFAULT_STALE_AFTER, progress=None)`: 台帳イベントを task_id → status に集約。**後勝ちではなく状態遷移の優先順位**（integrated > implemented > leased > created 等）で最終ステータスを決定。
+- `progress` 引数（`load_progress()` の戻り値）を渡すと、progress サイドチャネル（§10.3）の `last_activity_ts`/`detail` を各タスクへマージする。stale 判定は `max(ledger の updated_at, progress の last_activity_ts)` を基準にする（非終端タスクの `updated_at` が最初の `task.leased` のまま固まる問題への対処）。各タスクに `last_activity_display`（`"Ns/m/h/d ago"` 形式、値なしは `"-"`）を事前計算する。
+- `load_progress(ledger_path)`: `harness/core/progress.py` の `load_all_progress()` へ委譲する薄いラッパー。
+- `render_markdown(model)` / `render_html(model, refresh_interval=None)`: 描画（dashboard.py に実装）。どちらも末尾に「Last Activity」列を持つ。`render_html` は `refresh_interval` が真値のとき `<meta http-equiv="refresh" content="N">` を `<head>` に注入する（`dashboard --watch` 用、§5.8）。
 - テスト: `harness/tests/test_dashboard.py`。
+
+---
+
+## 10. liveness 監視（idle-timeout）と進捗サイドチャネル
+
+**動機**: vendor サブプロセス呼び出しは従来 `subprocess.run()` で1回叩き、プロセスが終了するまで
+完全にブラックボックスで待つ「壁時計タイムアウト一発勝負」だった。進行中でも殺すと成果が消える
+ため、長時間の呼び出しほど「本当にハングしているのか、単に時間がかかっているだけか」を区別
+できない。ACP（Agent Client Protocol）への全面移行は不採用（agy/hermes が非公式または不整合が
+大きく、常駐 JSON-RPC クライアント化はコストに見合わない）。代わりに、各ベンダー CLI が既に持つ
+「ストリーミング JSON 出力」または「ログ tail」機能を使い、一定時間**活動がない場合のみ**停止・
+リトライする idle-timeout 方式を採る。
+
+### 10.1 ストリーミング実行（invoke.py）
+
+- `invoke()` は `subprocess.Popen(stdout=PIPE)` + リーダースレッド + `queue.Queue` でベンダーを
+  実行する（Windows はパイプを `select()` できないため、リーダースレッドが行を queue に積み、
+  メインは `queue.get(timeout=idle_timeout)` で待つ）。
+- `timeout`（既定 `DEFAULT_TIMEOUT=1800`秒）は絶対上限のセーフティネット、`idle_timeout`（既定
+  `DEFAULT_IDLE_TIMEOUT=300`秒）が主たる停止判定。`idle_timeout` 秒間 queue に何も来なければ
+  stall と判定しプロセスを終了する。
+- ベンダー別 NDJSON パーサ（未知の `type`/`event` は無視して素通しし、将来のベンダー側の型追加に
+  耐える設計）:
+
+| vendor | フラグ | イベント形式 | 終端イベント |
+|---|---|---|---|
+| claude | `--verbose --output-format stream-json`（`--verbose` 併用必須） | `type` フィールド | `type:"result"` → `result` に最終テキスト |
+| agy | `--output-format stream-json`（`--print` より**前**に配置必須。順序を誤ると指示を無視した応答になる） | `event` フィールド | `event:"result"` → `result.response` |
+| codex | `codex exec --json` | `type` フィールド（`thread.started`/`turn.started`/`item.completed`/`turn.completed`） | `item.completed`(`item.type=="agent_message"`) の `text` を `_codex_reconstruct_text()` が回答として再構成する（`turn.completed` 自体は使用量統計のみのメタ情報） |
+| hermes | ストリーミングなし。専用経路（§10.2） | — | — |
+
+  `extract_result()` によるstdoutスクレイピングはフォールバックとして残る。
+
+### 10.2 hermes 専用経路
+
+hermes はストリーミング出力を持たず、追加フラグなしで stdout 1行目に `session_id: <id>`
+（callee 採番）が出るのみ。`_run_hermes()` がこの session_id を捕捉したら、別 `Popen` で
+`hermes logs -f --session <id>` を並走させ（`_start_hermes_log_tail()`）、そのログ行を
+idle-timeout の liveness 判定に流用する（主プロセスの stdout 自体は完了まで無音なので、liveness
+判定は専ら log-tail 側で行う）。
+
+### 10.3 progress サイドチャネル
+
+`Ledger.append_event()` は呼ぶたびに全 chunk を読み直して `_rewrite()` で全ファイル書き直しを
+するため（§2）、ストリーミングイベントを `Sequencer.propose()` 経由で台帳に流すと長時間タスクで
+O(n²) の書き込み増幅になる。よって heartbeat は台帳を経由しない別ファイルに出力する:
+
+- 出力先: `<ledger_dir>/progress/<task_id>.json`（sub-channel 名含む、例 `PA__hermes_0`。上書き
+  方式、atomic write）
+- 内容: `{last_activity_ts, detail, vendor, status: "running"|"done"|"error"}`
+- 実装: `harness/core/progress.py`（`write_progress()` / `read_progress()` / `load_all_progress()`）。
+  `implementer.py` の `implement()` が `invoke()` の `progress_cb` 経由でこれを更新する
+  （`running`→成功で `done`、失敗で `error`）。
+- 台帳には従来どおり開始/終了などのマイルストーンイベントのみ記録される（変更なし）。
+
+### 10.4 dashboard / cli との統合
+
+`dashboard.py`（§9）が progress を `build_model()` に取り込み stale 判定・「Last Activity」列に
+反映する。`cli.py` の `dashboard --watch [--interval N]`（§5.8）がこれを定期再生成し、HTML の
+`<meta http-equiv="refresh">` でブラウザ側も自動リロードさせる。
+
+**実装**: `harness/core/invoke.py`（`_run_streaming()` / `_run_hermes()` / `_start_hermes_log_tail()`）、
+`harness/core/progress.py`、`harness/roles/implementer.py`、`harness/roles/dashboard.py`、`harness/cli.py`。
+**テスト**: `harness/tests/test_invoke.py`、`test_dashboard.py`、`test_implementer.py`、`test_cli.py`。
+**設計文書**: `docs/design/timeout-liveness-watchdog.md`。

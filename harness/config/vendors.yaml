@@ -3,6 +3,9 @@
 #
 # ロール別既定（ベンダー選択＋モデル＋effort）はこのファイルの単一ソース。
 # cli は --vendor/--reviewer が未指定のとき、ここから解決する。
+# 任意で `timeout: <秒>` も各ロール（implement はチャンネルごと）に指定でき、
+# vendorサブプロセスの待ち時間（既定 DEFAULT_TIMEOUT=1800秒）を上書きできる。
+# 例: design: { vendor: claude, model: claude-sonnet-5, effort: high, timeout: 3600 }
 roles:
   design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
   planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務）
@@ -31,8 +34,14 @@ claude:
   model_flag: "--model"
   effort_style: "flag"
   effort_flag: "--effort"
-  headless:  ["claude", "-p", "--output-format", "json", "{prompt}"]
-  # 非対話は -p 必須。--output-format json で envelope {"result": "...", ...} が返る。
+  headless:  ["claude", "-p", "--verbose", "--output-format", "stream-json", "{prompt}"]
+  # 非対話は -p 必須。--output-format stream-json は --verbose 併用必須（実測:
+  # 単独だと `--output-format=stream-json requires --verbose` で失敗）。NDJSON
+  # 各行は type フィールドを持ち、終端行 type:"result" が result に最終テキストを
+  # 持つ（非ストリーミング --output-format json の envelope と同じ形）ので、
+  # extract_result の「最後の { 始まり行」ヒューリスティックはそのまま動く。
+  # --verbose により hook ライフサイクル等の未知 type も混じるが、
+  # invoke.py 側は未知 type を無視して素通しする（liveness 検知のみに使う）。
   # 実測(A-7): claude は --json-schema を StructuredOutput ツール不在で拒否するため、
   # structured キーは持たず（hermes と同様）、prompt 内で JSON を指示し、
   # extract_result が result テキストから JSON を再抽出する。
@@ -55,7 +64,16 @@ codex:
   # 解決し gpt-5.6-luna が "newer version required" で弾かれる。対話シェル(PowerShell)では
   # .ps1 経由で v0.147.0 になるが、Python の subprocess は .CMD(v0.138) を拾うため。
   # よって node + codex.js の絶対パスを直接指定する（v0.147.0 確実）。
-  headless:  ["C:/nvm4w/nodejs/node.exe", "C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js", "exec"]
+  headless:  ["C:/nvm4w/nodejs/node.exe", "C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js", "exec", "--json"]
+  # --json で NDJSON liveness ストリームを得る（実測2026-08-11: thread.started →
+  # turn.started → item.completed(agent_message) → turn.completed で正常終端、
+  # モデル過負荷時は error → turn.failed）。--output-schema + prompt_stdin の
+  # 併用も実測で問題なし（両方付けても正常に動く）。ただし codex の最終行は
+  # turn.completed/turn.failed という「メタ情報」であり claude/agy と違って
+  # 「答え」そのものではないため、invoke.py の _codex_reconstruct_text() が
+  # item.completed(agent_message) の text を answer として再構成し、
+  # extract_result はその再構成テキストに対して動く（NDJSON生ログ全体には
+  # 動かさない）。
   # codex exec は --output-schema と長文プロンプトを組み合わせると引数プロンプトを無視し
   # stdin からの追加入力を待つ（実測: RC=1 "Reading additional input from stdin..."）。
   # よって prompt_stdin: true を立て、invoke.py がプロンプトを stdin 経由で渡す（input=prompt）。
@@ -80,7 +98,7 @@ codex:
 agy:
   model_flag: "--model"
   effort_style: "model_suffix"
-  headless:  ["agy", "--add-dir", "{worktree}", "--dangerously-skip-permissions", "--print", "{prompt}"]
+  headless:  ["agy", "--output-format", "stream-json", "--add-dir", "{worktree}", "--dangerously-skip-permissions", "--print", "{prompt}"]
   # 非対話は --print 必須（省略で対話待機→ハング）。
   # --add-dir {worktree}: worktree をワークスペースに加え、agy がそのディレクトリを認識できるようにする。
   # --dangerously-skip-permissions は --print の「前」に置く（後だと無視される実測）。
@@ -88,11 +106,20 @@ agy:
   # implementer.py がプロンプトに worktree の絶対パスを埋め込み、「その絶対パスに書け」と
   # 指示する必要がある（実測で確認: 絶対パス明示なら worktree 内に作成される）。--add-dir や
   # Set-Location だけでは cwd は認識されない。
-  # 注意: `--output-format json` を付けると agy --print が「構造化出力の説明モード」に入り
-  # 実ファイル作成をしなくなる（実測）。よって json フラグは付けず、プロンプト内で JSON 指示
-  # し、extract_result がフェンス/JSON を回復する（hermes と同様の運用）。result_path は空。
-  # structured ブロックは意図的に持たない（--json-schema は --output-format 必須で、それを
-  # 外すと schema を渡せないため）。
+  # 重要(フラグ順序): --output-format stream-json は --print より「前」に置くこと。
+  # 実測: --print より後ろに置くと agy はプロンプトを無視し「--output-formatとは何か」と
+  # いう的外れな一般論を返す。--print より前なら NDJSON（event フィールド、終端
+  # event:"result" → result.response に最終テキスト）が正しく返る。
+  # 注意: 以前は `--output-format json`（非ストリーミング）を付けると agy --print が
+  # 「構造化出力の説明モード」に入り実ファイル作成をしなくなる問題があったが、
+  # stream-json ではこの問題は再現しない（実測）。
+  result_path: "result.response"  # envelope から response テキストを抽出
+  # response は文字列で、その中にモデルが指示された JSON を埋め込んで返す
+  # （プロンプト内で JSON 指示する運用は変更なし）。extract_result の
+  # _apply_result_path が文字列内の JSON/フェンスをさらに再抽出する
+  # （claude の result_path="result" と同じ仕組み）。structured ブロックは
+  # 意図的に持たない（--json-schema は --output-format json 必須で、
+  # stream-json とは併用不可）。
   session:
     id_origin: callee       # agy は試験不足（E-2a のみ）。callee 仮定
     resume_flag: ["--resume-session-id"]

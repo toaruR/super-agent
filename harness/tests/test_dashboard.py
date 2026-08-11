@@ -6,6 +6,7 @@ from harness.roles.dashboard import (
     build_model,
     format_ts,
     group_by_design_file,
+    load_progress,
     progress_bar_segments,
     progress_summary,
     render_html,
@@ -640,3 +641,95 @@ def test_render_markdown_table_prefix_stays_cli_compatible() -> None:
     column must not break that prefix."""
     md = render_markdown(_model(**{"task-1": "integrated"}))
     assert "| task-1 | integrated |" in md
+
+
+# --- progress side-channel ingestion (build_model) ---------------------------
+
+
+def test_build_model_uses_progress_last_activity_for_stale_detection() -> None:
+    """A non-terminal task whose ledger updated_at is old but whose progress
+    side-channel keeps heartbeating is NOT stale (docs/design/
+    timeout-liveness-watchdog.md §4)."""
+    events = [{"task_id": "T", "type": "task.leased", "ts": NOW - 10 * HOUR}]
+    progress = {"T": {"last_activity_ts": NOW - 30, "detail": "still working"}}
+    model = build_model(events, now=NOW, progress=progress)
+    assert model["T"]["is_stale"] is False
+    assert model["T"]["last_activity_ts"] == NOW - 30
+
+
+def test_build_model_progress_older_than_ledger_does_not_help() -> None:
+    """If the progress heartbeat is itself old, max(updated_at, last_activity_ts)
+    still reflects the ledger's fresher timestamp -- and vice versa: staleness
+    is judged on whichever signal is more recent."""
+    events = [{"task_id": "T", "type": "task.leased", "ts": NOW - 30}]
+    progress = {"T": {"last_activity_ts": NOW - 10 * HOUR, "detail": "stuck"}}
+    model = build_model(events, now=NOW, progress=progress)
+    assert model["T"]["is_stale"] is False
+
+
+def test_build_model_progress_missing_task_id_is_ignored() -> None:
+    """A progress dict that doesn't mention this task_id changes nothing."""
+    events = [{"task_id": "T", "type": "task.leased", "ts": NOW - HOUR}]
+    model = build_model(events, now=NOW, progress={"OTHER": {"last_activity_ts": NOW}})
+    assert model["T"]["is_stale"] is True
+    assert model["T"]["last_activity_ts"] == ""
+
+
+def test_build_model_progress_aggregates_across_subchannels() -> None:
+    """A sub-channel's progress heartbeat keeps the whole logical task fresh,
+    same as ledger updated_at aggregation."""
+    events = [
+        {"task_id": "PA", "type": "task.created", "ts": NOW - 10 * HOUR},
+        {"task_id": "PA__hermes_0", "type": "task.leased", "ts": NOW - 10 * HOUR},
+    ]
+    progress = {"PA__hermes_0": {"last_activity_ts": NOW - 5, "detail": "running"}}
+    model = build_model(events, now=NOW, progress=progress)
+    assert model["PA"]["is_stale"] is False
+    assert model["PA"]["last_activity_ts"] == NOW - 5
+
+
+def test_build_model_last_activity_display_precomputed() -> None:
+    events = [{"task_id": "T", "type": "task.leased", "ts": NOW - 90}]
+    model = build_model(events, now=NOW)
+    assert model["T"]["last_activity_display"] == "1m ago"
+
+
+def test_build_model_last_activity_display_dash_when_no_ts() -> None:
+    model = build_model([{"task_id": "T", "type": "task.leased"}], now=NOW)
+    assert model["T"]["last_activity_display"] == "-"
+
+
+def test_render_markdown_has_last_activity_column() -> None:
+    model = _model(**{"task-1": "integrated"})
+    model["task-1"]["last_activity_display"] = "5m ago"
+    md = render_markdown(model)
+    assert "| Task ID | Status | Created At | Updated At | Reason | Last Activity |" in md
+    assert "5m ago" in md
+
+
+def test_render_html_has_last_activity_column() -> None:
+    model = _model(**{"task-1": "integrated"})
+    model["task-1"]["last_activity_display"] = "5m ago"
+    out = render_html(model)
+    assert "<th>Last Activity</th>" in out
+    assert "5m ago" in out
+
+
+def test_render_html_refresh_meta_absent_by_default() -> None:
+    out = render_html(_model(**{"task-1": "integrated"}))
+    assert "http-equiv=\"refresh\"" not in out
+
+
+def test_render_html_refresh_meta_present_when_requested() -> None:
+    out = render_html(_model(**{"task-1": "integrated"}), refresh_interval=5)
+    assert '<meta http-equiv="refresh" content="5">' in out
+
+
+def test_load_progress_delegates_to_progress_module(tmp_path) -> None:
+    from harness.core.progress import write_progress
+
+    ledger_path = tmp_path / "events.jsonl"
+    write_progress("T1", ledger_path, vendor="hermes", status="running", detail="working")
+    progress = load_progress(str(ledger_path))
+    assert progress["T1"]["vendor"] == "hermes"
+    assert progress["T1"]["status"] == "running"

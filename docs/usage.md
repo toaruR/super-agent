@@ -350,15 +350,17 @@ super-agent evolve --dry-run
 ### 2.8 `super-agent dashboard` — 台帳からダッシュボード生成
 
 ```
-super-agent dashboard [--format md|html|both] [--out <path>]
+super-agent dashboard [--format md|html|both] [--out <path>] [--watch] [--interval N]
 ```
 
-台帳（`harness/ledger/events.jsonl`）の全イベントを `build_model()` で task_id → ステータスに集約し、Markdown / HTML に描画する。
+台帳（`harness/ledger/events.jsonl`）の全イベントを `build_model()` で task_id → ステータスに集約し、Markdown / HTML に描画する。実装中タスクの進捗（progress サイドチャネル、§4・`docs/spec.md` §10.3）も取り込まれ、「Last Activity」列と stale 判定に反映される。
 
 | オプション | 意味 |
 |---|---|
 | `--format` | 出力形式：`md` / `html` / `both`（既定 `md`） |
 | `--out`, `-o` | 出力先（ファイルまたはディレクトリ）。省略時は標準出力に出力 |
+| `--watch` | ループで再生成し続ける（サーバ/websocket は使わず `time.sleep()` ループ。Ctrl+C で停止） |
+| `--interval` | `--watch` 時の再生成間隔（秒、既定 5） |
 
 ```bash
 # 標準出力に Markdown で表示
@@ -369,9 +371,13 @@ super-agent dashboard --format html --out dashboard.html
 
 # Markdown + HTML をディレクトリに出力（dashboard.md / dashboard.html）
 super-agent dashboard --format both --out ./out/
+
+# 10秒ごとに再生成し続ける（HTMLはブラウザ側で自動リロードも入る）
+super-agent dashboard --format html --out dashboard.html --watch --interval 10
 ```
 
-> ステータスは `build_model()` が状態遷移の優先順位（integrated > implemented > …）で決定する。詳細は `docs/spec.md` §9 参照。
+> ステータスは `build_model()` が状態遷移の優先順位（integrated > implemented > …）で決定する。詳細は `docs/spec.md` §9・§10 参照。
+> `--watch` 時、HTML 出力には `<meta http-equiv="refresh" content="N">` が入るので、ブラウザで開きっぱなしにしておけば手動リロード不要。
 
 ### 2.9 `super-agent status` — 台帳の状態を表示
 
@@ -528,6 +534,8 @@ super-agent log T-XXXX
 >
 > **現在の `roles.implement` 構成（2026-08-08）**：hermes(hy3:Free) ×5（agy/codex はコメントアウト）。`roles.review` は agy（gemini-3.6-flash）。
 
+> **ベンダー呼び出しのハング検知は idle-timeout 方式**：各ロール（`implement` はチャンネルごと）に任意で `timeout: <秒>` を指定すると、vendor サブプロセスの絶対タイムアウト（既定 `DEFAULT_TIMEOUT=1800`秒）を上書きできる。ただし主たる停止判定はこれではなく、無活動が `idle_timeout`（既定300秒）続いた場合に停止・リトライする liveness 監視（ストリーミング JSON 出力の解析、hermes のみ `hermes logs -f --session <id>` の log-tail）。長時間実行中でも活動があれば止まらない。進捗は `harness/ledger/progress/<task_id>.json` に台帳とは別チャネルで書かれ、`dashboard`（§2.8）が読む。詳細は `docs/spec.md` §10。
+
 > **`verification_env.yaml` の python パスは環境依存です。** 各環境の venv
 > （例: `.cve-venv/Scripts/python.exe`）を指すよう設定してください。
 > サンプルは `verification_env_sample.yaml` を参照。
@@ -538,20 +546,22 @@ super-agent log T-XXXX
 
 ```bash
 python -m pytest harness/tests/ -q
-# ................  97 passed  (2 failed: 既知の yaml 依存テスト。本セッションの課題外)
+# 213 passed
 ```
 
-- `test_invoke.py`（13）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）＋チャンネル解決・オーバーライド解析
-- `test_ledger.py`（3）：台帳の原子性（H3）
+- `test_invoke.py`（33）：ベンダー呼び出しコマンドの組み立て（A-1〜A-6 実測値）＋チャンネル解決・オーバーライド解析＋ストリーミング NDJSON パーサ・idle-timeout・hermes log-tail liveness（§10）
+- `test_ledger.py`（6）：台帳の原子性（H3）
 - `test_pipeline.py`（2）：パイプラインの CVE 実行＋tree_hash 束縛＋裁定記録
-- `test_implementer.py`（3）：実装→コミットの束縛＋台帳記録（vendor はモック）
-- `test_scheduler.py`（9）：worktree 冪等性・リース記録・再利用・topo_layers・teardown
-- `test_drive.py`（7）：逐次/並列駆動・チャンネル fan-out・winner 統合・タスク並列
-- `test_decomposer.py`（11）：分解・構造検査・acceptance
-- `test_integrator.py`（4）：統合（success/conflict/violation/verify-fail）
+- `test_implementer.py`（7）：実装→コミットの束縛＋台帳記録＋progress サイドチャネル書き込み（vendor は `invoke()` をモック）
+- `test_scheduler.py`（10）：worktree 冪等性・リース記録・再利用・topo_layers・teardown
+- `test_drive.py`（13）：逐次/並列駆動・チャンネル fan-out・winner 統合・タスク並列
+- `test_decomposer.py`（15）：分解・構造検査・acceptance
+- `test_integrator.py`（12）：統合（success/conflict/violation/verify-fail）
 - `test_architect.py`（3）：設計起案・ADR 記録
-- `test_cli.py`（4）：CLI サブコマンドの引数解釈
+- `test_cli.py`（20）：CLI サブコマンドの引数解釈＋`dashboard --watch` ループ
 - `test_improver.py`（5）：Stage 6 自己改良（失敗抽出・グループ・しきい値・dry-run 不書込・design.proposed 記録）
+- `test_planner.py`（11）：adaptive 再計画
+- `test_dashboard.py`（67）：`build_model()` 状態集約・progress マージ・stale 判定・Markdown/HTML 描画
 
 ---
 

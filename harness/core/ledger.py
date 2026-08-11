@@ -196,6 +196,12 @@ class Sequencer:
         # writer thread to flush a just-proposed chunk to disk (race fix).
         self._task_file_cache: dict[str, str] = {}
 
+    @property
+    def path(self) -> str:
+        """The ledger file path (so callers can derive sibling dirs, e.g. the
+        progress side-channel, without reaching into ``_ledger``)."""
+        return self._ledger.path
+
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()

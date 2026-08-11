@@ -30,6 +30,8 @@ import time
 from datetime import datetime
 from typing import Any
 
+from harness.core.progress import load_all_progress
+
 STATUS_MAP = {
     "integrated": "integrated",
     "integrate.ok": "integrated",
@@ -151,6 +153,33 @@ def format_ts(ts: Any) -> str:
         return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError, OSError):
         return "-"
+
+
+def load_progress(ledger_path: str) -> dict[str, dict[str, Any]]:
+    """Load the progress side-channel (docs/design/timeout-liveness-watchdog.md
+    §0) for a ledger, keyed by task_id. Thin wrapper so callers only need to
+    import from harness.roles.dashboard."""
+    return load_all_progress(ledger_path)
+
+
+def _relative_time(ts: Any, now_ts: float) -> str:
+    """Render a unix-epoch timestamp as a short "N ago" string relative to
+    `now_ts`. Returns "-" for missing/unparseable values."""
+    if not ts:
+        return "-"
+    try:
+        delta = now_ts - float(ts)
+    except (TypeError, ValueError):
+        return "-"
+    if delta < 0:
+        delta = 0
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
 
 
 def _badge(status: str) -> tuple[str, str]:
@@ -289,6 +318,7 @@ def _empty_task_entry() -> dict[str, Any]:
         "design_file": "", "task_file": "",
         "created_at": "", "updated_at": "",
         "is_stale": False, "reason": "",
+        "last_activity_ts": "", "activity_detail": "",
     }
 
 
@@ -325,18 +355,33 @@ def _merge_meta(agg: dict[str, Any], entry: dict[str, Any]) -> None:
     ua = entry["updated_at"]
     if ua and (not agg["updated_at"] or ua > agg["updated_at"]):
         agg["updated_at"] = ua
+    lat = entry.get("last_activity_ts")
+    if lat and (not agg.get("last_activity_ts") or lat > agg["last_activity_ts"]):
+        agg["last_activity_ts"] = lat
+        agg["activity_detail"] = entry.get("activity_detail", "")
 
 
 def build_model(
     events: list[dict[str, Any]],
     now: float | None = None,
     stale_after: float = _DEFAULT_STALE_AFTER,
+    progress: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Convert ledger events into a structured model mapping task_id -> info.
 
     Each info dict has keys: ``status``, ``design_file``, ``task_file``,
     ``created_at``, ``updated_at`` (the latter two are unix-epoch seconds, or
-    ``""`` when no event carried a ``ts``), ``is_stale`` and ``reason``.
+    ``""`` when no event carried a ``ts``), ``is_stale``, ``reason``,
+    ``last_activity_ts``/``activity_detail`` (from the progress side-channel,
+    see ``load_progress()``) and ``last_activity_display`` (a precomputed
+    "N ago" string relative to ``now``).
+
+    ``progress``, if given, is a task_id -> progress-file dict as returned by
+    ``load_progress()`` (docs/design/timeout-liveness-watchdog.md §0/§4). Its
+    ``last_activity_ts`` feeds stale detection alongside ``updated_at`` — a
+    long-running single implement call whose ledger ``updated_at`` is pinned
+    at its first ``task.leased`` event is no longer misreported as stale as
+    long as it keeps heartbeating.
 
     Two passes:
 
@@ -392,6 +437,12 @@ def build_model(
 
         entry = raw.setdefault(task_id, _empty_task_entry())
         _merge_event_meta(entry, ev)
+        if progress and task_id in progress and not entry["last_activity_ts"]:
+            p = progress[task_id]
+            lat = p.get("last_activity_ts")
+            if lat:
+                entry["last_activity_ts"] = lat
+                entry["activity_detail"] = p.get("detail", "")
 
         status, rank = _event_status(ev)
         if status is None:
@@ -432,8 +483,15 @@ def build_model(
         entry.pop("_rank", None)
         if entry["status"] != "failed":
             entry["reason"] = ""
+        lat = entry.get("last_activity_ts")
+        effective_updated = entry["updated_at"]
+        if lat and (not effective_updated or lat > effective_updated):
+            effective_updated = lat
         entry["is_stale"] = _is_stale(
-            entry["status"], entry["updated_at"], now_ts, stale_after
+            entry["status"], effective_updated, now_ts, stale_after
+        )
+        entry["last_activity_display"] = _relative_time(
+            lat or entry["updated_at"], now_ts
         )
     return aggregated
 
@@ -585,14 +643,15 @@ def render_markdown(model: dict[str, dict[str, Any]]) -> str:
         for design_file, tasks in group_by_design_file(model).items():
             lines.append(f"### {html.escape(design_file)}")
             lines.append("")
-            lines.append("| Task ID | Status | Created At | Updated At | Reason |")
-            lines.append("| --- | --- | --- | --- | --- |")
+            lines.append("| Task ID | Status | Created At | Updated At | Reason | Last Activity |")
+            lines.append("| --- | --- | --- | --- | --- | --- |")
             for task_id, info in sorted(tasks.items()):
                 lines.append(
                     f"| {html.escape(task_id)} | {_md_status_cell(info)} | "
                     f"{html.escape(format_ts(info['created_at']))} | "
                     f"{html.escape(format_ts(info['updated_at']))} | "
-                    f"{_md_cell(info.get('reason') or '')} |"
+                    f"{_md_cell(info.get('reason') or '')} | "
+                    f"{html.escape(info.get('last_activity_display') or '-')} |"
                 )
             lines.append("")
     else:
@@ -675,15 +734,29 @@ def _progress_bar_html(model: dict[str, dict[str, Any]]) -> str:
     )
 
 
-def render_html(model: dict[str, dict[str, Any]]) -> str:
+def render_html(
+    model: dict[str, dict[str, Any]],
+    refresh_interval: int | None = None,
+) -> str:
     """Render the task status model as a dark-mode HTML dashboard.
 
     Includes a progress-summary card (total / completed / rate / distribution
     plus a colour-coded progress bar) and a table of tasks with colour-coded
     status badges — orange for stale tasks — the failure reason under a Failed
     badge, and design file / created / updated timestamps.
+
+    ``refresh_interval``, if given, adds a ``<meta http-equiv="refresh">`` tag
+    so a browser viewing the saved file auto-reloads every N seconds — meant
+    for use with ``harness dashboard --watch`` (docs/design/
+    timeout-liveness-watchdog.md §5), which is what keeps the file itself
+    up to date. Omitted (``None``) by default: a static render has nothing
+    to poll for.
     """
     summary = progress_summary(model)
+    refresh_meta = (
+        f'<meta http-equiv="refresh" content="{int(refresh_interval)}">\n'
+        if refresh_interval else ""
+    )
 
     tables = ""
     for design_file, tasks in group_by_design_file(model).items():
@@ -695,13 +768,14 @@ def render_html(model: dict[str, dict[str, Any]]) -> str:
                 f'<td><span class="badge {cls}">{html.escape(label)}</span>'
                 f'{_reason_html(info)}</td>'
                 f'<td>{html.escape(format_ts(info["created_at"]))}</td>'
-                f'<td>{html.escape(format_ts(info["updated_at"]))}</td></tr>\n'
+                f'<td>{html.escape(format_ts(info["updated_at"]))}</td>'
+                f'<td>{html.escape(info.get("last_activity_display") or "-")}</td></tr>\n'
             )
         tables += (
             f'<h3>{html.escape(design_file)}</h3>\n'
             "<table>\n"
             "<thead><tr><th>Task ID</th><th>Status</th>"
-            "<th>Created At</th><th>Updated At</th></tr></thead>\n"
+            "<th>Created At</th><th>Updated At</th><th>Last Activity</th></tr></thead>\n"
             f"<tbody>\n{rows}</tbody>\n"
             "</table>\n"
         )
@@ -722,6 +796,7 @@ def render_html(model: dict[str, dict[str, Any]]) -> str:
         "<head>\n"
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"{refresh_meta}"
         "<title>Dashboard</title>\n"
         f"<style>{_HTML_CSS}\n</style>\n"
         "</head>\n"

@@ -73,6 +73,7 @@ def drive(
     adaptive: bool = True,
     implement_model: str | None = None,
     implement_effort: str | None = None,
+    implement_timeout: int | None = None,
     task_file: str | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
@@ -224,6 +225,8 @@ def drive(
             ch["model"] = implement_model
         if implement_effort is not None:
             ch["effort"] = implement_effort
+        if implement_timeout is not None:
+            ch["timeout"] = implement_timeout
 
     def _run_task_pipeline(tid: str) -> dict:
         """Phase A: implement (channels parallel) + review, pick winner.
@@ -252,7 +255,8 @@ def drive(
                                  model=ch["model"], effort=ch["effort"],
                                  seq=seq, dry_run=dry_run,
                                  design_file=spec_path or "",
-                                 design_context=spec_text)
+                                 design_context=spec_text,
+                                 timeout=ch.get("timeout"))
                 ch_results.append({"vendor": ch["vendor"], "model": ch["model"],
                                    "effort": ch["effort"], "worktree": wt,
                                    "task_id": tid, "impl": impl, "ok": True})
@@ -272,7 +276,8 @@ def drive(
                                      model=ch["model"], effort=ch["effort"],
                                      seq=seq, dry_run=dry_run,
                                      design_file=spec_path or "",
-                                     design_context=spec_text)
+                                     design_context=spec_text,
+                                     timeout=ch.get("timeout"))
                     return {"vendor": ch["vendor"], "model": ch["model"],
                             "effort": ch["effort"], "worktree": wt,
                             "task_id": cid, "impl": impl, "ok": True}
@@ -309,7 +314,8 @@ def drive(
                                    reviewer_vendor=rev_vendor,
                                    dry_run=dry_run, seq=seq,
                                    model=rev_role["model"], effort=rev_role["effort"],
-                                   design_file=spec_path or "")
+                                   design_file=spec_path or "",
+                                   timeout=rev_role.get("timeout"))
                 verdict = rev.get("verdict")
                 # Record the REVIEWER vendor (rev_vendor), not the implementer's
                 # vendor — this entry is the review phase, and the actual
@@ -357,13 +363,15 @@ def drive(
             # --- Adaptive re-planning (planner) BEFORE this layer ---
             if adaptive and seq is not None:
                 events = seq.load()
+                planner_role_defaults = resolve_role("planner", config_dir)
                 rep = planner_role.replan(
                     requirement, tasks, events=events,
-                    vendor=resolve_role("planner", config_dir)["vendor"],
+                    vendor=planner_role_defaults["vendor"],
                     existing_design=spec_text,
-                    model=resolve_role("planner", config_dir).get("model"),
+                    model=planner_role_defaults.get("model"),
                     seq=seq, dry_run=dry_run,
                     design_file=spec_path or "",
+                    timeout=planner_role_defaults.get("timeout"),
                 )
                 if rep.get("ok") and rep.get("tasks"):
                     new_tasks = rep["tasks"]

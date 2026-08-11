@@ -75,22 +75,15 @@ def test_implement_commits_worktree(monkeypatch, tmp_path):
         "def count_words(s):\n    return len(s.split())\n", encoding="utf-8")
 
     calls = {"vendor": 0}
-    orig_run = subprocess.run
 
-    VENDORS = ("claude", "codex", "agy")
+    import harness.roles.implementer as impl_mod
 
-    def fake_run(cmd, *a, **k):
+    def fake_invoke(decl, prompt, **kw):
         # no-op the vendor call (don't run the real LLM CLI)
-        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]).endswith(VENDORS):
-            calls["vendor"] += 1
-            class R:
-                returncode = 0
-                stdout = ""
-                stderr = ""
-            return R()
-        return orig_run(cmd, *a, **k)
+        calls["vendor"] += 1
+        return {"cmd": [decl.name], "returncode": 0, "stdout": "", "stderr": ""}
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(impl_mod, "invoke", fake_invoke)
     out = implement("T1", _task(), str(wt), vendor="claude")
     assert out["ok"] is True
     assert out["commit"] is not None
@@ -119,19 +112,12 @@ def test_implement_records_artifact_and_implemented(monkeypatch, tmp_path):
     subprocess.run(["git", "-C", str(wt), "commit", "--allow-empty", "-m", "init"],
                    capture_output=True, text=True, encoding="utf-8", errors="replace")
 
-    orig = _sp.run
-    VENDORS = ("claude", "codex", "agy")
+    import harness.roles.implementer as impl_mod
 
-    def fake_run(cmd, *a, **k):
-        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]).endswith(VENDORS):
-            class R:
-                returncode = 0
-                stdout = ""
-                stderr = ""
-            return R()
-        return orig(cmd, *a, **k)
+    def fake_invoke(decl, prompt, **kw):
+        return {"cmd": [decl.name], "returncode": 0, "stdout": "", "stderr": ""}
 
-    monkeypatch.setattr(_sp, "run", fake_run)
+    monkeypatch.setattr(impl_mod, "invoke", fake_invoke)
     seq = Sequencer(str(tmp_path / "events.jsonl"))
     seq.start()
     out = implement("T1", _task(), str(wt), vendor="claude", seq=seq)
@@ -170,19 +156,12 @@ def test_implement_records_self_score(monkeypatch, tmp_path):
     inner = _json.dumps({"self_score": expected_score})
     envelope = _json.dumps({"result": f"done.\n{inner}"})
 
-    orig = _sp.run
-    VENDORS = ("claude", "codex", "agy")
+    import harness.roles.implementer as impl_mod
 
-    def fake_run(cmd, *a, **k):
-        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]).endswith(VENDORS):
-            class R:
-                returncode = 0
-                stdout = envelope
-                stderr = ""
-            return R()
-        return orig(cmd, *a, **k)
+    def fake_invoke(decl, prompt, **kw):
+        return {"cmd": [decl.name], "returncode": 0, "stdout": envelope, "stderr": ""}
 
-    monkeypatch.setattr(_sp, "run", fake_run)
+    monkeypatch.setattr(impl_mod, "invoke", fake_invoke)
     task = _task()
     task["rubric"] = [{"criterion": "x", "weight": 100}]
     task["rubric_threshold"] = 75
@@ -216,19 +195,13 @@ def test_implement_self_score_none_when_vendor_output_unparseable(monkeypatch, t
     subprocess.run(["git", "-C", str(wt), "commit", "--allow-empty", "-m", "init"],
                    capture_output=True, text=True, encoding="utf-8", errors="replace")
 
-    orig = _sp.run
-    VENDORS = ("claude", "codex", "agy")
+    import harness.roles.implementer as impl_mod
 
-    def fake_run(cmd, *a, **k):
-        if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]).endswith(VENDORS):
-            class R:
-                returncode = 0
-                stdout = "plain text, no JSON here"
-                stderr = ""
-            return R()
-        return orig(cmd, *a, **k)
+    def fake_invoke(decl, prompt, **kw):
+        return {"cmd": [decl.name], "returncode": 0,
+                "stdout": "plain text, no JSON here", "stderr": ""}
 
-    monkeypatch.setattr(_sp, "run", fake_run)
+    monkeypatch.setattr(impl_mod, "invoke", fake_invoke)
     out = implement("T1", _task(), str(wt), vendor="claude")
     assert out["ok"] is True
     assert out["self_score"] is None

@@ -12,10 +12,13 @@ Two modes:
 from __future__ import annotations
 
 import json
+import queue
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -33,6 +36,24 @@ MODEL_ALIASES = {
     "hy3:Free": "tencent/hy3:free",
     "hy3": "tencent/hy3:free",
 }
+
+# Default wall-clock timeout (seconds) for a single vendor subprocess call.
+# Was 300s; raised because a killed subprocess loses all its work with no
+# partial result, and a design/architect call with --allowedTools Read/Grep/Glob
+# can legitimately spend minutes on internal tool-use turns exploring a large
+# repo (not the harness retrying — invoke() calls the vendor once per attempt).
+# Override per-role via vendors.yaml `roles.<role>.timeout` (see resolve_role()).
+DEFAULT_TIMEOUT = 1800
+
+# Idle-timeout (seconds): killed if a vendor produces no activity for this
+# long. This is the *primary* stall signal (docs/design/
+# timeout-liveness-watchdog.md); `timeout` above is the absolute wall-clock
+# backstop. For claude/agy/codex (see _STREAM_PARSERS) activity means a
+# parsed NDJSON stdout line; for hermes (no streaming stdout at all) it means
+# a line from the `hermes logs -f --session <id>` tail process (see
+# _run_hermes()). Any vendor not covered by either path gets no idle-timeout
+# (see invoke()'s idle_timeout resolution).
+DEFAULT_IDLE_TIMEOUT = 300
 
 
 def normalize_model(model: str | None) -> str | None:
@@ -295,15 +316,18 @@ def latest_task_file(design_dir: str | Path, fallback_dir: str | Path) -> Path |
 def resolve_role(role: str, config_dir: str | Path,
                  explicit_vendor: str | None = None,
                  explicit_model: str | None = None,
-                 explicit_effort: str | None = None) -> dict:
-    """Resolve the effective vendor/model/effort for a pipeline role.
+                 explicit_effort: str | None = None,
+                 explicit_timeout: int | None = None) -> dict:
+    """Resolve the effective vendor/model/effort/timeout for a pipeline role.
 
-    Precedence: explicit CLI flag > role default (from vendors.yaml `roles:`).
-    Returns {vendor, model, effort}.
+    Precedence: explicit CLI flag > role default (from vendors.yaml `roles:`)
+    > invoke()'s own DEFAULT_TIMEOUT (when neither specifies a timeout, this
+    returns timeout=None and callers should let invoke() apply its default).
+    Returns {vendor, model, effort, timeout}.
 
     For the `implement` role (which may declare multiple channels as a list),
-    this returns the *first* channel's vendor/model/effort as the default. Use
-    `resolve_role_channels()` to get the full fan-out list.
+    this returns the *first* channel's vendor/model/effort/timeout as the
+    default. Use `resolve_role_channels()` to get the full fan-out list.
     """
     raw = load_role_defaults(config_dir).get(role, {})
     if isinstance(raw, list):
@@ -313,6 +337,7 @@ def resolve_role(role: str, config_dir: str | Path,
         "vendor": explicit_vendor or defaults.get("vendor"),
         "model": explicit_model or defaults.get("model"),
         "effort": explicit_effort or defaults.get("effort"),
+        "timeout": explicit_timeout or defaults.get("timeout"),
     }
 
 
@@ -376,12 +401,13 @@ def resolve_role_channels(role: str, config_dir: str | Path,
         out: list[dict] = []
         for el in raw:
             if isinstance(el, str):
-                out.append({"vendor": el, "model": None, "effort": None})
+                out.append({"vendor": el, "model": None, "effort": None, "timeout": None})
             elif isinstance(el, dict):
                 out.append({
                     "vendor": el.get("vendor"),
                     "model": el.get("model"),
                     "effort": el.get("effort"),
+                    "timeout": el.get("timeout"),
                 })
         if out:
             return out
@@ -391,6 +417,7 @@ def resolve_role_channels(role: str, config_dir: str | Path,
         "vendor": d.get("vendor"),
         "model": d.get("model"),
         "effort": d.get("effort"),
+        "timeout": d.get("timeout"),
     }]
 
 
@@ -571,6 +598,353 @@ def _extract_first_balanced_json(stdout: str) -> Any | None:
     return None
 
 
+# --- Streaming (liveness) support -------------------------------------------
+#
+# claude/agy/codex support an NDJSON streaming output mode; the exact flags and
+# shapes below are empirically measured (see CLAUDE.md "ハマりポイント" and
+# docs/design/timeout-liveness-watchdog.md). hermes has no streaming mode at
+# all (nothing is printed until the whole response is ready), so it is
+# deliberately absent from this table — invoke() only applies idle-timeout
+# stall detection to vendors listed here (see idle_timeout resolution below).
+#
+# Each entry provides:
+#   detail(obj)      -> a short human string for progress_cb, or None to skip.
+#                        Unknown type/event values still produce a generic
+#                        "type=..."/"event=..." string (so future vendor-side
+#                        additions don't silently stop being reported).
+#   reconstruct(objs) -> for vendors whose last NDJSON line is turn metadata
+#                        rather than the answer (codex), rebuild the text
+#                        extract_result() should scrape, from the full list of
+#                        parsed line objects. None means "use the raw joined
+#                        stdout lines as-is" (claude/agy: the last NDJSON line
+#                        already *is* the same envelope non-streaming mode used
+#                        to produce, so extract_result's last-JSON-line
+#                        heuristic keeps working unchanged).
+
+def _claude_stream_detail(obj: dict[str, Any]) -> str | None:
+    t = obj.get("type")
+    return f"type={t}" if t else None
+
+
+def _agy_stream_detail(obj: dict[str, Any]) -> str | None:
+    ev = obj.get("event")
+    if ev == "step_update":
+        # payload nests under a "step_update" key (measured live, 2026-08-11):
+        # {"event":"step_update","step_update":{"state":..,"step_type":..,...}}
+        su = obj.get("step_update") or {}
+        step_type = su.get("step_type", "")
+        state = su.get("state", "")
+        return f"step_update {step_type} {state}".strip()
+    return f"event={ev}" if ev else None
+
+
+def _codex_stream_detail(obj: dict[str, Any]) -> str | None:
+    t = obj.get("type")
+    return f"type={t}" if t else None
+
+
+def _codex_reconstruct_text(parsed_lines: list[dict[str, Any]]) -> str | None:
+    """codex --json's final NDJSON line is `turn.completed`/`turn.failed`
+    (usage stats / error), not the answer (unlike claude/agy, whose terminal
+    line IS the envelope carrying the answer). The actual text lives in
+    `item.completed` events with `item.type=="agent_message"`. Reconstruct the
+    equivalent of the old plain-text stdout from the last such item so
+    extract_result()'s line/fence heuristics keep working unchanged. Returns
+    None (caller falls back to the raw joined stdout) if no agent_message item
+    was seen, e.g. a `turn.failed` run."""
+    text = None
+    for obj in parsed_lines:
+        if obj.get("type") == "item.completed":
+            item = obj.get("item") or {}
+            if item.get("type") == "agent_message" and item.get("text"):
+                text = item["text"]
+    return text
+
+
+_STREAM_PARSERS: dict[str, dict[str, Any]] = {
+    "claude": {"detail": _claude_stream_detail, "reconstruct": None},
+    "agy": {"detail": _agy_stream_detail, "reconstruct": None},
+    "codex": {"detail": _codex_stream_detail, "reconstruct": _codex_reconstruct_text},
+}
+
+
+def _try_parse_json_object(line: str) -> dict[str, Any] | None:
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _reader_thread(stream: Any, name: str,
+                    q: "queue.Queue[tuple[str, str | None]]") -> None:
+    """Pump lines from `stream` into `q` as (name, line); (name, None) on EOF.
+
+    Runs in its own thread per pipe (stdout/stderr) — Windows can't select()
+    on pipes, so this is how the main loop gets a single wait-with-timeout
+    point across both streams (queue.Queue.get(timeout=...)).
+    """
+    try:
+        for line in iter(stream.readline, ""):
+            q.put((name, line.rstrip("\r\n")))
+    finally:
+        q.put((name, None))
+
+
+def _run_streaming(
+    cmd: list[str],
+    *,
+    cwd: str | None,
+    stdin_input: str | None,
+    timeout: float | None,
+    idle_timeout: float | None,
+    progress_cb: Callable[[str], None] | None,
+    vendor_name: str,
+) -> dict[str, Any]:
+    """Run one vendor subprocess, killed on idle-timeout (no stdout/stderr
+    activity for `idle_timeout` seconds) as well as the absolute `timeout`.
+
+    Returns {returncode, stdout, stderr, timed_out, stall_reason}. `stdout` is
+    the raw joined stdout lines, UNLESS the vendor declares a `reconstruct`
+    (codex) and produced at least one parseable line, in which case it is
+    replaced by the reconstructed answer text so extract_result() keeps
+    working unchanged. `timed_out` is True if the process had to be killed
+    (idle or absolute); `stall_reason` is "idle"/"absolute"/None.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=cwd,
+        stdin=subprocess.PIPE if stdin_input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", shell=False,
+    )
+    if stdin_input is not None:
+        # codex (prompt_stdin): write the prompt then close, same as
+        # subprocess.run(input=...) used to. Popen has no `input=` kwarg, so
+        # this is done by hand. Prompt sizes here (task/design text) are far
+        # below typical pipe buffer sizes, so a synchronous write is safe.
+        proc.stdin.write(stdin_input)
+        proc.stdin.close()
+    q: "queue.Queue[tuple[str, str | None]]" = queue.Queue()
+    threads = [
+        threading.Thread(target=_reader_thread, args=(proc.stdout, "stdout", q), daemon=True),
+        threading.Thread(target=_reader_thread, args=(proc.stderr, "stderr", q), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    parser = _STREAM_PARSERS.get(vendor_name)
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    parsed_lines: list[dict[str, Any]] = []
+    open_streams = {"stdout", "stderr"}
+    start = time.monotonic()
+    last_activity = start
+    timed_out = False
+    stall_reason: str | None = None
+
+    while open_streams:
+        waits = []
+        if idle_timeout is not None:
+            waits.append(("idle", idle_timeout - (time.monotonic() - last_activity)))
+        if timeout is not None:
+            waits.append(("absolute", timeout - (time.monotonic() - start)))
+        if not waits:
+            wait_kind, wait = None, None
+        else:
+            wait_kind, wait = min(waits, key=lambda kv: kv[1])
+        if wait is not None and wait <= 0:
+            timed_out = True
+            stall_reason = wait_kind
+            break
+        try:
+            name, line = q.get(timeout=wait)
+        except queue.Empty:
+            timed_out = True
+            stall_reason = wait_kind
+            break
+        if line is None:
+            open_streams.discard(name)
+            continue
+        last_activity = time.monotonic()
+        if name == "stdout":
+            stdout_lines.append(line)
+            if parser is not None:
+                obj = _try_parse_json_object(line)
+                if obj is not None:
+                    parsed_lines.append(obj)
+                    if progress_cb is not None:
+                        detail = parser["detail"](obj)
+                        if detail:
+                            progress_cb(detail)
+        else:
+            stderr_lines.append(line)
+
+    if timed_out:
+        proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    for t in threads:
+        t.join(timeout=2)
+
+    stdout_text = "\n".join(stdout_lines)
+    reconstruct = parser["reconstruct"] if parser is not None else None
+    if reconstruct is not None:
+        reconstructed = reconstruct(parsed_lines)
+        if reconstructed is not None:
+            stdout_text = reconstructed
+
+    return {
+        "returncode": proc.returncode,
+        "stdout": stdout_text,
+        "stderr": "\n".join(stderr_lines),
+        "timed_out": timed_out,
+        "stall_reason": stall_reason,
+    }
+
+
+def _start_hermes_log_tail(
+    exe: str, session_id: str, q: "queue.Queue[tuple[str, str | None]]"
+) -> tuple[subprocess.Popen | None, threading.Thread | None]:
+    """Spawn ``<exe> logs -f --session <id>`` and pump its stdout lines into
+    `q` tagged "logtail" (docs/design/timeout-liveness-watchdog.md §2).
+
+    hermes prints nothing to its own stdout until the whole response is
+    ready, so this side process is the only liveness signal available once
+    the session id is known. Best-effort: if the log-tail process fails to
+    start (e.g. hermes not on PATH under a test double), returns (None, None)
+    rather than raising — liveness then silently degrades to "no activity
+    until the main process exits", same as before this feature existed.
+    """
+    try:
+        log_proc = subprocess.Popen(
+            [exe, "logs", "-f", "--session", session_id],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", shell=False,
+        )
+    except OSError:
+        return None, None
+    t = threading.Thread(target=_reader_thread, args=(log_proc.stdout, "logtail", q), daemon=True)
+    t.start()
+    return log_proc, t
+
+
+def _run_hermes(
+    cmd: list[str],
+    *,
+    cwd: str | None,
+    timeout: float | None,
+    idle_timeout: float | None,
+    progress_cb: Callable[[str], None] | None,
+) -> dict[str, Any]:
+    """Run hermes with log-tail-derived liveness (docs/design/
+    timeout-liveness-watchdog.md §2), since hermes has no streaming NDJSON
+    mode at all (nothing on stdout until the whole response is ready) except
+    a `session_id: <id>` line printed first (measured live; no extra flag
+    needed — see CLAUDE.md's ハマりポイント).
+
+    Once that id is captured, a second `hermes logs -f --session <id>`
+    process is spawned and its lines feed the SAME idle-timeout clock as
+    stdout/stderr, so a genuinely stalled hermes call can still be killed
+    (previously idle_timeout was unconditionally disabled for hermes because
+    there was no liveness signal at all).
+
+    Returns the same shape as `_run_streaming()`.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", shell=False,
+    )
+    q: "queue.Queue[tuple[str, str | None]]" = queue.Queue()
+    threads = [
+        threading.Thread(target=_reader_thread, args=(proc.stdout, "stdout", q), daemon=True),
+        threading.Thread(target=_reader_thread, args=(proc.stderr, "stderr", q), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    log_proc: subprocess.Popen | None = None
+    log_thread: threading.Thread | None = None
+    session_id: str | None = None
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    open_streams = {"stdout", "stderr"}
+    start = time.monotonic()
+    last_activity = start
+    timed_out = False
+    stall_reason: str | None = None
+
+    while open_streams:
+        waits = []
+        if idle_timeout is not None:
+            waits.append(("idle", idle_timeout - (time.monotonic() - last_activity)))
+        if timeout is not None:
+            waits.append(("absolute", timeout - (time.monotonic() - start)))
+        if not waits:
+            wait_kind, wait = None, None
+        else:
+            wait_kind, wait = min(waits, key=lambda kv: kv[1])
+        if wait is not None and wait <= 0:
+            timed_out = True
+            stall_reason = wait_kind
+            break
+        try:
+            name, line = q.get(timeout=wait)
+        except queue.Empty:
+            timed_out = True
+            stall_reason = wait_kind
+            break
+        if line is None:
+            open_streams.discard(name)  # logtail is never in open_streams; harmless no-op
+            continue
+        last_activity = time.monotonic()
+        if name == "stdout":
+            stdout_lines.append(line)
+            if session_id is None:
+                sid = _extract_session_id(line)
+                if sid is not None:
+                    session_id = sid
+                    if progress_cb is not None:
+                        progress_cb(f"session_id={sid}")
+                    log_proc, log_thread = _start_hermes_log_tail(cmd[0], sid, q)
+        elif name == "stderr":
+            stderr_lines.append(line)
+        else:  # "logtail"
+            if progress_cb is not None:
+                progress_cb(line[:200])
+
+    if timed_out:
+        proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    for t in threads:
+        t.join(timeout=2)
+
+    if log_proc is not None:
+        log_proc.kill()
+        try:
+            log_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    if log_thread is not None:
+        log_thread.join(timeout=2)
+
+    return {
+        "returncode": proc.returncode,
+        "stdout": "\n".join(stdout_lines),
+        "stderr": "\n".join(stderr_lines),
+        "timed_out": timed_out,
+        "stall_reason": stall_reason,
+    }
+
+
 def invoke(
     decl: VendorDecl,
     prompt: str,
@@ -581,18 +955,44 @@ def invoke(
     model: str | None = None,
     effort: str | None = None,
     role: str | None = None,
+    cwd: str | None = None,
     dry_run: bool = False,
-    timeout: int = 300,
+    timeout: int = DEFAULT_TIMEOUT,
+    idle_timeout: int | None = DEFAULT_IDLE_TIMEOUT,
+    progress_cb: Callable[[str], None] | None = None,
     max_retries: int = 3,
 ) -> dict[str, Any]:
+    """Run `decl`'s headless command for `prompt`, retrying on content-block.
+
+    Execution is via Popen + reader threads (not subprocess.run): a stalled
+    vendor is killed on `idle_timeout` seconds of no activity (the primary
+    signal), with `timeout` as the absolute wall-clock backstop. For
+    claude/agy/codex (see _STREAM_PARSERS) activity means a parsed NDJSON
+    stdout line; for hermes (no streaming output at all) it means either
+    stdout/stderr, or a line from the `hermes logs -f --session <id>`
+    process tailed once the session id is known (see `_run_hermes()`,
+    docs/design/timeout-liveness-watchdog.md §2). Every other vendor gets no
+    idle-timeout (treated as None) — none is currently declared.
+
+    `progress_cb(detail)`, if given, is called with a short human-readable
+    string for every unit of observed activity. Callers wire this to the
+    progress side-channel (harness.core.progress) themselves — invoke() has
+    no task_id to key a progress file by.
+
+    `cwd`, if given, is the working directory for the vendor subprocess
+    (e.g. a task's worktree — see harness.roles.implementer).
+
+    Raises subprocess.TimeoutExpired (matching subprocess.run's old contract)
+    if an attempt is killed for stalling, with partial output/stderr attached.
+    """
     cmd = build_command(decl, prompt, schema=schema, session_id=session_id,
                         worktree=worktree, model=model, effort=effort, role=role)
     if dry_run:
         return {"cmd": cmd, "dry_run": True}
-    # codex (prompt_stdin) reads the prompt from stdin; others get DEVNULL so
-    # they never block waiting on stdin. Passing `input=` makes subprocess use a
-    # pipe for stdin automatically, so we must not also set stdin=DEVNULL.
-    stdin_kw = {"input": prompt} if decl.prompt_stdin else {"stdin": subprocess.DEVNULL}
+    stdin_input = prompt if decl.prompt_stdin else None
+    effective_idle_timeout = (
+        idle_timeout if (decl.name in _STREAM_PARSERS or decl.name == "hermes") else None
+    )
 
     last: dict[str, Any] = {}
     resume_sid: str | None = session_id
@@ -607,21 +1007,36 @@ def invoke(
                 decl, prompt, schema=schema, session_id=resume_sid,
                 worktree=worktree, model=model, effort=effort, role=role,
             )
-        proc = subprocess.run(run_cmd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace",
-                              shell=False, timeout=timeout, **stdin_kw)
+        if decl.name == "hermes":
+            run = _run_hermes(
+                run_cmd, cwd=cwd, timeout=timeout,
+                idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
+            )
+        else:
+            run = _run_streaming(
+                run_cmd, cwd=cwd, stdin_input=stdin_input, timeout=timeout,
+                idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
+                vendor_name=decl.name,
+            )
+        if run["timed_out"]:
+            effective_timeout = (
+                effective_idle_timeout if run["stall_reason"] == "idle" else timeout
+            )
+            raise subprocess.TimeoutExpired(
+                run_cmd, effective_timeout, output=run["stdout"], stderr=run["stderr"],
+            )
         last = {
             "cmd": run_cmd,
-            "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "result": extract_result(proc.stdout, decl.result_path()),
+            "returncode": run["returncode"],
+            "stdout": run["stdout"],
+            "stderr": run["stderr"],
+            "result": extract_result(run["stdout"], decl.result_path()),
             "attempt": attempt,
         }
         # Content-policy block? Retry by resuming the same session (or, if no
         # session id yet, the next attempt re-issues the same prompt fresh).
-        if _is_content_blocked(proc.stdout, proc.stderr):
-            sid = _extract_session_id(proc.stdout)
+        if _is_content_blocked(run["stdout"], run["stderr"]):
+            sid = _extract_session_id(run["stdout"])
             if sid:
                 resume_sid = sid
             if attempt < max_retries:

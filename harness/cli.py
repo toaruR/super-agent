@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -221,13 +222,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
         task_id = f"T-{uuid.uuid4().hex[:8]}"
         seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
                     design_file=args.design_file, task_file=str(tasks_file.resolve()))
+        design_role = resolve_role("design", CONFIG_DIR, explicit_vendor=args.vendor,
+                                   explicit_model=getattr(args, "model", None),
+                                   explicit_effort=getattr(args, "effort", None),
+                                   explicit_timeout=getattr(args, "timeout", None))
         out = decomposer_decompose(
             task_id, requirement,
-            vendor=resolve_role("design", CONFIG_DIR, explicit_vendor=args.vendor,
-                                explicit_model=getattr(args, "model", None),
-                                explicit_effort=getattr(args, "effort", None))["vendor"],
+            vendor=design_role["vendor"],
             existing_design=spec_text, dry_run=args.dry_run,
             model=getattr(args, "model", None), seq=seq, design_file=args.design_file,
+            timeout=design_role["timeout"],
         )
         if not out.get("ok"):
             seq.stop()
@@ -285,7 +289,8 @@ def cmd_architect(args: argparse.Namespace) -> int:
     r = resolve_role("design", CONFIG_DIR,
                      explicit_vendor=args.vendor,
                      explicit_model=getattr(args, "model", None),
-                     explicit_effort=getattr(args, "effort", None))
+                     explicit_effort=getattr(args, "effort", None),
+                     explicit_timeout=args.timeout)
     adr = architect_propose(
         task_id,
         requirement,
@@ -295,6 +300,7 @@ def cmd_architect(args: argparse.Namespace) -> int:
         model=r["model"],
         effort=r["effort"],
         seq=seq,
+        timeout=r["timeout"],
     )
     seq.stop()
     print(json.dumps(adr, ensure_ascii=False, indent=2))
@@ -342,9 +348,11 @@ def cmd_implement(args: argparse.Namespace) -> int:
     r = resolve_role("implement", CONFIG_DIR,
                      explicit_vendor=args.vendor,
                      explicit_model=getattr(args, "model", None),
-                     explicit_effort=getattr(args, "effort", None))
+                     explicit_effort=getattr(args, "effort", None),
+                     explicit_timeout=getattr(args, "timeout", None))
     out = implement(args.task, task, worktree, vendor=r["vendor"],
-                   seq=seq, dry_run=args.dry_run, model=r["model"], effort=r["effort"])
+                   seq=seq, dry_run=args.dry_run, model=r["model"], effort=r["effort"],
+                   timeout=r["timeout"])
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
@@ -454,6 +462,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         adaptive=getattr(args, "adaptive", True),
         implement_model=args.model,
         implement_effort=args.effort,
+        implement_timeout=args.timeout,
         task_file=str(Path(args.task_file).resolve()),
     )
     seq.stop()
@@ -509,7 +518,8 @@ def cmd_review(args: argparse.Namespace) -> int:
     r = resolve_role("review", CONFIG_DIR,
                      explicit_vendor=args.reviewer,
                      explicit_model=getattr(args, "model", None),
-                     explicit_effort=getattr(args, "effort", None))
+                     explicit_effort=getattr(args, "effort", None),
+                     explicit_timeout=getattr(args, "timeout", None))
     j = run_pipeline(
         task_id,
         target,
@@ -520,6 +530,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         model=r["model"],
         effort=r["effort"],
         seq=seq,
+        timeout=r["timeout"],
     )
     seq.stop()
     print(json.dumps(j, ensure_ascii=False, indent=2))
@@ -643,22 +654,31 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_dashboard(args: argparse.Namespace) -> int:
-    """Generate dashboard (md, html, or both) from ledger events."""
+_DEFAULT_WATCH_INTERVAL = 5
+
+
+def _render_dashboard_once(fmt: str, out_path: str | None,
+                            refresh_interval: int | None = None) -> None:
+    """Build the model from the live ledger/progress and write/print it once.
+
+    ``refresh_interval``, if given, is embedded as a
+    ``<meta http-equiv="refresh">`` tag in the HTML output so a browser
+    viewing the file auto-reloads while ``--watch`` keeps regenerating it
+    (docs/design/timeout-liveness-watchdog.md §5).
+    """
     lg = Ledger(str(LEDGER_PATH))
     events = lg.load_flat()
 
     # The model builder + renderers live in harness.roles.dashboard (this is the
     # single source of truth; no inline fallbacks — if the import fails the CLI
     # surfaces the error instead of silently diverging from the role module).
-    from harness.roles.dashboard import build_model, render_markdown, render_html
+    from harness.roles.dashboard import build_model, load_progress, render_markdown, render_html
 
-    model = build_model(events)
-    fmt = args.format
-    out_path = getattr(args, "out", None) or getattr(args, "out_dir", None)
+    progress = load_progress(str(LEDGER_PATH))
+    model = build_model(events, progress=progress)
 
     md_content = render_markdown(model)
-    html_content = render_html(model)
+    html_content = render_html(model, refresh_interval=refresh_interval)
 
     if out_path:
         p = Path(out_path)
@@ -693,6 +713,29 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             sys.stdout.write(md_content)
             sys.stdout.write(html_content)
 
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Generate dashboard (md, html, or both) from ledger events.
+
+    With ``--watch``, loops regenerating the output every ``--interval``
+    seconds (default 5s) instead of running once — no server/websocket, just
+    a plain re-render loop terminated by Ctrl+C
+    (docs/design/timeout-liveness-watchdog.md §5).
+    """
+    fmt = args.format
+    out_path = getattr(args, "out", None) or getattr(args, "out_dir", None)
+
+    if not getattr(args, "watch", False):
+        _render_dashboard_once(fmt, out_path)
+        return 0
+
+    interval = getattr(args, "interval", None) or _DEFAULT_WATCH_INTERVAL
+    try:
+        while True:
+            _render_dashboard_once(fmt, out_path, refresh_interval=interval)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -721,6 +764,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--effort", default=None, help="override the vendor's default effort")
     a.add_argument("--dry-run", action="store_true",
                    help="assemble the architect prompt without calling the vendor")
+    a.add_argument("--timeout", type=int, default=None,
+                   help="seconds to wait for the vendor subprocess (default: 1800)")
     a.set_defaults(func=cmd_architect)
 
     pl = sub.add_parser("plan", help="decompose + schedule worktrees/leases (Stage 3)")
@@ -743,6 +788,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="lease duration in seconds (default 3600)")
     pl.add_argument("--root", default="workspaces",
                    help="worktree root directory (default: workspaces)")
+    pl.add_argument("--timeout", type=int, default=None,
+                   help="seconds to wait for the vendor subprocess (default: 1800)")
     pl.add_argument("--dry-run", action="store_true",
                    help="assemble prompts and plan worktrees without calling vendor / git")
     pl.set_defaults(func=cmd_plan)
@@ -756,6 +803,8 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--model", default=None, help="override the reviewer vendor's default model")
     rv.add_argument("--effort", default=None, help="override the reviewer vendor's default effort")
     rv.add_argument("--budget", type=int, default=4000)
+    rv.add_argument("--timeout", type=int, default=None,
+                    help="seconds to wait for the reviewer subprocess (default: 1800)")
     rv.add_argument("--dry-run", action="store_true",
                     help="run CVE but skip the live reviewer call")
     rv.set_defaults(func=cmd_review)
@@ -773,6 +822,8 @@ def main(argv: list[str] | None = None) -> int:
     rt.add_argument("--model", default=None, help="override the reviewer vendor's default model")
     rt.add_argument("--effort", default=None, help="override the reviewer vendor's default effort")
     rt.add_argument("--budget", type=int, default=4000)
+    rt.add_argument("--timeout", type=int, default=None,
+                    help="seconds to wait for the reviewer subprocess (default: 1800)")
     rt.add_argument("--dry-run", action="store_true",
                     help="run CVE but skip the live reviewer call")
     rt.set_defaults(func=cmd_review)
@@ -789,6 +840,8 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--vendor", default=None)
     im.add_argument("--model", default=None, help="override the implementer vendor's default model")
     im.add_argument("--effort", default=None, help="override the implementer vendor's default effort")
+    im.add_argument("--timeout", type=int, default=None,
+                    help="seconds to wait for the vendor subprocess (default: 1800)")
     im.add_argument("--dry-run", action="store_true",
                     help="assemble the implementer prompt without calling the vendor")
     im.set_defaults(func=cmd_implement)
@@ -832,6 +885,9 @@ def main(argv: list[str] | None = None) -> int:
                          "e.g. tencent/hy3:free. Normalized if a known alias is used.")
     dr.add_argument("--effort", default=None,
                     help="override the implementer effort (and all implement channels)")
+    dr.add_argument("--timeout", type=int, default=None,
+                    help="override the implementer subprocess timeout in seconds "
+                         "(and all implement channels; default: 1800)")
     dr.add_argument("--implement-vendors", default=None,
                     help='multi-channel override, e.g. "agy:2,hermes:3" '
                          '(each entry becomes one parallel implement channel)')
@@ -875,6 +931,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="output format: md, html, or both (default: md)")
     db.add_argument("--out", "--out-dir", "--output", "-o", dest="out", default=None,
                     help="output file or directory path")
+    db.add_argument("--watch", action="store_true",
+                    help="regenerate the dashboard in a loop instead of once (Ctrl+C to stop)")
+    db.add_argument("--interval", type=int, default=None,
+                    help=f"seconds between regenerations in --watch mode (default: {_DEFAULT_WATCH_INTERVAL})")
     db.set_defaults(func=cmd_dashboard)
 
     ns = p.parse_args(argv)

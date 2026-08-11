@@ -276,6 +276,7 @@ def replan(
     seq=None,
     dry_run: bool = False,
     design_file: str = "",
+    timeout: int | None = None,
 ) -> dict:
     """Re-plan the task DAG given what actually happened (ledger events).
 
@@ -315,7 +316,8 @@ def replan(
 
     decls = load_vendors(config_dir)
     decl = decls.get(vendor, decls["claude"])
-    res = invoke(decl, prompt, schema=REPLAN_SCHEMA, model=model, role="planner")
+    invoke_kwargs = {"timeout": timeout} if timeout is not None else {}
+    res = invoke(decl, prompt, schema=REPLAN_SCHEMA, model=model, role="planner", **invoke_kwargs)
 
     # invoke may return a string (raw model output) — try to parse JSON.
     if isinstance(res, str):

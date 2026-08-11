@@ -53,13 +53,15 @@ ARCHITECT_PROMPT = """あなたはシステムアーキテクトです。要求�
 
 def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None = None,
             existing_design: str = "", dry_run: bool = False,
-            seq=None, model: str | None = None, effort: str | None = None) -> dict:
+            seq=None, model: str | None = None, effort: str | None = None,
+            timeout: int | None = None) -> dict:
     """Propose/record design decisions. Returns the ADR payload.
 
     ledger events written: adr.written (topic/decision/rationale per decision).
     """
     emit = (lambda tid, typ, **kw: seq.propose(tid, typ, **kw)) if seq is not None \
         else (lambda tid, typ, **kw: None)  # standalone: no ledger
+    invoke_kwargs = {"timeout": timeout} if timeout is not None else {}
 
     if spec_path:
         p = Path(spec_path)
@@ -73,9 +75,9 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
             decl = decls.get(vendor, decls["claude"])
             prompt = ARCHITECT_PROMPT.format(requirement=requirement, existing=existing_design)
             if dry_run:
-                res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=True)
+                res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=True, **invoke_kwargs)
                 return {"source": "llm(dry)", "cmd": res.get("cmd"), "decisions": []}
-            res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=False)
+            res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=False, **invoke_kwargs)
             parsed = res.get("result") or {}
             decisions = parsed.get("decisions", [])
             # 起案結果をファイルに保存（人間が後で編集・参照できるよう）
@@ -95,9 +97,9 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
         decl = decls.get(vendor, decls["claude"])
         prompt = ARCHITECT_PROMPT.format(requirement=requirement, existing=existing_design)
         if dry_run:
-            res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=True)
+            res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=True, **invoke_kwargs)
             return {"source": "llm(dry)", "cmd": res.get("cmd"), "decisions": []}
-        res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=False)
+        res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort, role="design", dry_run=False, **invoke_kwargs)
         parsed = res.get("result") or {}
         adr = {"source": "llm", "decisions": parsed.get("decisions", []),
                "open_questions": parsed.get("open_questions", [])}

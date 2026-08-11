@@ -30,8 +30,12 @@ def test_claude_command_shape() -> None:
     assert cmd[0] == "claude"
     # A-7: claude has no `structured` key (rejects --json-schema), so NO schema flag
     assert "--json-schema" not in cmd
-    # --output-format json is required to get the envelope (A-7)
-    assert "--output-format" in cmd and "json" in cmd
+    # --output-format stream-json requires --verbose (liveness streaming, see
+    # docs/design/timeout-liveness-watchdog.md); the terminal NDJSON line
+    # (type:"result") carries the same {"result": "...", ...} envelope the old
+    # non-streaming --output-format json used to, so extract_result is unaffected.
+    assert "--verbose" in cmd
+    assert "--output-format" in cmd and "stream-json" in cmd
     assert "--resume" in cmd and "S1" in cmd
     # A-6: read-only is allowedTools, execution is NOT blocked by it
     assert "--allowedTools" in cmd
@@ -45,6 +49,7 @@ def test_codex_command_shape() -> None:
     assert cmd[0].endswith("node.exe")
     assert "codex.js" in cmd[1]
     assert cmd[2] == "exec"
+    assert "--json" in cmd  # NDJSON liveness stream (thread.started/turn.*/item.completed)
     assert "--output-schema" in cmd  # file form (A-5)
     # file form writes a path, not inline json
     os_idx = cmd.index("--output-schema")
@@ -67,6 +72,11 @@ def test_agy_command_shape() -> None:
     # --mode plan appears once (from permission), --add-dir once (from headless)
     assert cmd.count("--mode") == 1
     assert cmd.count("--add-dir") == 1
+    # flag-order requirement (measured live, 2026-08-11): --output-format
+    # stream-json MUST precede --print, or agy ignores the prompt entirely and
+    # returns an off-topic explanation instead.
+    assert cmd.index("--output-format") < cmd.index("--print")
+    assert d.result_path() == "result.response"
 
 
 def test_extract_last_json_line() -> None:
@@ -86,7 +96,7 @@ def test_role_model_and_effort_resolution() -> None:
 
     # design role -> claude / claude-sonnet-5 / high
     rd = resolve_role("design", "harness/config")
-    assert rd == {"vendor": "claude", "model": "claude-sonnet-5", "effort": "high"}
+    assert rd == {"vendor": "claude", "model": "claude-sonnet-5", "effort": "high", "timeout": None}
     cl = load_vendors("harness/config")["claude"]
     cmd = build_command(cl, "P", model=rd["model"], effort=rd["effort"])
     assert "--model" in cmd and "claude-sonnet-5" in cmd
@@ -118,7 +128,7 @@ def test_role_model_and_effort_resolution() -> None:
     # explicit CLI override wins over role default
     ro = resolve_role("design", "harness/config", explicit_vendor="agy",
                      explicit_model="custom-m", explicit_effort="low")
-    assert ro == {"vendor": "agy", "model": "custom-m", "effort": "low"}
+    assert ro == {"vendor": "agy", "model": "custom-m", "effort": "low", "timeout": None}
 
     # explicit --model on agy is suffixed (model_suffix always folds effort in)
     cmd = build_command(ag, "P", model="other-model", effort="low")
@@ -138,14 +148,27 @@ def test_extract_claude_envelope_result_field() -> None:
 
 
 def test_extract_agy_envelope_structured_output() -> None:
-    """agy --output-format json returns an envelope with a `structured_output`
-    dict already parsed. result_path should return that dict directly."""
+    """Generic dotted-path capability check (not tied to a specific vendor
+    envelope shape): result_path can point at any key, parsed dict included."""
     envelope = (
         '{"status": "SUCCESS", '
         '"structured_output": {"verdict": "pass", "why": "ok"}, '
         '"response": "the json was returned above"}'
     )
     assert extract_result(envelope, "structured_output") == {"verdict": "pass", "why": "ok"}
+
+
+def test_extract_agy_stream_json_result_response() -> None:
+    """agy's actual --output-format stream-json terminal line (measured live,
+    2026-08-11): {"event":"result","result":{"response": "<text>", ...}}.
+    result_path="result.response" must unwrap it, recovering embedded JSON
+    from the response string the same way claude's result_path="result" does."""
+    envelope = (
+        '{"event":"result","result":{"conversation_id":"x",'
+        '"status":"SUCCESS","response":"{\\"verdict\\": \\"pass\\", \\"why\\": \\"ok\\"}",'
+        '"duration_seconds":1.2}}'
+    )
+    assert extract_result(envelope, "result.response") == {"verdict": "pass", "why": "ok"}
 
 if __name__ == "__main__":
     import sys
@@ -348,22 +371,25 @@ def test_invoke_retries_on_content_block(monkeypatch) -> None:
         "session": {"resume_flag": ["--resume"]},
     })
 
+    # invoke() dispatches "hermes" to the internal _run_hermes() helper
+    # (Popen + reader threads + log-tail liveness) instead of subprocess.run
+    # directly, so the retry/content-block logic is exercised by faking that
+    # boundary instead.
     # Simulated hermes: 1st call blocked (emits a session id), 2nd succeeds.
     calls = {"n": 0}
 
-    class _FakeProc:
-        def __init__(self, rc, out, err):
-            self.returncode = rc; self.stdout = out; self.stderr = err
-
-    def fake_run(cmd, **kw):
+    def fake_run_hermes(cmd, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             # blocked, but prints a session id we can resume with
-            return _FakeProc(0, "你好，我无法给到相关内容。\nsession_id: ABC123\n", "")
+            return {"returncode": 0, "stdout": "你好，我无法给到相关内容。\nsession_id: ABC123\n",
+                    "stderr": "", "timed_out": False, "stall_reason": None}
         # resumed attempt: success with code
-        return _FakeProc(0, "```python\ndef build_model(e):\n    return {}\n```\nsession_id: ABC123\n", "")
+        return {"returncode": 0,
+                "stdout": "```python\ndef build_model(e):\n    return {}\n```\nsession_id: ABC123\n",
+                "stderr": "", "timed_out": False, "stall_reason": None}
 
-    monkeypatch.setattr(inv.subprocess, "run", fake_run)
+    monkeypatch.setattr(inv, "_run_hermes", fake_run_hermes)
 
     res = inv.invoke(decl, "implement this", model="tencent/hy3:free",
                      effort="high", role="implement", timeout=10, max_retries=3)
@@ -373,3 +399,324 @@ def test_invoke_retries_on_content_block(monkeypatch) -> None:
     # the resume flag was used on the 2nd attempt
     assert "--resume" in res["cmd"]
     assert "ABC123" in res["cmd"]
+
+
+def test_invoke_idle_timeout_enabled_for_hermes_via_log_tail(monkeypatch) -> None:
+    """hermes has no streaming NDJSON stdout, but §2's log-tail path gives it
+    a real liveness signal, so invoke() now dispatches hermes to
+    _run_hermes() (not _run_streaming()) with idle_timeout passed through
+    unchanged, instead of disabling idle-timeout entirely."""
+    import harness.core.invoke as inv
+    from harness.core.invoke import VendorDecl
+
+    decl = VendorDecl("hermes", {
+        "headless": ["hermes", "chat", "-q", "{prompt}", "-Q"],
+        "session": {"resume_flag": ["--resume"]},
+    })
+    seen = {}
+
+    def fake_run_hermes(cmd, **kw):
+        seen["idle_timeout"] = kw["idle_timeout"]
+        return {"returncode": 0, "stdout": "ok", "stderr": "",
+                "timed_out": False, "stall_reason": None}
+
+    def fail_run_streaming(cmd, **kw):
+        raise AssertionError("hermes must be dispatched to _run_hermes, not _run_streaming")
+
+    monkeypatch.setattr(inv, "_run_hermes", fake_run_hermes)
+    monkeypatch.setattr(inv, "_run_streaming", fail_run_streaming)
+    inv.invoke(decl, "do it", idle_timeout=42)
+    assert seen["idle_timeout"] == 42
+
+
+def test_invoke_idle_timeout_enabled_for_claude(monkeypatch) -> None:
+    """claude has a streaming mode, so its declared idle_timeout is passed
+    through unchanged (see _STREAM_PARSERS)."""
+    import harness.core.invoke as inv
+
+    decl = load_vendors("harness/config")["claude"]
+    seen = {}
+
+    def fake_run_streaming(cmd, **kw):
+        seen["idle_timeout"] = kw["idle_timeout"]
+        return {"returncode": 0, "stdout": '{"type":"result","result":"ok"}',
+                "stderr": "", "timed_out": False, "stall_reason": None}
+
+    monkeypatch.setattr(inv, "_run_streaming", fake_run_streaming)
+    inv.invoke(decl, "do it", idle_timeout=42)
+    assert seen["idle_timeout"] == 42
+
+
+def test_invoke_raises_timeout_expired_on_stall(monkeypatch) -> None:
+    """A stalled attempt (idle or absolute) must raise subprocess.TimeoutExpired
+    with the partial output attached, matching subprocess.run's old contract
+    (no caller today expects a dict-shaped timeout result)."""
+    import subprocess as sp
+    import harness.core.invoke as inv
+
+    decl = load_vendors("harness/config")["claude"]
+
+    def fake_run_streaming(cmd, **kw):
+        return {"returncode": None, "stdout": "partial output", "stderr": "partial err",
+                "timed_out": True, "stall_reason": "idle"}
+
+    monkeypatch.setattr(inv, "_run_streaming", fake_run_streaming)
+    try:
+        inv.invoke(decl, "do it", idle_timeout=5)
+        assert False, "expected TimeoutExpired"
+    except sp.TimeoutExpired as e:
+        assert e.output == "partial output"
+        assert e.stderr == "partial err"
+
+
+def test_claude_stream_detail_and_terminal() -> None:
+    from harness.core.invoke import _claude_stream_detail, _STREAM_PARSERS
+
+    assert _claude_stream_detail({"type": "assistant"}) == "type=assistant"
+    assert _claude_stream_detail({}) is None
+    # unknown/future type values still produce a passthrough detail string
+    assert _claude_stream_detail({"type": "some_future_type"}) == "type=some_future_type"
+    assert "claude" in _STREAM_PARSERS
+
+
+def test_agy_stream_detail() -> None:
+    from harness.core.invoke import _agy_stream_detail
+
+    step_update = {
+        "event": "step_update",
+        "step_update": {"state": "ACTIVE", "step_type": "agent_response"},
+    }
+    assert _agy_stream_detail(step_update) == "step_update agent_response ACTIVE"
+    assert _agy_stream_detail({"event": "init"}) == "event=init"
+    assert _agy_stream_detail({}) is None
+
+
+def test_codex_stream_detail_and_reconstruct() -> None:
+    from harness.core.invoke import _codex_stream_detail, _codex_reconstruct_text
+
+    assert _codex_stream_detail({"type": "turn.started"}) == "type=turn.started"
+    assert _codex_stream_detail({}) is None
+
+    # normal completion: text lives in item.completed/agent_message, NOT in
+    # the terminal turn.completed line (which only carries usage stats).
+    lines = [
+        {"type": "thread.started", "thread_id": "t1"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message",
+                                             "text": '{"greeting": "hi"}'}},
+        {"type": "turn.completed", "usage": {"input_tokens": 10}},
+    ]
+    assert _codex_reconstruct_text(lines) == '{"greeting": "hi"}'
+
+    # a failed turn (no agent_message item) -> None, caller falls back to raw stdout
+    failed_lines = [
+        {"type": "thread.started", "thread_id": "t1"},
+        {"type": "turn.started"},
+        {"type": "error", "message": "Selected model is at capacity."},
+        {"type": "turn.failed", "error": {"message": "Selected model is at capacity."}},
+    ]
+    assert _codex_reconstruct_text(failed_lines) is None
+
+
+def test_run_streaming_reader_and_idle_timeout(monkeypatch) -> None:
+    """End-to-end (fake Popen) check of _run_streaming(): streamed NDJSON lines
+    drive progress_cb, and running out of idle_timeout with the queue empty
+    kills the process and reports timed_out/stall_reason='idle'."""
+    import io
+    import harness.core.invoke as inv
+
+    class _FakeStdout(io.StringIO):
+        def __init__(self, text):
+            super().__init__(text)
+
+    class _FakeProc:
+        def __init__(self, stdout_text, stderr_text):
+            self.stdout = io.StringIO(stdout_text)
+            self.stderr = io.StringIO(stderr_text)
+            self.returncode = None
+            self._killed = False
+
+        def kill(self):
+            self._killed = True
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            if not self._killed:
+                self.returncode = 0
+            return self.returncode
+
+    fake = _FakeProc(
+        '{"type":"thread.started","thread_id":"t1"}\n'
+        '{"type":"turn.completed","usage":{}}\n',
+        "",
+    )
+    monkeypatch.setattr(inv.subprocess, "Popen", lambda *a, **kw: fake)
+
+    details = []
+    result = inv._run_streaming(
+        ["codex", "exec", "--json"], cwd=None, stdin_input=None,
+        timeout=10, idle_timeout=5, progress_cb=details.append,
+        vendor_name="codex",
+    )
+    assert result["timed_out"] is False
+    assert details == ["type=thread.started", "type=turn.completed"]
+    assert result["returncode"] == 0
+
+
+def test_run_streaming_stall_kills_process(monkeypatch) -> None:
+    """No output at all before idle_timeout elapses -> process is killed and
+    timed_out/stall_reason='idle' is reported (no exception at this layer;
+    invoke() is the one that turns this into subprocess.TimeoutExpired)."""
+    import io
+    import harness.core.invoke as inv
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = io.StringIO("")  # EOF immediately -> reader thread exits
+            self.stderr = io.StringIO("")
+            self.returncode = None
+            self._killed = False
+
+        def kill(self):
+            self._killed = True
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode if self.returncode is not None else 0
+
+    fake = _FakeProc()
+    monkeypatch.setattr(inv.subprocess, "Popen", lambda *a, **kw: fake)
+
+    # empty stdout/stderr means both reader threads immediately push their EOF
+    # sentinel, so open_streams empties out before any timeout fires — this
+    # exercises the "process already exited with nothing to say" path, which
+    # must NOT be reported as a stall.
+    result = inv._run_streaming(
+        ["codex", "exec", "--json"], cwd=None, stdin_input=None,
+        timeout=10, idle_timeout=5, progress_cb=None, vendor_name="codex",
+    )
+    assert result["timed_out"] is False
+    assert result["stdout"] == ""
+
+
+def test_start_hermes_log_tail_pumps_lines_into_queue() -> None:
+    """_start_hermes_log_tail() spawns `<exe> logs -f --session <id>` and
+    pumps its stdout lines into the shared queue tagged "logtail", terminated
+    by a (name, None) EOF sentinel — tested in isolation (join()ed
+    synchronously) to avoid the thread-interleaving race that a full
+    _run_hermes() run would introduce."""
+    import io
+    import queue
+    import harness.core.invoke as inv
+
+    seen_args = {}
+
+    class _FakeLogProc:
+        def __init__(self):
+            self.stdout = io.StringIO("log line 1\nlog line 2\n")
+
+    def fake_popen(cmd, **kw):
+        seen_args["cmd"] = cmd
+        return _FakeLogProc()
+
+    import harness.core.invoke as inv_mod
+    orig_popen = inv_mod.subprocess.Popen
+    inv_mod.subprocess.Popen = fake_popen
+    try:
+        q: "queue.Queue" = queue.Queue()
+        log_proc, thread = inv._start_hermes_log_tail("hermes", "S123", q)
+        assert thread is not None
+        thread.join(timeout=2)
+    finally:
+        inv_mod.subprocess.Popen = orig_popen
+
+    assert seen_args["cmd"] == ["hermes", "logs", "-f", "--session", "S123"]
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    assert items == [
+        ("logtail", "log line 1"),
+        ("logtail", "log line 2"),
+        ("logtail", None),
+    ]
+
+
+def test_start_hermes_log_tail_best_effort_on_spawn_failure() -> None:
+    """If the log-tail process can't be started (e.g. hermes missing from
+    PATH), _start_hermes_log_tail() degrades to (None, None) instead of
+    raising -- liveness silently falls back to "no signal until exit"."""
+    import queue
+    import harness.core.invoke as inv
+
+    def fake_popen(cmd, **kw):
+        raise OSError("not found")
+
+    orig_popen = inv.subprocess.Popen
+    inv.subprocess.Popen = fake_popen
+    try:
+        q: "queue.Queue" = queue.Queue()
+        log_proc, thread = inv._start_hermes_log_tail("hermes", "S123", q)
+    finally:
+        inv.subprocess.Popen = orig_popen
+
+    assert log_proc is None
+    assert thread is None
+
+
+def test_run_hermes_captures_session_id_and_spawns_log_tail() -> None:
+    """End-to-end _run_hermes() dispatch: main process's first stdout line
+    carries `session_id: <id>`, which triggers a second Popen call for the
+    log-tail process. The log-tail fake's stdout is deliberately EMPTY so its
+    reader thread's EOF races harmlessly with the main loop's own completion
+    (main process stdout/stderr closing is what actually ends the run)."""
+    import io
+    import harness.core.invoke as inv
+
+    class _FakeMainProc:
+        def __init__(self):
+            self.stdout = io.StringIO("session_id: S123\nfinal answer\n")
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    class _FakeLogProc:
+        def __init__(self):
+            self.stdout = io.StringIO("")  # empty: avoids interleaving race
+            self.returncode = 0
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    calls = []
+
+    def fake_popen(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return _FakeMainProc()
+        return _FakeLogProc()
+
+    progress_calls = []
+    monkey_orig = inv.subprocess.Popen
+    inv.subprocess.Popen = fake_popen
+    try:
+        result = inv._run_hermes(
+            ["hermes", "chat", "-q", "do it", "-Q"],
+            cwd=None, timeout=10, idle_timeout=5,
+            progress_cb=progress_calls.append,
+        )
+    finally:
+        inv.subprocess.Popen = monkey_orig
+
+    assert len(calls) == 2
+    assert calls[1] == ["hermes", "logs", "-f", "--session", "S123"]
+    assert "session_id=S123" in progress_calls
+    assert result["timed_out"] is False
+    assert "final answer" in result["stdout"]

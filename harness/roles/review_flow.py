@@ -57,6 +57,7 @@ def run_pipeline(
     effort: str | None = None,
     seq: Sequencer | None = None,
     design_file: str = "",
+    timeout: int | None = None,
 ) -> dict:
     """Run the full verification pipeline for one task. Returns the judgment.
 
@@ -105,8 +106,10 @@ def run_pipeline(
         emit(task_id, "reviewer.skipped", reason="dry_run")
         review = None
     else:
+        invoke_kwargs = {"timeout": timeout} if timeout is not None else {}
         res = invoke(reviewer, brief_text, schema=REVIEW_SCHEMA,
-                     worktree=str(worktree), model=model, effort=effort, role="design", dry_run=False)
+                     worktree=str(worktree), model=model, effort=effort, role="design", dry_run=False,
+                     **invoke_kwargs)
         try:
             review = res.get("result")
         except Exception:

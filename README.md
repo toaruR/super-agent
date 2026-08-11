@@ -19,6 +19,7 @@
 - **worktree 隔離** — 各タスク/チャンネルは独立 git worktree で実行され、統合後に自動で片付く（敗者チャンネルも残らない）。
 - **read-only レビュア** — レビュアは実装者と別ベンダーかつ読み取り専用。独立性は権限ではなく裁定器で担保。
 - **自己改良（Stage 6: evolve）** — 台帳から失敗パターンを拾い、同種が3回以上继续したら `acceptance` テンプレまたは憲法への昇格を提案。`evolve --dry-run` で確認、実行で `design.proposed` を台帳に記録。
+- **liveness 監視付きダッシュボード** — 長時間のベンダー呼び出しは、絶対タイムアウトではなく無活動検知（idle-timeout、既定300秒）でハングを判定（ACPには非依存）。`dashboard --watch` でN秒ごとに自動再生成し、HTML は自動リロードする。
 
 ---
 
@@ -107,6 +108,7 @@ super-agent review   probe/n3/caseGreen            # 検証パイプライン（
 super-agent status                                # 台帳の最近のイベント
 super-agent log T-XXXX                            # 指定タスクの全イベント
 super-agent evolve --dry-run                      # 台帳から失敗パターンを拾い自己改良を提案
+super-agent dashboard --format html --out dashboard.html --watch --interval 10  # 進捗を自動更新表示
 ```
 
 その他のコマンドと詳細な手順は [`docs/usage.md`](docs/usage.md) を参照。
@@ -114,7 +116,7 @@ super-agent evolve --dry-run                      # 台帳から失敗パター�
 ```bash
 # テストを通す（動作の証明）
 .cve-venv/Scripts/python.exe -m pytest harness/tests/ -q
-# 65 passed
+# 213 passed
 ```
 
 ---

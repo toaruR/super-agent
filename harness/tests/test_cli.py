@@ -187,6 +187,76 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
             ledger.unlink()
 
 
+def test_cli_dashboard_watch_regenerates_until_interrupted(tmp_path, monkeypatch):
+    """--watch loops _render_dashboard_once()/time.sleep(interval) until
+    Ctrl+C (docs/design/timeout-liveness-watchdog.md §5). Tested in-process
+    (not via the subprocess-based _run helper) since a real infinite loop
+    can't be driven through a spawned CLI process in a unit test; time.sleep
+    is monkeypatched to raise KeyboardInterrupt so the loop runs exactly one
+    iteration."""
+    import argparse
+    import harness.cli as cli_mod
+
+    ledger = tmp_path / "events.jsonl"
+    out_file = tmp_path / "dashboard.html"
+    monkeypatch.setattr(cli_mod, "LEDGER_PATH", ledger)
+
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod.time, "sleep", fake_sleep)
+
+    ns = argparse.Namespace(format="html", out=str(out_file), watch=True, interval=7)
+    rc = cli_mod.cmd_dashboard(ns)
+
+    assert rc == 0
+    assert sleep_calls == [7]
+    assert out_file.exists()
+    assert '<meta http-equiv="refresh" content="7">' in out_file.read_text(encoding="utf-8")
+
+
+def test_cli_dashboard_watch_defaults_interval_when_omitted(tmp_path, monkeypatch):
+    import argparse
+    import harness.cli as cli_mod
+
+    ledger = tmp_path / "events.jsonl"
+    monkeypatch.setattr(cli_mod, "LEDGER_PATH", ledger)
+
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod.time, "sleep", fake_sleep)
+
+    ns = argparse.Namespace(format="md", out=None, watch=True, interval=None)
+    rc = cli_mod.cmd_dashboard(ns)
+
+    assert rc == 0
+    assert sleep_calls == [cli_mod._DEFAULT_WATCH_INTERVAL]
+
+
+def test_cli_dashboard_without_watch_does_not_loop(tmp_path, monkeypatch, capsys):
+    import argparse
+    import harness.cli as cli_mod
+
+    ledger = tmp_path / "events.jsonl"
+    monkeypatch.setattr(cli_mod, "LEDGER_PATH", ledger)
+
+    def fail_sleep(seconds):
+        raise AssertionError("non-watch mode must not sleep/loop")
+
+    monkeypatch.setattr(cli_mod.time, "sleep", fail_sleep)
+
+    ns = argparse.Namespace(format="md", out=None, watch=False, interval=None)
+    rc = cli_mod.cmd_dashboard(ns)
+    assert rc == 0
+
+
 def test_architect_recovers_requirement_from_first_line(tmp_path, monkeypatch):
     """`architect --design_file <existing file>` with requirement omitted recovers it
     from the file's first line (stripping a leading '# 設計:' marker).
