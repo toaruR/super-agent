@@ -135,3 +135,55 @@ def test_architect_human_supplied_spec_does_not_write_progress(monkeypatch, tmp_
 
     assert adr["source"] == "human"
     assert read_progress("T1", tmp_path / "events.jsonl") is None
+
+
+def test_architect_draft_saved_and_resumed(tmp_path, monkeypatch):
+    """途中失敗で .draft が作成され、再実行時にプロンプトへ引き継がれ、
+    成功時に .draft が削除されることを確認する。"""
+    import subprocess as _sp
+    from harness.core.ledger import Sequencer
+    from harness.core.invoke import atomic_write_draft
+    import harness.roles.architect as arch_mod
+
+    spec_path = tmp_path / "new-feature.md"
+    draft_path = tmp_path / "new-feature.md.draft"
+
+    prompts_captured = []
+
+    def fake_invoke_fail(decl, prompt, **kw):
+        prompts_captured.append(prompt)
+        dp = kw.get("draft_path")
+        if dp:
+            atomic_write_draft(dp, "途中の思考ログ: API設計の素案")
+        raise _sp.TimeoutExpired(cmd=[decl.name], timeout=1800)
+
+    def fake_invoke_pass(decl, prompt, **kw):
+        prompts_captured.append(prompt)
+        return {"cmd": [decl.name], "returncode": 0,
+                "result": {"decisions": [{"topic": "API", "decision": "FastAPI", "rationale": "Fast"}],
+                          "open_questions": []}}
+
+    # 1. First run: timeout failure, leaves .draft behind
+    monkeypatch.setattr(arch_mod, "invoke", fake_invoke_fail)
+    seq = Sequencer(str(tmp_path / "events.jsonl"))
+    seq.start()
+    res1 = arch_mod.propose("T1", "新規機能開発", "claude", spec_path=str(spec_path), seq=seq)
+    seq.stop()
+
+    assert "error" in res1
+    assert draft_path.exists()
+    assert "途中の思考ログ" in draft_path.read_text(encoding="utf-8")
+
+    # 2. Second run: recovers .draft into prompt and succeeds
+    monkeypatch.setattr(arch_mod, "invoke", fake_invoke_pass)
+    seq = Sequencer(str(tmp_path / "events.jsonl"))
+    seq.start()
+    res2 = arch_mod.propose("T2", "新規機能開発", "agy", spec_path=str(spec_path), seq=seq)
+    seq.stop()
+
+    assert res2["source"] == "llm->file"
+    assert spec_path.exists()
+    assert not draft_path.exists()  # draft deleted after success
+    assert "前回の試行で途中まで作成された設計ドラフト" in prompts_captured[-1]
+    assert "途中の思考ログ: API設計の素案" in prompts_captured[-1]
+

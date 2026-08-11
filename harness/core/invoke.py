@@ -12,6 +12,7 @@ Two modes:
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import subprocess
@@ -691,6 +692,20 @@ def _reader_thread(stream: Any, name: str,
         q.put((name, None))
 
 
+def atomic_write_draft(draft_path: str | Path | None, content: str) -> None:
+    """Safely write content to draft_path via atomic replace (.tmp + os.replace)."""
+    if not draft_path or not content:
+        return
+    p = Path(draft_path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(content, encoding="utf-8", errors="replace")
+        os.replace(tmp, p)
+    except OSError:
+        pass  # best-effort; atomic flush failure should not crash execution
+
+
 def _run_streaming(
     cmd: list[str],
     *,
@@ -700,6 +715,7 @@ def _run_streaming(
     idle_timeout: float | None,
     progress_cb: Callable[[str], None] | None,
     vendor_name: str,
+    draft_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run one vendor subprocess, killed on idle-timeout (no stdout/stderr
     activity for `idle_timeout` seconds) as well as the absolute `timeout`.
@@ -776,6 +792,11 @@ def _run_streaming(
                         detail = parser["detail"](obj)
                         if detail:
                             progress_cb(detail)
+            if draft_path is not None:
+                reconstruct = parser["reconstruct"] if parser is not None else None
+                cur_text = reconstruct(parsed_lines) if reconstruct is not None else "\n".join(stdout_lines)
+                if cur_text:
+                    atomic_write_draft(draft_path, cur_text)
         else:
             stderr_lines.append(line)
 
@@ -795,6 +816,9 @@ def _run_streaming(
         reconstructed = reconstruct(parsed_lines)
         if reconstructed is not None:
             stdout_text = reconstructed
+
+    if draft_path is not None and stdout_text:
+        atomic_write_draft(draft_path, stdout_text)
 
     return {
         "returncode": proc.returncode,
@@ -838,6 +862,7 @@ def _run_hermes(
     timeout: float | None,
     idle_timeout: float | None,
     progress_cb: Callable[[str], None] | None,
+    draft_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run hermes with log-tail-derived liveness (docs/design/
     timeout-liveness-watchdog.md §2), since hermes has no streaming NDJSON
@@ -911,11 +936,15 @@ def _run_hermes(
                     if progress_cb is not None:
                         progress_cb(f"session_id={sid}")
                     log_proc, log_thread = _start_hermes_log_tail(cmd[0], sid, q)
+            if draft_path is not None and stdout_lines:
+                atomic_write_draft(draft_path, "\n".join(stdout_lines))
         elif name == "stderr":
             stderr_lines.append(line)
         else:  # "logtail"
             if progress_cb is not None:
                 progress_cb(line[:200])
+            if draft_path is not None and stdout_lines:
+                atomic_write_draft(draft_path, "\n".join(stdout_lines))
 
     if timed_out:
         proc.kill()
@@ -936,9 +965,13 @@ def _run_hermes(
     if log_thread is not None:
         log_thread.join(timeout=2)
 
+    stdout_text = "\n".join(stdout_lines)
+    if draft_path is not None and stdout_text:
+        atomic_write_draft(draft_path, stdout_text)
+
     return {
         "returncode": proc.returncode,
-        "stdout": "\n".join(stdout_lines),
+        "stdout": stdout_text,
         "stderr": "\n".join(stderr_lines),
         "timed_out": timed_out,
         "stall_reason": stall_reason,
@@ -961,6 +994,7 @@ def invoke(
     idle_timeout: int | None = DEFAULT_IDLE_TIMEOUT,
     progress_cb: Callable[[str], None] | None = None,
     max_retries: int = 3,
+    draft_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run `decl`'s headless command for `prompt`, retrying on content-block.
 
@@ -1011,12 +1045,13 @@ def invoke(
             run = _run_hermes(
                 run_cmd, cwd=cwd, timeout=timeout,
                 idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
+                draft_path=draft_path,
             )
         else:
             run = _run_streaming(
                 run_cmd, cwd=cwd, stdin_input=stdin_input, timeout=timeout,
                 idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
-                vendor_name=decl.name,
+                vendor_name=decl.name, draft_path=draft_path,
             )
         if run["timed_out"]:
             effective_timeout = (

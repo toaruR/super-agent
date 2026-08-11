@@ -72,23 +72,16 @@ ARCHITECT_PROMPT = """あなたはシステムアーキテクトです。要求�
 
 
 def _invoke_design(decl, prompt: str, *, vendor: str, model: str | None, effort: str | None,
-                   dry_run: bool, invoke_kwargs: dict, task_id: str, seq, emit) -> dict:
-    """Run the read-only design LLM call, wired to the progress side-channel.
+                   dry_run: bool, invoke_kwargs: dict, task_id: str, seq, emit,
+                   draft_path: str | None = None) -> dict:
+    """Run the read-only design LLM call, wired to the progress side-channel."""
+    kwargs = dict(invoke_kwargs)
+    if draft_path:
+        kwargs["draft_path"] = draft_path
 
-    Returns one of:
-    - ``{"dry_run": True, "cmd": ...}`` for a dry run (no vendor call executed).
-    - ``{"error": <str>}`` if the vendor subprocess couldn't be started or timed out.
-    - the parsed ``{"decisions": [...], "open_questions": [...]}`` dict on success.
-
-    Liveness heartbeat side-channel (docs/design/timeout-liveness-watchdog.md
-    §0/§3): only wraps the actual vendor call, never the dry-run/no-op paths,
-    so a progress file is never left stuck at status="running" for a request
-    that returns synchronously (e.g. spec_path already exists, handled by the
-    caller before this is ever invoked).
-    """
     if dry_run:
         res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort,
-                     role="design", dry_run=True, **invoke_kwargs)
+                     role="design", dry_run=True, **kwargs)
         return {"dry_run": True, "cmd": res.get("cmd")}
 
     progress_cb = None
@@ -105,7 +98,7 @@ def _invoke_design(decl, prompt: str, *, vendor: str, model: str | None, effort:
     try:
         res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort,
                      role="design", dry_run=False, progress_cb=progress_cb,
-                     **invoke_kwargs)
+                     **kwargs)
     except FileNotFoundError as e:
         err = str(e)
         emit(task_id, "architect.error", error=err)
@@ -140,18 +133,29 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
 
     if spec_path:
         p = Path(spec_path)
+        draft_p = Path(f"{spec_path}.draft")
         if p.exists():
             text = p.read_text(encoding="utf-8", errors="ignore")
             adr = {"source": "human", "decisions": [{"topic": p.name,
                                                       "decision": text, "rationale": ""}]}
         else:
+            if draft_p.exists():
+                draft_text = draft_p.read_text(encoding="utf-8", errors="ignore")
+                notice = (
+                    f"\n\n【前回の試行で途中まで作成された設計ドラフト（引き継ぎ用）】\n"
+                    f"---\n{draft_text}\n---\n"
+                    f"前回の検討内容を検証・補足・完結させ、重複を避けつつ正しいフォーマットの JSON を出力してください。"
+                )
+                existing_design = (existing_design + notice) if existing_design else notice
+
             # ファイルが無い → LLM で起案してそのパスに保存（A 方針: シームレス作成）
             decls = load_vendors(Path(__file__).resolve().parent.parent / "config")
             decl = decls.get(vendor, decls["claude"])
             prompt = ARCHITECT_PROMPT.format(requirement=requirement, existing=existing_design)
             result = _invoke_design(decl, prompt, vendor=vendor, model=model, effort=effort,
                                     dry_run=dry_run, invoke_kwargs=invoke_kwargs,
-                                    task_id=task_id, seq=seq, emit=emit)
+                                    task_id=task_id, seq=seq, emit=emit,
+                                    draft_path=str(draft_p))
             if result.get("dry_run"):
                 return {"source": "llm(dry)", "cmd": result.get("cmd"), "decisions": []}
             if "error" in result:
@@ -167,6 +171,11 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
                 body += "\n\n## 未解決の問い\n" + "\n".join(f"- {q}" for q in open_questions)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(f"# 設計: {requirement}\n\n{body}\n", encoding="utf-8")
+            if draft_p.exists():
+                try:
+                    draft_p.unlink()
+                except OSError:
+                    pass
             adr = {"source": "llm->file", "saved_to": str(p),
                    "decisions": decisions, "open_questions": open_questions}
     else:
