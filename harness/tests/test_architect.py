@@ -66,3 +66,72 @@ def test_architect_log_shows_adr(monkeypatch):
     first_id = chunk["events"][0]["event_id"].split(":")[0]
     out = _run("log", first_id).stdout
     assert "adr.written" in out
+
+
+def test_architect_writes_progress_heartbeat_during_llm_proposal(monkeypatch, tmp_path):
+    """LLM 起案パス（spec_path 未指定）で progress/<task_id>.json が
+    running -> done と更新されることを確認する（vendor はモックで即応答）。"""
+    from harness.core.ledger import Sequencer
+    from harness.core.progress import read_progress
+    import harness.roles.architect as arch_mod
+
+    def fake_invoke(decl, prompt, **kw):
+        progress_cb = kw.get("progress_cb")
+        if progress_cb is not None:
+            progress_cb("thinking")
+        return {"cmd": [decl.name], "returncode": 0,
+                "result": {"decisions": [{"topic": "t", "decision": "d", "rationale": "r"}],
+                          "open_questions": []}}
+
+    monkeypatch.setattr(arch_mod, "invoke", fake_invoke)
+    seq = Sequencer(str(tmp_path / "events.jsonl"))
+    seq.start()
+    adr = arch_mod.propose("T1", "何か作れ", "claude", seq=seq)
+    seq.stop()
+
+    assert adr["source"] == "llm"
+    got = read_progress("T1", tmp_path / "events.jsonl")
+    assert got is not None
+    assert got["status"] == "done"
+    assert got["detail"] == ""
+
+
+def test_architect_writes_progress_error_on_vendor_timeout(monkeypatch, tmp_path):
+    import subprocess as _sp
+    from harness.core.ledger import Ledger, Sequencer
+    from harness.core.progress import read_progress
+    import harness.roles.architect as arch_mod
+
+    def fake_invoke(decl, prompt, **kw):
+        raise _sp.TimeoutExpired(cmd=[decl.name], timeout=1800)
+
+    monkeypatch.setattr(arch_mod, "invoke", fake_invoke)
+    seq = Sequencer(str(tmp_path / "events.jsonl"))
+    seq.start()
+    adr = arch_mod.propose("T1", "何か作れ", "claude", seq=seq)
+    seq.stop()
+
+    assert "error" in adr
+    got = read_progress("T1", tmp_path / "events.jsonl")
+    assert got["status"] == "error"
+    evs = Ledger(str(tmp_path / "events.jsonl")).load_flat()
+    types = {e["type"] for e in evs}
+    assert "architect.error" in types
+
+
+def test_architect_human_supplied_spec_does_not_write_progress(monkeypatch, tmp_path):
+    """spec_path が既存ファイルの場合は同期的に読むだけなので、
+    running のまま放置される progress ファイルは作られないこと。"""
+    from harness.core.ledger import Sequencer
+    from harness.core.progress import read_progress
+    import harness.roles.architect as arch_mod
+
+    spec = tmp_path / "my-design.md"
+    spec.write_text("Web API は FastAPI で作る。", encoding="utf-8")
+    seq = Sequencer(str(tmp_path / "events.jsonl"))
+    seq.start()
+    adr = arch_mod.propose("T1", "Web API を作れ", "claude", spec_path=str(spec), seq=seq)
+    seq.stop()
+
+    assert adr["source"] == "human"
+    assert read_progress("T1", tmp_path / "events.jsonl") is None

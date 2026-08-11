@@ -45,6 +45,7 @@ STATUS_MAP = {
     "review.fail": "failed",
     "review.failed": "failed",
     "implementer.error": "failed",
+    "architect.error": "failed",
     "worktree.error": "failed",
     "integration.failed": "failed",
     "integrated.failed": "failed",

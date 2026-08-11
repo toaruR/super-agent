@@ -285,7 +285,7 @@ def cmd_architect(args: argparse.Namespace) -> int:
     seq = ensure_ledger()
     seq.start()
     task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=requirement, role="architect")
+    seq.propose(task_id, "task.created", goal=requirement, role="architect", design_file=args.design_file)
     r = resolve_role("design", CONFIG_DIR,
                      explicit_vendor=args.vendor,
                      explicit_model=getattr(args, "model", None),
