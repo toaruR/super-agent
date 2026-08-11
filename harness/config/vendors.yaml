@@ -126,13 +126,9 @@ agy:
     id_origin: callee       # agy は試験不足（E-2a のみ）。callee 仮定
     resume_flag: ["--resume-session-id"]
   permission:
-    readonly:
-      - "--allowedTools"
-      - "Read,Grep,Glob"
-      # worktree の追加は headless の --add-dir {worktree} が担当（implement/reviewer 共通）。
-      # claude と同様、--allowedTools Read,Grep,Glob で読取専用ツールに制限する。
-      # 注意: agy の --mode plan は対話型Planningモードを起動し、指示されたJSON形式ではなく
-      # 人間向け対話メッセージを返してしまうため使用しない。
+    readonly: []
+      # agy CLI は --allowedTools や --sandbox を持たず、--mode plan も対話型Planningモードを
+      # 起動してしまうため、read-only フラグは空とする。プロンプト内の指示で読み取り専用を担保する。
   brief_mode: path
 
 hermes:

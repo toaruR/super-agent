@@ -561,14 +561,23 @@ def _apply_result_path(obj: Any, result_path: str) -> Any:
     # claude-style envelope: result_path points at a *string* that itself holds
     # JSON (e.g. the "result" field). Recover the JSON from inside it.
     if isinstance(cur, str):
-        recovered = _extract_first_balanced_json(cur)
-        if recovered is not None:
-            return recovered
+        # 1) Try last fenced block first (```json ... ``` or ```yaml ... ``` or plain ``` ... ```)
         fenced = _extract_last_fence(cur)
         if fenced is not None:
             parsed = _parse_json_line(fenced)
             if parsed is not None:
                 return parsed
+            try:
+                import yaml
+                parsed_yaml = yaml.safe_load(fenced)
+                if isinstance(parsed_yaml, dict):
+                    return parsed_yaml
+            except Exception:
+                pass
+        # 2) Fall back to first balanced JSON substring anywhere in string
+        recovered = _extract_first_balanced_json(cur)
+        if recovered is not None:
+            return recovered
     return cur
 
 

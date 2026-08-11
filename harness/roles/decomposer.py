@@ -81,6 +81,9 @@ DECOMPOSE_PROMPT = """あなたはタスク分解担当です。要求（と既�
       アクセスを許可することになるため、他タスクとの並列実行を妨げやすい
       （同じディレクトリ配下に触れる他タスクと touch_allow 重複とみなされる）。
       本当に必要な場合以外は (a) の具体的なファイル名指定を優先すること。
+  (c) 【重要・禁止事項】自身の acceptance で検証・実行するテストファイル（例: `tests/test_foo.py`）は、
+      touch_allow に絶対含めてはいけません（受入基準テストの書き換え誤魔化し防止のためエラーになります）。
+      touch_allow には実装対象のプログラムファイルのみを指定してください。
 
 acceptance を作る際の重要な指針（実装者のワンショット成功率を上げるため）:
 - 目標（goal）に複数の要素・振る舞いが含まれる場合、acceptance を1本にまとめず、
@@ -107,6 +110,8 @@ rubric（実装者の自己採点用の質的採点基準）について:
   - 「touch_allow の範囲外に一切触れていない」
   - タスク固有の質的観点（可読性、既存コードとの整合性 等）
 - rubric_threshold（合格ライン、100点満点中の目安70〜85）も指定すること。
+
+出力は説明文や前置き・解説テキストを一切含めず、要求された JSON スキーマに従う純粋な JSON オブジェクトのみを出力すること。
 
 要求: {requirement}
 既存の設計: {existing}
@@ -330,6 +335,49 @@ def parse_tasks_md(path: str) -> list[dict]:
     return tasks
 
 
+def _normalize_tasks(tasks: list[dict]) -> None:
+    """Coerce loose LLM outputs (e.g. 'id' instead of 'task_id', acceptance item as string 'pytest tests/foo.py'
+    instead of {'verb': 'pytest', 'args': ['tests/foo.py']}) into proper dicts."""
+    for i, t in enumerate(tasks, 1):
+        tid = t.get("task_id") or t.get("id") or f"task-{i}"
+        t["task_id"] = tid
+
+        acc = t.get("acceptance", [])
+        norm_acc = []
+        for a in acc:
+            if isinstance(a, str):
+                parts = a.split()
+                if parts:
+                    norm_acc.append({"verb": parts[0], "args": parts[1:], "expect_exit": 0})
+            elif isinstance(a, dict):
+                args = a.get("args", [])
+                if isinstance(args, str):
+                    args = args.split()
+                norm_acc.append({
+                    "verb": a.get("verb", ""),
+                    "args": args,
+                    "expect_exit": a.get("expect_exit", 0),
+                })
+        t["acceptance"] = norm_acc
+
+        rubric = t.get("rubric", [])
+        norm_rub = []
+        for r in rubric:
+            if isinstance(r, str):
+                norm_rub.append({"criterion": r, "weight": 25})
+            elif isinstance(r, dict):
+                c = r.get("criterion") or r.get("criteria") or ""
+                w = r.get("weight", 20)
+                norm_rub.append({"criterion": c, "weight": w})
+        t["rubric"] = norm_rub
+
+        # Remove any acceptance test files from touch_allow (test protection contract)
+        test_paths = set(_acceptance_test_paths(t))
+        if test_paths:
+            ta = t.get("touch_allow", []) or []
+            t["touch_allow"] = [tp for tp in ta if not any(touch_overlaps(tp, ap) for ap in test_paths)]
+
+
 def decompose(task_id: str, requirement: str, vendor: str = "claude",
               existing_design: str = "", dry_run: bool = False,
               seq=None, model: str | None = None, effort: str | None = None,
@@ -355,13 +403,13 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
         decls = load_vendors(config_dir)
         decl = decls.get(vendor, decls["claude"])
         prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
-        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="planner", dry_run=True, **invoke_kwargs)
+        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="design", dry_run=True, **invoke_kwargs)
         return {"ok": True, "dry_run": True, "cmd": res.get("cmd")}
 
     decls = load_vendors(config_dir)
     decl = decls.get(vendor, decls["claude"])
     prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
-    res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="planner", dry_run=False, **invoke_kwargs)
+    res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="design", dry_run=False, **invoke_kwargs)
     parsed = res.get("result") or {}
     if isinstance(parsed, str):
         # vendor returned a JSON string instead of a parsed object
@@ -371,6 +419,7 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
         except Exception:
             parsed = {}
     tasks = parsed.get("tasks", []) if isinstance(parsed, dict) else []
+    _normalize_tasks(tasks)
 
     errs = structural_check(tasks, registry)
     if errs:
