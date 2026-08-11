@@ -15,6 +15,7 @@ import threading
 import subprocess
 import sys
 
+from pathlib import Path
 from harness.core.ledger import Ledger, Sequencer
 
 
@@ -90,7 +91,7 @@ def test_sequencer_order() -> None:
 
         def worker(k: int) -> None:
             tf = f"tasks_{k}.md"
-            seq.propose_chunk("design.md", tf, [
+            seq.propose_chunk(f"design_{k}.md", tf, [
                 {"event_id": f"T-{k}:1", "type": "task.created"},
                 {"event_id": f"T-{k}:2", "type": "task.implemented"},
             ])
@@ -124,13 +125,14 @@ def test_resolve_design_file() -> None:
         seq.propose_chunk("design.md", "tasks.md", [{"event_id": "T-1:1", "type": "task.created"}])
         seq.stop()
 
-        assert seq.resolve_design_file("tasks.md") == "design.md"
+        abs_design = str(Path("design.md").resolve())
+        assert seq.resolve_design_file("tasks.md") == abs_design
         # unrecorded task_file -> ""
         assert seq.resolve_design_file("nope.md") == ""
 
         # relative/absolute mismatch is resolved via path normalization
         abs_tasks = os.path.abspath("tasks.md")
-        assert seq.resolve_design_file(abs_tasks) == "design.md"
+        assert seq.resolve_design_file(abs_tasks) == abs_design
     finally:
         shutil.rmtree(tmp)
 
@@ -147,7 +149,36 @@ def test_resolve_design_file_absolute_recorded() -> None:
         seq.propose_chunk("design2.md", abs_tasks, [{"event_id": "T-2:1", "type": "task.created"}])
         seq.stop()
 
-        assert seq.resolve_design_file("tasks2.md") == "design2.md"
+        abs_design2 = str(Path("design2.md").resolve())
+        assert seq.resolve_design_file("tasks2.md") == abs_design2
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_merge_by_design_file_updates_task_file() -> None:
+    """Appending an event with a non-empty task_file to an existing chunk with
+    matching design_file (and empty task_file) merges into the same chunk and
+    updates task_file."""
+    tmp = tempfile.mkdtemp()
+    try:
+        p = os.path.join(tmp, "events.jsonl")
+        lg = Ledger(p)
+        lg.append_event("my-design.md", "", {"event_id": "T-1:1", "type": "task.created"})
+
+        chunks = lg.load()
+        assert len(chunks) == 1
+        assert chunks[0]["task_file"] == ""
+        assert len(chunks[0]["events"]) == 1
+
+        # Now append second event with a settled task_file (e.g. from plan)
+        lg.append_event("./my-design.md", "my-tasks.md", {"event_id": "T-1:2", "type": "decompose.ok"})
+
+        chunks = lg.load()
+        assert len(chunks) == 1, "Must merge into the single chunk for the same design_file"
+        assert chunks[0]["task_file"] == str(Path("my-tasks.md").resolve())
+        assert len(chunks[0]["events"]) == 2
+        assert chunks[0]["events"][0]["type"] == "task.created"
+        assert chunks[0]["events"][1]["type"] == "decompose.ok"
     finally:
         shutil.rmtree(tmp)
 
@@ -158,4 +189,6 @@ if __name__ == "__main__":
     test_sequencer_order()
     test_resolve_design_file()
     test_resolve_design_file_absolute_recorded()
+    test_merge_by_design_file_updates_task_file()
     print("ALL LEDGER TESTS PASSED")
+

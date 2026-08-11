@@ -31,21 +31,27 @@ from pathlib import Path
 from typing import Any
 
 
+def _normalize_path(path: str) -> str:
+    """Normalize a non-empty path string to a resolved absolute path string.
+    Returns "" if path is empty."""
+    if not path:
+        return ""
+    try:
+        return str(Path(path).resolve())
+    except (OSError, ValueError):
+        return path
+
+
 def _same_path(a: str, b: str) -> bool:
     """True if `a` and `b` refer to the same filesystem path.
 
-    design_file/task_file strings in the ledger are recorded in mixed
-    relative/absolute form by different callers (e.g. drive.py passes a
-    CLI-relative design_file but a resolved absolute task_file), so a plain
-    string comparison would miss equivalent paths. Falls back to string
-    equality if either side is empty or Path resolution raises.
+    design_file/task_file strings in the ledger are recorded in normalized
+    absolute form, but string comparison handles cases where one or both
+    are normalized.
     """
     if not a or not b:
         return False
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except (OSError, ValueError):
-        return a == b
+    return _normalize_path(a) == _normalize_path(b)
 
 
 @dataclass
@@ -85,6 +91,8 @@ class Ledger:
         during the require->decompose phase). An empty task_file signals 'no tasks
         defined yet' and is a valid, distinct chunk.
         """
+        design_file = _normalize_path(design_file)
+        task_file = _normalize_path(task_file)
         if events is None:
             events = []
         key = (design_file, task_file)
@@ -97,9 +105,7 @@ class Ledger:
                 e = dict(ev)
                 e.setdefault("ts", now)
                 stamped.append(e)
-            chunk: dict[str, Any] = {"design_file": design_file}
-            if task_file:
-                chunk["task_file"] = task_file
+            chunk: dict[str, Any] = {"design_file": design_file, "task_file": task_file}
             chunk["created_at"] = now
             chunk["updated_at"] = now
             chunk["events"] = stamped
@@ -111,30 +117,33 @@ class Ledger:
 
     def append_event(self, design_file: str, task_file: str,
                      event: dict[str, Any]) -> str | None:
-        """Merge one event into the (design_file, task_file) chunk (案X).
+        """Merge one event into the design_file's chunk.
 
-        If a chunk for that key already exists, its events list is extended and
-        the whole file is rewritten atomically (temp + rename). Otherwise a new
+        If a chunk for that design_file already exists, its events list is extended
+        (and task_file is updated if currently empty and a non-empty task_file is given),
+        and the whole file is rewritten atomically (temp + rename). Otherwise a new
         chunk line is appended.
         """
+        design_file = _normalize_path(design_file)
+        task_file = _normalize_path(task_file)
         with self._lock:
             chunks = self.load()
-            key = (design_file, task_file)
             target = None
             for c in chunks:
-                if (c.get("design_file", ""), c.get("task_file", "")) == key:
+                if _same_path(c.get("design_file", ""), design_file):
                     target = c
                     break
             now = time.time()
             ev = dict(event)
             ev.setdefault("ts", now)
             if target is None:
-                target = {"design_file": design_file}
-                if task_file:
-                    target["task_file"] = task_file
+                target = {"design_file": design_file, "task_file": task_file}
                 target["created_at"] = now
                 target["events"] = []
                 chunks.append(target)
+            else:
+                if task_file and not target.get("task_file"):
+                    target["task_file"] = task_file
             target["updated_at"] = now
             target.setdefault("events", []).append(ev)
             self._rewrite(chunks)
@@ -220,6 +229,8 @@ class Sequencer:
 
     def propose_chunk(self, design_file: str, task_file: str,
                       events: list[dict[str, Any]]) -> None:
+        design_file = _normalize_path(design_file)
+        task_file = _normalize_path(task_file)
         if task_file:
             self._task_file_cache[design_file] = task_file
         self._queue.put({
@@ -235,8 +246,8 @@ class Sequencer:
         design_file (callers in the drive phase always pass task_file
         explicitly; downstream roles recover it from the ledger).
         """
-        design_file = fields.pop("design_file", "")
-        task_file = fields.pop("task_file", "")
+        design_file = _normalize_path(fields.pop("design_file", ""))
+        task_file = _normalize_path(fields.pop("task_file", ""))
         if not task_file:
             task_file = self.resolve_task_file(design_file)
         self.propose_chunk(design_file, task_file, [{
@@ -265,11 +276,12 @@ class Sequencer:
         background writer thread, so a disk-only lookup here would race
         against very recently queued (not-yet-flushed) proposals.
         """
+        design_file = _normalize_path(design_file)
         cached = self._task_file_cache.get(design_file)
         if cached:
             return cached
         for chunk in self._ledger.load():
-            if chunk.get("design_file") == design_file and chunk.get("task_file"):
+            if _same_path(chunk.get("design_file", ""), design_file) and chunk.get("task_file"):
                 return chunk["task_file"]
         return ""
 
@@ -285,6 +297,7 @@ class Sequencer:
         there is no race against the background writer thread to guard
         against (unlike resolve_task_file(), which propose() calls mid-flight).
         """
+        task_file = _normalize_path(task_file)
         for chunk in self._ledger.load():
             df = chunk.get("design_file", "")
             tf = chunk.get("task_file", "")
@@ -295,3 +308,4 @@ class Sequencer:
     def load_flat(self) -> list[dict[str, Any]]:
         """Flatten all chunks into a single event list."""
         return self._ledger.load_flat()
+

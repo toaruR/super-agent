@@ -184,10 +184,10 @@ def test_schedule_dry_run_records_planned_worktree(monkeypatch, tmp_path):
     res = schedule("T-plan", tasks, dry_run=True, seq=seq, design_file=design_file)
     seq.stop()
     assert res["ok"] is True
-    from harness.core.ledger import Ledger
+    from harness.core.ledger import Ledger, _same_path
     ledger = Ledger(str(ledger_path))
     chunks = ledger.load()
-    assert all(c["design_file"] == design_file for c in chunks)
+    assert all(_same_path(c["design_file"], design_file) for c in chunks)
     evs = ledger.load_flat()
     assert any(e["type"] == "task.scheduled" for e in evs)
 

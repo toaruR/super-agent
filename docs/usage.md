@@ -197,6 +197,7 @@ super-agent drive --task_file ./probe/sample/my-design-tasks.md --dry-run
 
 `plan` は Stage 2（decomposer）と Stage 3（scheduler）を連続実行します。
 `--task_file` ファイルの有無で「分解するか / 既存を使うか」が自動で決まります。
+`--task_file` 未指定時は `<design_stem>_tasks/<slug>.md` が自動命名され、通常実行ではタスクファイル書き出し・**worktree作成**・**台帳（`events.jsonl`）記録**がすべて実行されます（計画確認のみにしたい場合は `--dry-run` を指定します）。
 
 ```bash
 # ① 分解だけ（--task_file に書き出し。このとき worktree は作らない）
@@ -207,11 +208,12 @@ super-agent plan --task_file my-design-tasks.md
 super-agent plan --design_file my-design.md --task_file my-design-tasks.md
 ```
 
-| コマンド | vendor呼ぶ？ | worktree作る？ | 使い道 |
-|---|---|---|---|
-| `plan --design_file X --task_file Y`（Y未作成） | ✔ | ✔ | 通常運用（分解→作業台） |
-| `plan --design_file X --task_file Y --dry-run` | × | ×（計画のみ） | 構成確認 |
-| `plan --task_file Y`（Y既存） | × | ✔ | tasks.mdからworktreeだけ作る |
+| コマンド | vendor呼ぶ？ | worktree作る？ | events.jsonl記録？ | 使い道 |
+|---|---|---|---|---|
+| `plan --design_file X`（Y未指定・自動生成） | ✔ | ✔ | ✔ | 通常運用（一気に分解→作業台） |
+| `plan --design_file X --task_file Y`（Y未作成） | ✔ | ✔ | ✔ | 通常運用（指定パスへ分解→作業台） |
+| `plan --design_file X --dry-run` | × | ×（計画のみ） | ✔（計画ログ） | 構成・計画確認 |
+| `plan --task_file Y`（Y既存・登録済） | × | ✔ | ✔ | tasks.mdからworktreeだけ作る |
 
 `--task_file` が**既存ファイル**ならそれを読み込んで（人手編集も反映）、vendor を呼ばずに
 worktree/リースだけ作成します。`--task_file` が無い / 未作成なら vendor で分解してから進みます。
@@ -529,6 +531,8 @@ super-agent log T-XXXX
 > **ガードB**：`--task_file` に既存ファイルを明示指定したとき、台帳に記録されているそのファイルの `design_file` と今回の `design_file` が異なればエラーで中止する（同一 design での再利用は従来どおり許可）。
 >
 > 読み取り専用の消費コマンド（`implement`/`integrate`/`review-task`）は `--task_file` 省略時、`design_dir/*_tasks/*.md` と `tasks_dir`（既定 `docs/tasks`、旧フラット配置の残骸用）の両方を走査して最終更新が最も新しいファイル（`latest_task_file()`）にフォールバックする。`plan` の `--design_file` は入力専用（既存 design を読むだけ）なので自動生成の対象外：明示すればファイルが無いとエラー、`resolve_design_file_arg()` で解決できなければ上記のとおりエラーになる。
+>
+> **台帳（`events.jsonl`）のパス正規化とチャンクマージ**: 台帳に記録される `design_file` と `task_file` は常に `Path.resolve()` により物理フルパスへ正規化されます。イベント追加（`append_event`）は `design_file` が一致する既存チャンク（行）へ自動マージされ、`architect` で記録されたチャンク（`task_file` が空）に対して後から `plan` が実行された場合は、チャンクの `task_file` フィールドも後から更新・補完されます。
 
 > **モデル名はコード側で正規化される**：`vendors.yaml` には OpenRouter の短名（例: `hy3:Free`）をそのまま書ける。実行時に `harness/core/invoke.py` の `normalize_model()` が実名（`tencent/hy3:free`）へ自動変換するため、yaml を実名に書き換える必要はない。未知の名前はそのまま通る（404 になるのは yaml の書き間違いやカタログ不在時のみ）。
 >

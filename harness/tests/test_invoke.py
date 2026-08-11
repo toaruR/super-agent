@@ -94,13 +94,12 @@ def test_role_model_and_effort_resolution() -> None:
     # resolved by resolve_role(); build_command consumes the resolved model/effort.
     from harness.core.invoke import resolve_role
 
-    # design role -> claude / claude-sonnet-5 / high
+    # design role -> agy / gemini-3.6-flash / high
     rd = resolve_role("design", "harness/config")
-    assert rd == {"vendor": "claude", "model": "claude-sonnet-5", "effort": "high", "timeout": None}
-    cl = load_vendors("harness/config")["claude"]
-    cmd = build_command(cl, "P", model=rd["model"], effort=rd["effort"])
-    assert "--model" in cmd and "claude-sonnet-5" in cmd
-    assert "--effort" in cmd and "high" in cmd
+    assert rd == {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high", "timeout": None}
+    ag = load_vendors("harness/config")["agy"]
+    cmd = build_command(ag, "P", model=rd["model"], effort=rd["effort"])
+    assert "gemini-3.6-flash-high" in cmd
 
     # implement role -> hermes / hy3:Free / high (flag-style effort)
     ri = resolve_role("implement", "harness/config")
