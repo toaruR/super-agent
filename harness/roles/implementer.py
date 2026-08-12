@@ -187,6 +187,8 @@ def implement(task_id: str, task: dict, worktree_path: str,
     progress_cb = None
     if seq is not None and not dry_run:
         ledger_path = seq.path
+        seq.propose(task_id, "implementer.invoked", vendor=vendor, model=model, effort=effort, design_file=design_file)
+        write_progress(task_id, ledger_path, vendor=vendor, status="running", detail="implementing task...")
 
         def progress_cb(detail: str) -> None:
             write_progress(task_id, ledger_path, vendor=vendor,

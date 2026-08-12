@@ -18,54 +18,71 @@ CVE = os.environ.get(
 CLI = ["-m", "harness.cli"]
 
 
-def _run(*cli_args, expect_rc=0):
+def _run(*cli_args, expect_rc=0, env=None):
     cmd = [CVE, *CLI, *cli_args]
-    res = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True)
+    run_env = dict(os.environ)
+    if env:
+        run_env.update(env)
+    res = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, env=run_env)
     assert res.returncode == expect_rc, f"rc={res.returncode} stderr={res.stderr}"
     return res
+
+
+def _cleanup_test_design_files():
+    import glob
+    targets = ["demo*.md", "Web-API-*.md", "Excel-*.md", "my-design*.md", "ダミー*.md", "素のテキスト*.md", "*1行*.md"]
+    for pattern in targets:
+        for f in glob.glob(str(REPO / "docs" / "design" / pattern)):
+            try:
+                Path(f).unlink()
+            except OSError:
+                pass
 
 
 def test_architect_spec_records_adr(tmp_path, monkeypatch):
     monkeypatch.chdir(REPO)
     spec = tmp_path / "my-design.md"
     spec.write_text("Web API は FastAPI で作る。認証は JWT。", encoding="utf-8")
-    ledger = REPO / "harness" / "ledger" / "events.jsonl"
-    if ledger.exists():
-        ledger.unlink()
-    res = _run("architect", "Web API を作れ", "--design_file", str(spec))
-    adr = json.loads(res.stdout)
-    assert adr["source"] == "human"
-    assert "FastAPI" in adr["decisions"][0]["decision"]
-    # ledger has adr.written
-    lg = ledger.read_text(encoding="utf-8")
-    assert "adr.written" in lg
-    assert "FastAPI" in lg
+    ledger = tmp_path / "events.jsonl"
+    try:
+        res = _run("architect", "Web API を作れ", "--design_file", str(spec), env={"SUPER_AGENT_LEDGER": str(ledger)})
+        adr = json.loads(res.stdout)
+        assert adr["source"] == "human"
+        assert "FastAPI" in adr["decisions"][0]["decision"]
+        lg = ledger.read_text(encoding="utf-8")
+        assert "adr.written" in lg
+        assert "FastAPI" in lg
+    finally:
+        _cleanup_test_design_files()
 
 
 def test_architect_spec_missing_creates_via_llm_dry_run(tmp_path, monkeypatch):
     monkeypatch.chdir(REPO)
     missing = tmp_path / "new-design.md"
     assert not missing.exists()
-    # dry_run path: assembles the prompt and reports it without calling vendor
-    res = _run("architect", "Excel からオントロジーを作れ", "--design_file", str(missing), "--dry-run")
-    adr = json.loads(res.stdout)
-    assert adr["source"] == "llm(dry)"
-    assert "cmd" in adr
-    # file still not created in dry-run
-    assert not missing.exists()
+    ledger = tmp_path / "events.jsonl"
+    try:
+        res = _run("architect", "Excel からオントロジーを作れ", "--design_file", str(missing), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
+        adr = json.loads(res.stdout)
+        assert adr["source"] == "llm(dry)"
+        assert "cmd" in adr
+        assert not missing.exists()
+    finally:
+        _cleanup_test_design_files()
 
 
-def test_architect_log_shows_adr(monkeypatch):
+def test_architect_log_shows_adr(tmp_path, monkeypatch):
     monkeypatch.chdir(REPO)
-    ledger = REPO / "harness" / "ledger" / "events.jsonl"
-    if ledger.exists():
-        ledger.unlink()
+    ledger = tmp_path / "events.jsonl"
     spec = REPO / "probe" / "n3" / "caseGreen" / "tests" / "test_ok.py"
-    _run("architect", "demo", "--design_file", str(spec))
-    chunk = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
-    first_id = chunk["events"][0]["event_id"].split(":")[0]
-    out = _run("log", first_id).stdout
-    assert "adr.written" in out
+    try:
+        _run("architect", "demo", "--design_file", str(spec), env={"SUPER_AGENT_LEDGER": str(ledger)})
+        chunk = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+        first_id = chunk["events"][0]["event_id"].split(":")[0]
+        out = _run("log", first_id, env={"SUPER_AGENT_LEDGER": str(ledger)}).stdout
+        assert "adr.written" in out
+    finally:
+        _cleanup_test_design_files()
 
 
 def test_architect_writes_progress_heartbeat_during_llm_proposal(monkeypatch, tmp_path):

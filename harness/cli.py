@@ -94,19 +94,22 @@ def resolve_task_file_arg(task_file_arg: str | None) -> str | None:
 
 
 def resolve_design_file_arg(args: argparse.Namespace, seq: Sequencer) -> str | None:
-    """Resolve --design_file for `plan`/`drive`, in priority order:
+    """Resolve the --design_file path from CLI args.
 
-    1. args.design_file, if explicitly given.
+    Precedence:
+    1. --design_file if explicitly given.
     2. If --design_file is omitted but --task_file points at an existing file, look up
        its design_file in the ledger (Sequencer.resolve_design_file — the
        reverse of resolve_task_file).
     3. Infer design_file from task_file path convention (<design_stem>_tasks/<slug>.md -> <design_stem>.md).
     4. None if neither yields anything.
     """
-    if args.design_file:
-        return args.design_file
-    if args.task_file:
-        tf = Path(args.task_file)
+    design_file = getattr(args, "design_file", None)
+    if design_file:
+        return design_file
+    task_file = getattr(args, "task_file", None)
+    if task_file:
+        tf = Path(task_file)
         if tf.exists():
             found = seq.resolve_design_file(str(tf.resolve()))
             if found:
@@ -359,6 +362,9 @@ def cmd_implement(args: argparse.Namespace) -> int:
                 args.task_file = str(matches[0])
 
     args.task_file = resolve_task_file_arg(args.task_file)
+    if not design_file and args.task_file:
+        design_file = resolve_design_file_arg(args, seq)
+
     tasks_file = Path(args.task_file) if args.task_file else None
     if not tasks_file or not tasks_file.exists():
         print(json.dumps({"ok": False, "error": f"tasks file not found: {args.task_file}"},
@@ -396,7 +402,7 @@ def cmd_implement(args: argparse.Namespace) -> int:
                      explicit_timeout=getattr(args, "timeout", None))
     out = implement(args.task, task, worktree, vendor=r["vendor"],
                    seq=seq, dry_run=args.dry_run, model=r["model"], effort=r["effort"],
-                   timeout=r["timeout"])
+                   design_file=design_file or "", timeout=r["timeout"])
     seq.stop()
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
@@ -859,6 +865,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rt = sub.add_parser("review-task", help="review an implemented task (Stage 5 handoff)")
     rt.add_argument("--task", required=True, help="task id to review (Stage 5 handoff from implement)")
+    rt.add_argument("--design_file", default=None, help="design specification document path")
     rt.add_argument("--task_file", default=None,
                     help="decomposed task DAG (to resolve --task's acceptance + worktree). "
                          "If omitted, falls back to the most recently written task file, "
@@ -878,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
 
     im = sub.add_parser("implement", help="implement a task in its worktree + commit (Stage 4)")
     im.add_argument("--task", required=True, help="task id to implement (e.g. T1)")
+    im.add_argument("--design_file", default=None, help="design specification document path")
     im.add_argument("--task_file", default=None,
                     help="decomposed task DAG (to look up the task spec). "
                          "If omitted, falls back to the most recently written task file, "
@@ -896,6 +904,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ig = sub.add_parser("integrate", help="merge implemented task into target + tear down (Stage 5)")
     ig.add_argument("--task", required=True, help="task id to integrate (e.g. T1)")
+    ig.add_argument("--design_file", default=None, help="design specification document path")
     ig.add_argument("--task_file", default=None,
                     help="decomposed task DAG (to look up the task spec). "
                          "If omitted, falls back to the most recently written task file, "

@@ -255,8 +255,19 @@ class Sequencer:
         """
         design_file = _normalize_path(fields.pop("design_file", ""))
         task_file = _normalize_path(fields.pop("task_file", ""))
-        if not task_file:
+        if not task_file and design_file:
             task_file = self.resolve_task_file(design_file)
+        if not design_file and task_file:
+            design_file = self.resolve_design_file(task_file)
+        if not design_file and not task_file:
+            chunks = self._ledger.load()
+            if chunks:
+                # Find the last chunk with a valid design_file
+                for chunk in reversed(chunks):
+                    if chunk.get("design_file"):
+                        design_file = chunk.get("design_file", "")
+                        task_file = chunk.get("task_file", "")
+                        break
         self.propose_chunk(design_file, task_file, [{
             "event_id": f"{task_id}:0",
             "type": type_,
