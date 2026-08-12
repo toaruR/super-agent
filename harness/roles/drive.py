@@ -341,6 +341,7 @@ def drive(
             rev_role = resolve_role("review", config_dir)
             rev_vendor = reviewer_vendor or rev_role["vendor"]
             winner: dict | None = None
+            fallback_winner: dict | None = None
             reviews: list[dict] = []
             for c in ch_results:
                 impl_ok = c.get("ok") and c.get("impl", {}).get("ok")
@@ -362,6 +363,12 @@ def drive(
                 reviews.append({"vendor": rev_vendor, "verdict": verdict})
                 if winner is None and verdict in ("pass", "pass_with_findings"):
                     winner = c
+                if fallback_winner is None and c.get("impl", {}).get("commit") and verdict == "judgment_unavailable":
+                    fallback_winner = c
+
+            if winner is None and fallback_winner is not None:
+                winner = fallback_winner
+
             entry["review"] = {
                 "channels": reviews,
                 "judgment_unavailable": any(

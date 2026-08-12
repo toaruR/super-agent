@@ -347,6 +347,17 @@ def cmd_implement(args: argparse.Namespace) -> int:
     Reads the task spec from --task_file, finds the task by --task, and runs the
     Implementer vendor inside workspaces/<task> (the worktree from `plan`).
     """
+    seq = ensure_ledger()
+
+    design_file = resolve_design_file_arg(args, seq)
+    if design_file and not args.task_file:
+        from harness.core.invoke import tasks_dir_for_design
+        candidate_dir = tasks_dir_for_design(design_file)
+        if candidate_dir.exists():
+            matches = list(candidate_dir.glob("*.md"))
+            if matches:
+                args.task_file = str(matches[0])
+
     args.task_file = resolve_task_file_arg(args.task_file)
     tasks_file = Path(args.task_file) if args.task_file else None
     if not tasks_file or not tasks_file.exists():
@@ -360,24 +371,23 @@ def cmd_implement(args: argparse.Namespace) -> int:
                          ensure_ascii=False, indent=2))
         return 1
 
-    # Resolve to an absolute path. The implementer prompt advertises
-    # `worktree` as an ABSOLUTE path and instructs the vendor to write to
-    # `<worktree>/...`. A relative default would make cwd-relative vendors
-    # (hermes runs inside the worktree via subprocess cwd) nest the output
-    # under <worktree>/<worktree>/..., so `git -C <worktree> add` finds
-    # nothing. drive.py already resolves to absolute; keep this in sync.
-    worktree = args.worktree or str((Path("workspaces") / args.task).resolve())
+    from harness.roles.scheduler import effective_worktree_id, create_worktree
+    eff_id = effective_worktree_id(args.task, design_file or "")
+    worktree = args.worktree or str((Path("workspaces") / eff_id).resolve())
     if not Path(worktree).exists():
         # recover a stale/missing worktree from its branch if possible
-        recovered = ensure_worktree(args.task, str(Path("workspaces")))
+        recovered = ensure_worktree(eff_id, str(Path("workspaces")))
         if recovered:
             worktree = recovered
     if not Path(worktree).exists():
-        print(json.dumps({"ok": False, "error": f"worktree not found: {worktree} (run `plan` first)"},
-                         ensure_ascii=False, indent=2))
-        return 1
+        cw = create_worktree(args.task, root="workspaces", dry_run=args.dry_run, design_file=design_file or "")
+        if cw.get("ok") and Path(cw["path"]).exists():
+            worktree = str(Path(cw["path"]).resolve())
+        else:
+            print(json.dumps({"ok": False, "error": f"worktree not found and create failed: {worktree}"},
+                             ensure_ascii=False, indent=2))
+            return 1
 
-    seq = ensure_ledger()
     seq.start()
     r = resolve_role("implement", CONFIG_DIR,
                      explicit_vendor=args.vendor,

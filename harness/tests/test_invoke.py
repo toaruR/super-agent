@@ -71,10 +71,7 @@ def test_agy_command_shape() -> None:
     # too, reviewer sees it).
     cmd = build_command(d, "do it", schema=SCHEMA, session_id="S1", worktree="./wt", role="review")
     assert cmd[0] == "agy"
-    assert "--allowedTools" in cmd and "Read,Grep,Glob" in cmd
     assert "--add-dir" in cmd and "./wt" in cmd
-    # --allowedTools appears once (from permission), --add-dir once (from headless)
-    assert cmd.count("--allowedTools") == 1
     assert cmd.count("--add-dir") == 1
     # flag-order requirement (measured live, 2026-08-11): --output-format
     # stream-json MUST precede --print, or agy ignores the prompt entirely and

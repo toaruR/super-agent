@@ -1027,39 +1027,18 @@ def invoke(
     cwd: str | None = None,
     dry_run: bool = False,
     timeout: int = DEFAULT_TIMEOUT,
-    idle_timeout: int | None = DEFAULT_IDLE_TIMEOUT,
+    idle_timeout: int | None = None,
     progress_cb: Callable[[str], None] | None = None,
     max_retries: int = 3,
     draft_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run `decl`'s headless command for `prompt`, retrying on content-block.
-
-    Execution is via Popen + reader threads (not subprocess.run): a stalled
-    vendor is killed on `idle_timeout` seconds of no activity (the primary
-    signal), with `timeout` as the absolute wall-clock backstop. For
-    claude/agy/codex (see _STREAM_PARSERS) activity means a parsed NDJSON
-    stdout line; for hermes (no streaming output at all) it means either
-    stdout/stderr, or a line from the `hermes logs -f --session <id>`
-    process tailed once the session id is known (see `_run_hermes()`,
-    docs/design/timeout-liveness-watchdog.md §2). Every other vendor gets no
-    idle-timeout (treated as None) — none is currently declared.
-
-    `progress_cb(detail)`, if given, is called with a short human-readable
-    string for every unit of observed activity. Callers wire this to the
-    progress side-channel (harness.core.progress) themselves — invoke() has
-    no task_id to key a progress file by.
-
-    `cwd`, if given, is the working directory for the vendor subprocess
-    (e.g. a task's worktree — see harness.roles.implementer).
-
-    Raises subprocess.TimeoutExpired (matching subprocess.run's old contract)
-    if an attempt is killed for stalling, with partial output/stderr attached.
-    """
     cmd = build_command(decl, prompt, schema=schema, session_id=session_id,
                         worktree=worktree, model=model, effort=effort, role=role)
     if dry_run:
         return {"cmd": cmd, "dry_run": True}
     stdin_input = prompt if decl.prompt_stdin else None
+    if idle_timeout is None:
+        idle_timeout = max(DEFAULT_IDLE_TIMEOUT, timeout) if timeout is not None else DEFAULT_IDLE_TIMEOUT
     effective_idle_timeout = (
         idle_timeout if (decl.name in _STREAM_PARSERS or decl.name == "hermes") else None
     )
