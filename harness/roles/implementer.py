@@ -272,7 +272,9 @@ def _commit_worktree(task_id: str, worktree_path: str, touch_allow: list[str],
     changed, returns ok with commit=None (idempotent).
     """
     paths = touch_allow or ["."]
-    add = ["git", "-C", str(worktree_path), "add", "--", *paths]
+    from harness.core.invoke import git_executable
+    git_bin = git_executable()
+    add = [git_bin, "-C", str(worktree_path), "add", "--", *paths]
     try:
         ap = subprocess.run(add, capture_output=True, text=True,
                             encoding="utf-8", errors="replace", shell=False)
@@ -280,7 +282,7 @@ def _commit_worktree(task_id: str, worktree_path: str, touch_allow: list[str],
             return {"ok": False, "error": (ap.stderr or ap.stdout).strip()}
         # detect staged changes
         diff = subprocess.run(
-            ["git", "-C", str(worktree_path), "diff", "--cached", "--quiet"],
+            [git_bin, "-C", str(worktree_path), "diff", "--cached", "--quiet"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             shell=False)
         if diff.returncode == 0:
@@ -288,22 +290,22 @@ def _commit_worktree(task_id: str, worktree_path: str, touch_allow: list[str],
             return {"ok": True, "commit": None, "tree_hash": None}
         msg = f"{task_id}: implement\n\nallow-list: {', '.join(touch_allow) or '(all)'}"
         cp = subprocess.run(
-            ["git", "-C", str(worktree_path), "commit", "-m", msg],
+            [git_bin, "-C", str(worktree_path), "commit", "-m", msg],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             shell=False)
         if cp.returncode != 0:
             return {"ok": False, "error": (cp.stderr or cp.stdout).strip()}
         # capture commit hash + tree hash (evidence binding, §3.2)
         ch = subprocess.run(
-            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+            [git_bin, "-C", str(worktree_path), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             shell=False)
         th = subprocess.run(
-            ["git", "-C", str(worktree_path), "rev-parse", "HEAD^{tree}"],
+            [git_bin, "-C", str(worktree_path), "rev-parse", "HEAD^{tree}"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             shell=False)
         return {"ok": True,
-                "commit": ch.stdout.strip() or None,
-                "tree_hash": th.stdout.strip() or None}
-    except FileNotFoundError as e:
-        return {"ok": False, "error": str(e)}
+                "commit": (ch.stdout or "").strip(),
+                "tree_hash": (th.stdout or "").strip()}
+    except FileNotFoundError:
+        return {"ok": False, "error": "git executable not found in PATH"}

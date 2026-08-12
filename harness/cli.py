@@ -24,7 +24,7 @@ from pathlib import Path
 
 from harness.core.invoke import (
     resolve_role, load_path_defaults, slugify, unique_path,
-    default_task_path, latest_task_file,
+    default_task_path, latest_task_file, git_executable,
 )
 from harness.core.ledger import Ledger, Sequencer, _same_path
 from harness.roles.review_flow import run_pipeline
@@ -56,19 +56,23 @@ def ensure_worktree(task_id: str, root: str = "workspaces") -> str | None:
     if Path(path).exists():
         return path
     branch = f"task/{task_id}"
-    # prune stale 'registered but missing' metadata, then try to re-create
-    subprocess.run(["git", "worktree", "prune"],
-                   capture_output=True, text=True,
-                   encoding="utf-8", errors="replace", shell=False)
-    branches = subprocess.run(["git", "branch", "--list", branch],
-                              capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", shell=False).stdout
-    if branch in branches:
-        r = subprocess.run(["git", "worktree", "add", path, branch],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", shell=False)
-        if r.returncode == 0 and Path(path).exists():
-            return path
+    git_bin = git_executable()
+    try:
+        # prune stale 'registered but missing' metadata, then try to re-create
+        subprocess.run([git_bin, "worktree", "prune"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", shell=False)
+        branches = subprocess.run([git_bin, "branch", "--list", branch],
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", shell=False).stdout or ""
+        if branch in branches:
+            r = subprocess.run([git_bin, "worktree", "add", path, branch],
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", shell=False)
+            if r.returncode == 0 and Path(path).exists():
+                return path
+    except FileNotFoundError:
+        pass
     return None
 
 

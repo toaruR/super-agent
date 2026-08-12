@@ -126,17 +126,24 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
     def run(c):
         if git is not None:
             return git(c)
-        return subprocess.run(c, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", shell=False)
+        from harness.core.invoke import git_executable
+        git_bin = git_executable()
+        full_cmd = [git_bin if x == "git" else x for x in c]
+        try:
+            return subprocess.run(full_cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", shell=False)
+        except FileNotFoundError:
+            return subprocess.CompletedProcess(
+                args=full_cmd, returncode=1, stdout="",
+                stderr="git command not found in PATH"
+            )
 
     if git is None:
         # clean stale/prunable worktree metadata so branches are not left
         # "checked out" at a deleted path (Windows + repeated runs). Use an
         # immediate expiry so any orphaned .git/worktrees/<id> from a previous
         # run is gone before we create a new one (keeps Git GUIs like Fork clean).
-        subprocess.run(["git", "worktree", "prune", "--expire", "now"],
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", shell=False)
+        run(["git", "worktree", "prune", "--expire", "now"])
         # also wipe any orphaned metadata dir for this exact task id
         _prune_worktree_meta(branch)
 
@@ -165,9 +172,7 @@ def create_worktree(task_id: str, root: str = "workspaces", git=None, dry_run: b
     # branch already exists / already checked out -> prune then retry once
     if "already exists" in stderr or "already checked out" in stderr:
         if git is None:
-            subprocess.run(["git", "worktree", "prune"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", shell=False)
+            run(["git", "worktree", "prune"])
         # retry without -b (reuse the existing branch)
         proc2 = run(["git", "worktree", "add", path, branch])
         if proc2.returncode == 0:
@@ -218,14 +223,21 @@ def teardown_worktree(task_id: str, root: str = "workspaces",
     def run(c):
         if git is not None:
             return git(c)
-        return subprocess.run(c, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", shell=False)
+        from harness.core.invoke import git_executable
+        git_bin = git_executable()
+        full_cmd = [git_bin if x == "git" else x for x in c]
+        try:
+            return subprocess.run(full_cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", shell=False)
+        except FileNotFoundError:
+            return subprocess.CompletedProcess(
+                args=full_cmd, returncode=1, stdout="",
+                stderr="git command not found in PATH"
+            )
 
     # 1) prune any orphaned worktree metadata up front (GUI tools hate leftovers)
     if git is None:
-        subprocess.run(["git", "worktree", "prune", "--expire", "now"],
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", shell=False)
+        run(["git", "worktree", "prune", "--expire", "now"])
 
     if not Path(path).exists():
         # already gone (integrator may have removed the winner).
@@ -257,8 +269,10 @@ def _prune_worktree_meta(branch: str) -> None:
     """Best-effort removal of orphaned `.git/worktrees/<id>` metadata so Git
     GUI clients (Fork, etc.) don't report 'Invalid refs' for stale worktrees."""
     try:
+        from harness.core.invoke import git_executable
+        git_bin = git_executable()
         # git's own prune, aggressive
-        subprocess.run(["git", "worktree", "prune", "--expire", "now"],
+        subprocess.run([git_bin, "worktree", "prune", "--expire", "now"],
                        capture_output=True, text=True,
                        encoding="utf-8", errors="replace", shell=False)
         # direct metadata cleanup keyed by the task id embedded in the branch

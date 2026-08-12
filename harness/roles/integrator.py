@@ -37,26 +37,37 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 def _git(args: list[str], cwd: str | Path, dry_run: bool = False) -> dict:
     """Run a git command; returns {returncode, stdout, stderr} (utf-8 safe)."""
+    from harness.core.invoke import git_executable
+    git_bin = git_executable()
     if dry_run:
-        return {"returncode": 0, "stdout": "", "stderr": "", "cmd": ["git", *args]}
-    cp = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", shell=False,
-    )
-    return {"returncode": cp.returncode, "stdout": cp.stdout, "stderr": cp.stderr,
-            "cmd": ["git", *args]}
+        return {"returncode": 0, "stdout": "", "stderr": "", "cmd": [git_bin, *args]}
+    try:
+        cp = subprocess.run(
+            [git_bin, *args], cwd=str(cwd), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", shell=False,
+        )
+        return {"returncode": cp.returncode, "stdout": cp.stdout, "stderr": cp.stderr,
+                "cmd": [git_bin, *args]}
+    except FileNotFoundError:
+        return {"returncode": 1, "stdout": "", "stderr": "git executable not found in PATH",
+                "cmd": [git_bin, *args]}
 
 
 def _changed_files(worktree_path: str | Path) -> list[str]:
     """Files with uncommitted or committed-since-merge-base changes in the worktree."""
+    from harness.core.invoke import git_executable
+    git_bin = git_executable()
     # defensive: if the worktree dir is gone (already torn down), nothing to check
     if not Path(worktree_path).is_dir():
         return []
     # staged + unstaged + untracked (porcelain, one path per line)
-    out = subprocess.run(
-        ["git", "status", "--porcelain", "-uall"], cwd=str(worktree_path),
-        capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False,
-    ).stdout
+    try:
+        out = subprocess.run(
+            [git_bin, "status", "--porcelain", "-uall"], cwd=str(worktree_path),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False,
+        ).stdout or ""
+    except FileNotFoundError:
+        return []
     files: list[str] = []
     for line in out.splitlines():
         if not line.strip():

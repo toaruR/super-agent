@@ -15,6 +15,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -22,6 +23,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+
+def git_executable() -> str:
+    """Return absolute path to git binary via shutil.which('git'), falling back to 'git'."""
+    return shutil.which("git") or "git"
 
 # Known-bad model-name aliases (CODE-side, intentionally NOT in vendors.yaml).
 #
