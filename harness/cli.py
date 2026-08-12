@@ -259,24 +259,45 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def extract_requirement_from_text(text: str, default: str = "") -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return default
+    first_line = lines[0]
+    if first_line.startswith("# 設計:"):
+        return first_line[len("# 設計:"):].strip()
+    return first_line.lstrip("#").strip()
+
+
 def cmd_architect(args: argparse.Namespace) -> int:
     """Stage 1 (§9 ①): record design decisions as ADRs on the ledger.
 
-    With --design_file <file> that already exists: record the human-supplied design
-    verbatim; requirement is optional (recovered from the file's first line
-    if omitted, stripping a leading '# 設計:' marker if present).
+    With --design_file <file> that already exists:
+    - If the file has a leading `# 設計:` marker, record human-supplied design verbatim.
+    - If missing `# 設計:`, prepend `# 設計: <requirement>`, save as a new file under
+      design_dir (leaving the original file untouched), and register the new path in the ledger.
     Without an existing --design_file file: requirement is required — a read-only
     vendor proposes ADRs, saved as a new, non-colliding file under
     paths.yaml's design_dir (or just dry-run the prompt).
     """
     spec_exists = args.design_file is not None and Path(args.design_file).exists()
     requirement = args.requirement
-    if spec_exists and not requirement:
+
+    if spec_exists:
         text = Path(args.design_file).read_text(encoding="utf-8", errors="ignore")
-        first_line = text.splitlines()[0].strip() if text.splitlines() else ""
-        if first_line.startswith("# 設計:"):
-            first_line = first_line[len("# 設計:"):].strip()
-        requirement = first_line
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        has_header = len(lines) > 0 and lines[0].startswith("# 設計:")
+
+        if not requirement:
+            requirement = extract_requirement_from_text(text, default=Path(args.design_file).stem)
+
+        if not has_header:
+            completed_text = f"# 設計: {requirement}\n\n{text}"
+            new_design_path = unique_path(PATH_DEFAULTS["design_dir"], slugify(requirement or "design"))
+            new_design_path.parent.mkdir(parents=True, exist_ok=True)
+            new_design_path.write_text(completed_text, encoding="utf-8")
+            args.design_file = str(new_design_path)
+
     if not spec_exists and not requirement:
         print(json.dumps({"ok": False,
                           "error": "requirement is required unless --design_file points to an existing design file"},

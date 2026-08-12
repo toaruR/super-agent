@@ -272,6 +272,9 @@ acceptance は exit_code の pass/fail しか見ないため、「テストの�
 super-agent architect <requirement> [--design_file FILE] [--vendor V] [--model M] [--effort E] [--dry-run]
 ```
 
+- `--design_file FILE`: 既存ファイルを指す場合、1行目に `# 設計:` ヘッダーが無ければ先頭に `# 設計: <requirement>` を付与した補完ファイルを `design_dir`（既定 `docs/design`）配下に新規別名保存し、台帳（`events.jsonl`）の `design_file` には保管後の新パスを登録する（元ファイルは未変更のまま保持される）。1行目に既に `# 設計:` がある場合はそのファイルのまま登録する。
+
+
 ### 5.2 `plan` — 分解 + スケジュール（Stage 3）
 
 ```

@@ -37,11 +37,13 @@ git-bash なら `./super-agent status` で実行できます。
 **対象リポジトリ＝ `super-agent` を呼び出したときのカレントディレクトリです。** ラッパー
 （`super-agent`/`super-agent.bat`）は自分の場所（`src/`）に `cd` せず、`PYTHONPATH` 経由で
 harness モジュールだけを解決するので、`git worktree` などの操作は呼び出し元のディレクトリの
-git リポジトリに対して行われる。**他プロジェクトに使うときは、そのプロジェクトのディレクトリに
-`cd` してから、フルパス（または PATH 登録）でこのラッパーを呼べばよい**（詳細は README の
-Installation §）。以下の例は「super-agent 自身を対象に動かす」場合（`src/` に `cd` して実行）
+git リポジトリに対して行われます。
+
+他プロジェクト（他の Git リポジトリ）に対して使う場合の具体的なセットアップ・実行手順・注意点については **[§1.5 他のリポジトリ（別プロジェクト）で使う場合](#15-他のリポジトリ別プロジェクトで使う場合)** を参照してください。
+
+以下のマニュアル中の例は「super-agent 自身を対象に動かす」場合（`src/` に `cd` して実行）
 を前提にしており、コマンド内のパスは `src/` からの相対表記です（例: `probe/n3/caseGreen`）。
-他プロジェクト向けに使う場合は同様に、そのプロジェクトのディレクトリからの相対表記になる。
+他プロジェクト向けに使う場合は同様に、そのプロジェクトのディレクトリからの相対表記になります。
 
 ### 1.1 VSCode ターミナル（推奨・最も簡単）
 
@@ -92,6 +94,64 @@ python -c "import yaml, pytest; print('ok')"   # VSCode / Activate 後
 **作業ディレクトリ＝対象リポジトリ**になる点に注意（§1 冒頭を参照）。super-agent 自身を
 対象に動かす（以下の例のように）場合は `src/` の中で実行する。
 
+### 1.5 他のリポジトリ（別プロジェクト）で使う場合
+
+Super Agent は、`super-agent` 自身以外の**任意の Git リポジトリ**に対してもそのまま適用して動かすことができます。
+
+#### ① 仕組み（なぜ別ディレクトリから動くのか）
+
+ラッパー `super-agent`（または `super-agent.bat`）は、**実行時のカレントディレクトリ（作業ディレクトリ）を「対象リポジトリ」として扱います**。
+ラッパー自身が自身の置かれた場所（`super-agent/src`）を元に `PYTHONPATH` 経由で `harness` モジュールを動的に読み込むため、`super-agent` 側のディレクトリに `cd` する必要はありません。`git worktree` やコミット、台帳・成果物ログの生成は、すべて呼び出し元のプロジェクトに対して行われます。
+
+#### ② 設定：PATH の登録（推奨）
+
+どのプロジェクトディレクトリからでも `super-agent` コマンドを短く呼び出せるよう、`super-agent/src` ディレクトリを環境変数 `PATH` に登録しておくことを推奨します。
+
+- **PowerShell（ユーザー環境変数に永続追加）**:
+  ```powershell
+  [Environment]::SetEnvironmentVariable("PATH", "$env:PATH;D:\path\to\super-agent\src", "User")
+  ```
+- **git-bash / Linux (`~/.bashrc` または `~/.bash_profile` に追記)**:
+  ```bash
+  export PATH="/path/to/super-agent/src:$PATH"
+  ```
+- **PATH 登録なしで実行する場合（フルパス指定）**:
+  ```powershell
+  # PowerShell / cmd
+  D:\path\to\super-agent\src\super-agent.bat status
+
+  # git-bash / Linux
+  /path/to/super-agent/src/super-agent status
+  ```
+
+#### ③ 他プロジェクトでの実行手順ステップ
+
+1. **対象プロジェクトのディレクトリに移動**:
+   ```bash
+   cd /path/to/my-project
+   ```
+2. **Git リポジトリ状態の確認**:
+   対象ディレクトリが Git リポジトリとして初期化・コミット済みであることを確認します（`git status`）。
+3. **設計ファイルの作成**:
+   対象プロジェクト内に設計ドキュメント（例: `docs/design/my-feature.md`）を作成・用意します。
+4. **Super Agent コマンドの実行**:
+   ```bash
+   # 例: 設計の記録
+   super-agent architect --design_file docs/design/my-feature.md
+
+   # 例: 設計から自動一括駆動（タスク分解 ➔ 実装 ➔ レビュー ➔ マージ）
+   super-agent drive --design_file docs/design/my-feature.md
+   ```
+
+#### ④ 他プロジェクト利用時の注意点・チェックリスト
+
+> [!IMPORTANT]
+> - **Git リポジトリ必須**: Super Agent は内部で `git worktree` を作成してタスクごとの実装・検証作業を安全に隔離します。対象ディレクトリが Git リポジトリ（`.git` が存在し、少なくとも 1 つ以上のコミットが存在する状態）である必要があります。
+> - **パス指定の基準**: コマンドに渡す引数（`--design_file` や `--task_file` など）は、すべて**対象プロジェクトのルートからの相対パス**として指定してください。
+> - **検証環境（CVE）依存関係の事前準備**:
+>   - Node.js プロジェクト（`node-test`, `jest`, `vitest`, `tsc`, `eslint` 等の verb を利用する場合）は、事前に対象プロジェクト側で `npm install` や `yarn` などを実行して `node_modules` を作成しておいてください。
+>   - Python プロジェクトの場合、`verification_env.yaml` に指定された Python 環境（または `.cve-venv`）に対象プロジェクトのテスト実行に必要なライブラリがインストールされているか確認してください。
+
 ---
 
 ## 2. コマンド一覧
@@ -119,7 +179,7 @@ super-agent architect ["<要求>"] [--design_file <file>] [--vendor claude] [--d
 
 | オプション | 意味 |
 |---|---|
-| `--design_file` | 設計ファイル。`<file>` が無ければ LLM で起案してそのパスに作成（後で編集可）。既存ならそのまま記録（推奨・確実） |
+| `--design_file` | 設計ファイル。`<file>` が無ければ LLM で起案してそのパスに作成（後で編集可）。既存で `# 設計:` ヘッダーが無い場合は補完版を別名保存 |
 | `--vendor` | 起案させるベンダー（既定 `claude`）。`--design_file` 無し、または `<file>` が無い時のみ使用 |
 | `--dry-run` | プロンプトを組み立てるだけでベンダーは呼ばない |
 
@@ -129,20 +189,23 @@ super-agent architect ["<要求>"] [--design_file <file>] [--vendor claude] [--d
 
 **`"<要求>"` は `--design_file` が既存ファイルを指す場合は省略可**（`plan` と同様）。省略時は
 ファイルの**1行目**から復元します（先頭が `# 設計:` ならそのプレフィックスを取り除いた
-残りを使用）。`--design_file` が無い／ファイルがまだ無い場合（LLM に起案させる場合）は、起案の
+残りを使用、印が無ければ見出し記号等を取り除いた文字列を使用）。`--design_file` が無い／ファイルがまだ無い場合（LLM に起案させる場合）は、起案の
 入力として要求文が必須なので `"<要求>"` は省略できません（省略するとエラーを返します）。
+
+**既存の `--design_file` に `# 設計:` ヘッダーが無い場合**：
+元のファイルは一切変更せず保護したまま、先頭に `# 設計: <requirement>` ヘッダーを付与した補完後の設計ドキュメントを `design_dir`（既定 `docs/design`）配下に新規ファイル（`<slug>.md`）として**別途保存**し、台帳（`events.jsonl`）にはその**保管後の新しいファイルパス**でイベントを記録します。
 
 **例（人間の設計をそのまま記録 — 最も確実）**：
 ```bash
 super-agent architect "Web API を作れ" --design_file my-design.md
-# → 既存ならその内容を記録。無ければ LLM が起案して my-design.md を作成し記録
+# → 既存ならその内容を記録（# 設計: が無ければ docs/design/ に補完版を別名保存）。無ければ LLM が起案して my-design.md を作成し記録
 ```
 
 **例（既存ファイルなら要求文を省略できる）**：
 ```bash
 super-agent architect --design_file my-design.md
 # my-design.md の1行目が「# 設計: Web API を作れ」なら goal は「Web API を作れ」に復元される
-# 1行目にその印が無ければ、1行目の文字列をそのまま goal として使う
+# 1行目にその印が無ければ、1行目の文字列から goal を復元し、docs/design/ 配下に補完版を別名保存して記録する
 ```
 
 **例（LLM に起案させる／dry-run で確認）**：

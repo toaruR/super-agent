@@ -272,15 +272,26 @@ def test_architect_recovers_requirement_from_first_line(tmp_path, monkeypatch):
 
 
 def test_architect_recovers_requirement_from_plain_first_line(tmp_path, monkeypatch):
-    """Files without the '# 設計:' marker still recover requirement from
-    their literal first line."""
+    """Files without the '# 設計:' marker recover requirement, write a completed design
+    file separately, and register the new path in the ledger."""
     monkeypatch.chdir(REPO)
     ledger = tmp_path / "events.jsonl"
     spec = tmp_path / "plain-design.md"
-    spec.write_text("素のテキストの1行目\n\n本文\n", encoding="utf-8")
-    _run("architect", "--design_file", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
+    original_text = "素のテキストの1行目\n\n本文\n"
+    spec.write_text(original_text, encoding="utf-8")
+
+    res = _run("architect", "--design_file", str(spec), "--dry-run", env={"SUPER_AGENT_LEDGER": str(ledger)})
     lg = ledger.read_text(encoding="utf-8")
+
+    # Original file must remain untouched
+    assert spec.read_text(encoding="utf-8") == original_text
+
+    # Ledger goal recovered
     assert '"goal": "素のテキストの1行目"' in lg or '"goal":"素のテキストの1行目"' in lg
+
+    # Ledger design_file must point to the new completed file path under design_dir (not original spec)
+    assert str(spec) not in lg
+    assert "docs" in lg and "design" in lg
 
 
 def test_architect_requires_requirement_when_spec_missing(tmp_path, monkeypatch):
