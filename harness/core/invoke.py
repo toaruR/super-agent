@@ -26,8 +26,28 @@ import yaml
 
 
 def git_executable() -> str:
-    """Return absolute path to git binary via shutil.which('git'), falling back to 'git'."""
-    return shutil.which("git") or "git"
+    """Return absolute path to git binary via shutil.which('git'), checking standard
+    Windows installation paths if PATH lookup fails, falling back to 'git'."""
+    found = shutil.which("git")
+    if found:
+        return found
+
+    if os.name == "nt":
+        candidates = [
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files (x86)\Git\cmd\git.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe"),
+            os.path.expandvars(r"%USERPROFILE%\scoop\shims\git.exe"),
+            os.path.expandvars(r"%USERPROFILE%\AppData\Local\Programs\Git\cmd\git.exe"),
+            r"C:\tools\Git\cmd\git.exe",
+            r"C:\ProgramData\chocolatey\bin\git.exe",
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file():
+                return candidate
+
+    return "git"
 
 # Known-bad model-name aliases (CODE-side, intentionally NOT in vendors.yaml).
 #

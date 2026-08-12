@@ -126,6 +126,10 @@ def drive(
     if spec_path and Path(spec_path).exists():
         spec_text = Path(spec_path).read_text(encoding="utf-8", errors="ignore")
 
+    if not requirement and spec_text:
+        from harness.cli import extract_requirement_from_text
+        requirement = extract_requirement_from_text(spec_text, default=Path(spec_path).stem)
+
     # Register the task root (design_file + task_file) up front so that every
     # downstream role can recover task_file from the ledger via resolve_task_file.
     if seq is not None:
@@ -138,11 +142,7 @@ def drive(
         tasks = parse_tasks_md(str(tasks_file))
         reused = True
     else:
-        design_role = resolve_role("design", config_dir,
-                                   explicit_vendor=vendor,
-                                   explicit_model=model,
-                                   explicit_effort=effort,
-                                   explicit_timeout=timeout)
+        design_role = resolve_role("design", config_dir)
         out = decomposer_decompose(
             tid if seq is not None else "T-drive",
             requirement, vendor=design_role["vendor"], existing_design=spec_text,
@@ -179,28 +179,54 @@ def drive(
     # a test invocation can never mutate the caller's working tree / branch.
     import os as _os
     import subprocess as _sp
-    _head = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=".", capture_output=True, text=True).stdout.strip()
+    from harness.core.invoke import git_executable
+
+    def _git_run(args: list[str], cwd: str = ".") -> _sp.CompletedProcess:
+        cmd = ["git", *args]
+        try:
+            return _sp.run(cmd, cwd=cwd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", shell=False)
+        except FileNotFoundError:
+            git_bin = git_executable()
+            try:
+                return _sp.run([git_bin, *args], cwd=cwd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", shell=False)
+            except FileNotFoundError:
+                return _sp.CompletedProcess(
+                    args=[git_bin, *args], returncode=1, stdout="",
+                    stderr="git command not found in PATH"
+                )
+
+    _head = _git_run(["rev-parse", "--abbrev-ref", "HEAD"], cwd=".").stdout.strip()
     _prev_branch = _head
     _stashed = False
+
+    def _restore_branch() -> None:
+        nonlocal _stashed
+        if not dry_run and _prev_branch and _head != target_branch:
+            _git_run(["checkout", _prev_branch], cwd=".")
+            if _stashed:
+                _git_run(["stash", "pop"], cwd=".")
+                _stashed = False
+
     if not _os.environ.get("SUPER_AGENT_TEST"):
         try:
             # If the repo root is ALREADY on the target branch, nothing to do.
             if _head != target_branch:
-                _st = _sp.run(["git", "stash", "push", "-u", "-m", "drive-auto-stash"],
-                              cwd=".", capture_output=True, text=True)
+                # Do NOT use -u (--include-untracked) so untracked files (.gitignore, design files) are never stashed/removed.
+                _st = _git_run(["stash", "push", "-m", "drive-auto-stash"], cwd=".")
                 if _st.returncode == 0 and "No local changes" not in _st.stdout:
                     _stashed = True
-                _co = _sp.run(["git", "checkout", target_branch], cwd=".",
-                              capture_output=True, text=True)
+                _co = _git_run(["checkout", target_branch], cwd=".")
                 if _co.returncode != 0:
-                    _cb = _sp.run(["git", "checkout", "-b", target_branch], cwd=".",
-                                  capture_output=True, text=True)
+                    _cb = _git_run(["checkout", "-b", target_branch], cwd=".")
                     if _cb.returncode != 0:
+                        _restore_branch()
                         return {"ok": False,
                                 "error": f"cannot checkout target_branch {target_branch}: "
                                          f"{_co.stderr or _cb.stderr}"}
         except Exception as _ex:  # pragma: no cover - defensive
+            _restore_branch()
             return {"ok": False, "error": f"checkout target_branch failed: {_ex}"}
 
     order = topo_order(tasks)
@@ -298,8 +324,14 @@ def drive(
 
             entry["implement"] = {
                 "channels": [
-                    {"vendor": c["vendor"], "model": c["model"], "effort": c["effort"],
-                     "ok": c["impl"].get("ok"), "commit": c["impl"].get("commit")}
+                    {
+                        "vendor": c["vendor"],
+                        "model": c["model"],
+                        "effort": c["effort"],
+                        "ok": c.get("impl", {}).get("ok", False) if c.get("ok") else False,
+                        "commit": c.get("impl", {}).get("commit") if c.get("ok") else None,
+                        "error": c.get("impl", {}).get("error") if c.get("ok") else c.get("error"),
+                    }
                     for c in ch_results
                 ]
             }
@@ -311,10 +343,11 @@ def drive(
             winner: dict | None = None
             reviews: list[dict] = []
             for c in ch_results:
-                if not c.get("ok"):
-                    # channel worktree failed to create/run — record and skip
-                    reviews.append({"vendor": rev_vendor, "verdict": None,
-                                    "error": c.get("error")})
+                impl_ok = c.get("ok") and c.get("impl", {}).get("ok")
+                if not impl_ok:
+                    # channel worktree or implement failed — record error and skip review
+                    err = c.get("error") or (c.get("impl", {}).get("error") if c.get("ok") else "implement failed")
+                    reviews.append({"vendor": rev_vendor, "verdict": None, "error": err})
                     continue
                 rev = run_pipeline(c["task_id"], c["worktree"], acc,
                                    reviewer_vendor=rev_vendor,
@@ -447,12 +480,7 @@ def drive(
     # target branch as a side effect. Also pop any auto-stash we created.
     # If we never left the target branch (caller was already on it), there is
     # nothing to restore and no stash to pop.
-    if not dry_run and _prev_branch and _head != target_branch:
-        _sp.run(["git", "checkout", _prev_branch], cwd=".",
-                capture_output=True, text=True)
-        if _stashed:
-            _sp.run(["git", "stash", "pop"], cwd=".", capture_output=True, text=True)
-
+    _restore_branch()
     return {"ok": True, "reused_tasks_file": reused, "tasks": results}
 
 

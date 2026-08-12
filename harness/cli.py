@@ -99,18 +99,24 @@ def resolve_design_file_arg(args: argparse.Namespace, seq: Sequencer) -> str | N
     1. args.design_file, if explicitly given.
     2. If --design_file is omitted but --task_file points at an existing file, look up
        its design_file in the ledger (Sequencer.resolve_design_file — the
-       reverse of resolve_task_file). This recovers an already-established
-       design/task association instead of asking the user to re-supply it or
-       inventing a new design path.
-    3. None if neither yields anything (caller decides how to handle that:
-       `plan` errors out, `drive` falls back to auto-naming a new design_file).
+       reverse of resolve_task_file).
+    3. Infer design_file from task_file path convention (<design_stem>_tasks/<slug>.md -> <design_stem>.md).
+    4. None if neither yields anything.
     """
     if args.design_file:
         return args.design_file
-    if args.task_file and Path(args.task_file).exists():
-        found = seq.resolve_design_file(str(Path(args.task_file).resolve()))
-        if found:
-            return found
+    if args.task_file:
+        tf = Path(args.task_file)
+        if tf.exists():
+            found = seq.resolve_design_file(str(tf.resolve()))
+            if found:
+                return found
+        parent = tf.parent
+        if parent.name.endswith("_tasks"):
+            stem = parent.name[:-len("_tasks")]
+            candidate = parent.parent / f"{stem}.md"
+            if candidate.exists():
+                return str(candidate)
     return None
 
 
@@ -301,6 +307,7 @@ def cmd_architect(args: argparse.Namespace) -> int:
             new_design_path.parent.mkdir(parents=True, exist_ok=True)
             new_design_path.write_text(completed_text, encoding="utf-8")
             args.design_file = str(new_design_path)
+            print(f"# completed design written to {args.design_file}", file=sys.stderr)
 
     if not spec_exists and not requirement:
         print(json.dumps({"ok": False,
@@ -450,6 +457,10 @@ def cmd_drive(args: argparse.Namespace) -> int:
         args.design_file = resolved_spec
     elif not args.design_file:
         args.design_file = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(args.requirement or "drive")))
+
+    if not args.requirement and args.design_file and Path(args.design_file).exists():
+        spec_text = Path(args.design_file).read_text(encoding="utf-8", errors="ignore")
+        args.requirement = extract_requirement_from_text(spec_text, default=Path(args.design_file).stem)
 
     auto_named = not args.task_file
     if auto_named:

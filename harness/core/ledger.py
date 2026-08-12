@@ -160,18 +160,25 @@ class Ledger:
 
     def load(self) -> list[dict[str, Any]]:
         """Reconstruct the full chunk stream (crash-safe: drops partial tail)."""
-        if not os.path.exists(self.path):
-            return []
-        out: list[dict[str, Any]] = []
-        with open(self.path, "r", encoding="utf-8") as fh:
-            for raw in fh:
-                if not raw.endswith("\n"):
-                    continue  # partial trailing line from a crash -> discard
+        with self._lock:
+            if not os.path.exists(self.path):
+                return []
+            for attempt in range(5):
                 try:
-                    out.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-        return out
+                    out: list[dict[str, Any]] = []
+                    with open(self.path, "r", encoding="utf-8") as fh:
+                        for raw in fh:
+                            if not raw.endswith("\n"):
+                                continue  # partial trailing line from a crash -> discard
+                            try:
+                                out.append(json.loads(raw))
+                            except json.JSONDecodeError:
+                                continue
+                    return out
+                except (PermissionError, FileNotFoundError):
+                    if attempt < 4:
+                        time.sleep(0.02)
+            return []
 
     def load_flat(self) -> list[dict[str, Any]]:
         """Flatten all chunks into a single list of events, each annotated with

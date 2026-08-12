@@ -472,6 +472,16 @@ def test_invoke_raises_timeout_expired_on_stall(monkeypatch) -> None:
         assert e.stderr == "partial err"
 
 
+def test_git_executable_fallback_windows(monkeypatch) -> None:
+    from harness.core.invoke import git_executable
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    executable = git_executable()
+    assert isinstance(executable, str)
+    assert len(executable) > 0
+
+
 def test_claude_stream_detail_and_terminal() -> None:
     from harness.core.invoke import _claude_stream_detail, _STREAM_PARSERS
 

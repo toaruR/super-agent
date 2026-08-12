@@ -454,3 +454,21 @@ def test_plan_tasks_only_unregistered_still_errors(tmp_path, monkeypatch):
     assert j["ok"] is False
     assert "cannot determine design_file" in j["error"]
 
+
+def test_resolve_design_file_arg_infers_from_directory_structure(tmp_path):
+    from harness.cli import resolve_design_file_arg, argparse
+    from harness.core.ledger import Sequencer
+    design_file = tmp_path / "docs" / "design" / "my_feature.md"
+    design_file.parent.mkdir(parents=True, exist_ok=True)
+    design_file.write_text("# 設計: My Feature\n\nSome spec", encoding="utf-8")
+
+    task_file = tmp_path / "docs" / "design" / "my_feature_tasks" / "drive.md"
+    task_file.parent.mkdir(parents=True, exist_ok=True)
+    task_file.write_text("# tasks", encoding="utf-8")
+
+    seq = Sequencer(tmp_path / "events.jsonl")
+    args = argparse.Namespace(design_file=None, task_file=str(task_file), requirement=None)
+    resolved = resolve_design_file_arg(args, seq)
+    assert resolved == str(design_file)
+
+

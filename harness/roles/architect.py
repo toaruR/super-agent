@@ -136,8 +136,8 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
         draft_p = Path(f"{spec_path}.draft")
         if p.exists():
             text = p.read_text(encoding="utf-8", errors="ignore")
-            adr = {"source": "human", "decisions": [{"topic": p.name,
-                                                      "decision": text, "rationale": ""}]}
+            adr = {"source": "human", "design_file": str(p), "saved_to": str(p),
+                   "decisions": [{"topic": p.name, "decision": text, "rationale": ""}]}
         else:
             if draft_p.exists():
                 draft_text = draft_p.read_text(encoding="utf-8", errors="ignore")
