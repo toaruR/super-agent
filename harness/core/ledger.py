@@ -57,7 +57,7 @@ def _same_path(a: str, b: str) -> bool:
 @dataclass
 class Ledger:
     path: str
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _lock: threading.RLock = field(default_factory=threading.RLock)
     _seen: set[tuple[str, str]] = field(default_factory=set)
 
     def __post_init__(self) -> None:
