@@ -39,6 +39,10 @@ STATUS_MAP = {
     "task.implemented": "implemented",
     "implement.ok": "implemented",
     "artifact.produced": "implemented",
+    "running": "running",
+    "implementer.invoked": "running",
+    "task.running": "running",
+    "implementing": "running",
     "task.leased": "leased",
     "task.scheduled": "scheduled",
     "task.created": "created",
@@ -55,13 +59,14 @@ STATUS_MAP = {
 }
 
 # 状態の重み付き順位（進んだ方が強い）。詳細は dashboard-priority-design.md 要件 A。
-# integrated > passed > implemented > failed > leased > scheduled > created > unknown
+# integrated > passed > implemented > failed > leased/running > scheduled > created > unknown
 STATUS_RANK = {
     "integrated": 6,
     "passed": 5,
     "implemented": 4,
     "failed": 3,
     "leased": 2,
+    "running": 2,
     "scheduled": 1,
     "created": 0,
     "unknown": -1,
@@ -75,7 +80,7 @@ _DONE_STATUSES = ("integrated", "passed")
 # outstanding, so it is a candidate for stale detection. Every other status
 # (integrated / passed / failed / judgment:* / custom) is treated as terminal
 # and is never flagged stale.
-_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "implemented")
+_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "running", "implemented")
 
 # Default stale threshold: a non-terminal task untouched for this long (in
 # seconds) is considered stuck. Overridable per call via build_model(...,
@@ -92,7 +97,6 @@ _TRANSIENT_TYPES = {
     "verification.run",
     "verification.start",
     "verification.pending",
-    "task.running",
     "task.start",
     "task.pending",
     "agent.running",
@@ -106,6 +110,7 @@ _STATUS_BADGE = {
     "integrated": ("Integrated", "badge-green"),
     "passed": ("Passed", "badge-green"),
     "implemented": ("Implemented", "badge-blue"),
+    "running": ("Running", "badge-blue"),
     "leased": ("Leased", "badge-blue"),
     "scheduled": ("Scheduled", "badge-gray"),
     "created": ("Created", "badge-gray"),
@@ -117,7 +122,7 @@ _STATUS_BADGE = {
 # its status bucket and shown in the dedicated orange one.
 _BAR_BUCKETS = (
     ("Completed", "bar-green", ("integrated", "passed")),
-    ("In Progress", "bar-blue", ("implemented", "leased")),
+    ("In Progress", "bar-blue", ("implemented", "leased", "running")),
     ("Stale", "bar-orange", ()),
     ("Failed", "bar-red", ("failed",)),
     ("Pending", "bar-gray", ("scheduled", "created")),
@@ -448,7 +453,17 @@ def build_model(
         status, rank = _event_status(ev)
         if status is None:
             continue
-        if entry["_rank"] is None or rank > entry["_rank"]:
+
+        ev_ts = float(ev.get("ts") or 0)
+        cur_ts = float(entry["updated_at"] or 0)
+
+        # If a retry/re-invocation occurs (status == "running"), and the event's timestamp
+        # is newer than or equal to current updated_at, reset previous failed state and set status to running.
+        if status == "running" and (not cur_ts or ev_ts >= cur_ts):
+            entry["status"] = status
+            entry["_rank"] = rank
+            entry["reason"] = ""
+        elif entry["_rank"] is None or rank > entry["_rank"]:
             entry["status"] = status
             entry["_rank"] = rank
             if status == "failed":
@@ -480,8 +495,21 @@ def build_model(
             agg["reason"] = entry["reason"]
         _merge_meta(agg, entry)
 
-    for entry in aggregated.values():
+    for parent_id, entry in aggregated.items():
         entry.pop("_rank", None)
+        # Check progress side-channel for active running status override (e.g. retried task)
+        if progress:
+            for p_key, p_val in progress.items():
+                if _logical_parent(p_key) == parent_id:
+                    p_status = p_val.get("status")
+                    lat = p_val.get("last_activity_ts")
+                    if p_status in ("running", "thinking", "implementing"):
+                        cur_ts = float(entry["updated_at"] or 0)
+                        if lat and (not cur_ts or lat >= cur_ts):
+                            entry["status"] = "running"
+                            entry["reason"] = ""
+                            break
+
         if entry["status"] != "failed":
             entry["reason"] = ""
         lat = entry.get("last_activity_ts")

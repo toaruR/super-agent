@@ -733,3 +733,31 @@ def test_load_progress_delegates_to_progress_module(tmp_path) -> None:
     progress = load_progress(str(ledger_path))
     assert progress["T1"]["vendor"] == "hermes"
     assert progress["T1"]["status"] == "running"
+
+
+def test_build_model_retry_failed_task_updates_status_to_running() -> None:
+    """When a previously failed task is retried (implementer.invoked emitted at a later ts),
+    the dashboard model must transition its status to 'running' and clear the reason."""
+    events = [
+        {"task_id": "T1", "type": "task.created", "ts": 100},
+        {"task_id": "T1", "type": "implementer.error", "error": "timeout boom", "ts": 200},
+        {"task_id": "T1", "type": "implementer.invoked", "vendor": "hermes", "ts": 300},
+    ]
+    model = build_model(events, now=310)
+    assert model["T1"]["status"] == "running"
+    assert model["T1"]["reason"] == ""
+
+
+def test_build_model_progress_running_overrides_failed_status() -> None:
+    """When a task has a past failure in ledger, but has an active progress heartbeat with
+    status='running' and newer ts, the dashboard model shows status='running'."""
+    events = [
+        {"task_id": "T1", "type": "implementer.error", "error": "timeout boom", "ts": 200},
+    ]
+    progress = {
+        "T1": {"task_id": "T1", "status": "running", "detail": "retrying...", "last_activity_ts": 300}
+    }
+    model = build_model(events, now=310, progress=progress)
+    assert model["T1"]["status"] == "running"
+    assert model["T1"]["reason"] == ""
+

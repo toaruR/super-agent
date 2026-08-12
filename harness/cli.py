@@ -395,6 +395,7 @@ def cmd_implement(args: argparse.Namespace) -> int:
             return 1
 
     seq.start()
+    auto_update_dashboard()
     r = resolve_role("implement", CONFIG_DIR,
                      explicit_vendor=args.vendor,
                      explicit_model=getattr(args, "model", None),
@@ -404,6 +405,7 @@ def cmd_implement(args: argparse.Namespace) -> int:
                    seq=seq, dry_run=args.dry_run, model=r["model"], effort=r["effort"],
                    design_file=design_file or "", timeout=r["timeout"])
     seq.stop()
+    auto_update_dashboard()
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
@@ -766,6 +768,23 @@ def _render_dashboard_once(fmt: str, out_path: str | None,
         elif fmt == "both":
             sys.stdout.write(md_content)
             sys.stdout.write(html_content)
+
+
+def auto_update_dashboard() -> None:
+    """Auto-refresh dashboard.html/dashboard.md files in the cwd or docs/ if present."""
+    targets = [
+        Path("dashboard.html"),
+        Path("dashboard.md"),
+        Path("docs/dashboard.html"),
+        Path("docs/dashboard.md"),
+    ]
+    for target in targets:
+        if target.exists():
+            try:
+                _render_dashboard_once("both", str(target.parent))
+            except Exception:
+                pass
+            break
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
