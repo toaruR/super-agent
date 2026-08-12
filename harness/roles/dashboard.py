@@ -39,6 +39,10 @@ STATUS_MAP = {
     "task.implemented": "implemented",
     "implement.ok": "implemented",
     "artifact.produced": "implemented",
+    "reviewer.invoked": "reviewing",
+    "reviewing": "reviewing",
+    "reviewer.start": "reviewing",
+    "review.start": "reviewing",
     "running": "running",
     "implementer.invoked": "running",
     "task.running": "running",
@@ -59,12 +63,13 @@ STATUS_MAP = {
 }
 
 # 状態の重み付き順位（進んだ方が強い）。詳細は dashboard-priority-design.md 要件 A。
-# integrated > passed > implemented > failed > leased/running > scheduled > created > unknown
+# integrated > passed > implemented > failed > reviewing > leased/running > scheduled > created > unknown
 STATUS_RANK = {
     "integrated": 6,
     "passed": 5,
     "implemented": 4,
     "failed": 3,
+    "reviewing": 2.5,
     "leased": 2,
     "running": 2,
     "scheduled": 1,
@@ -80,7 +85,7 @@ _DONE_STATUSES = ("integrated", "passed")
 # outstanding, so it is a candidate for stale detection. Every other status
 # (integrated / passed / failed / judgment:* / custom) is treated as terminal
 # and is never flagged stale.
-_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "running", "implemented")
+_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "running", "implemented", "reviewing")
 
 # Default stale threshold: a non-terminal task untouched for this long (in
 # seconds) is considered stuck. Overridable per call via build_model(...,
@@ -94,7 +99,6 @@ _REASON_FIELDS = ("error", "reason", "why")
 # B: "過渡イベントで状態が止まらず"). They are informational only, so the
 # final status is derived from a terminal event instead of a raw transient type.
 _TRANSIENT_TYPES = {
-    "verification.run",
     "verification.start",
     "verification.pending",
     "task.start",
@@ -105,11 +109,12 @@ _TRANSIENT_TYPES = {
 
 # Human-readable label + CSS class for each canonical status (requirement C).
 # Colours follow the design: Integrated/Passed=green, In Progress=blue,
-# Failed=red, Scheduled/others=gray.
+# Reviewing=purple, Failed=red, Scheduled/others=gray.
 _STATUS_BADGE = {
     "integrated": ("Integrated", "badge-green"),
     "passed": ("Passed", "badge-green"),
     "implemented": ("Implemented", "badge-blue"),
+    "reviewing": ("Reviewing", "badge-purple"),
     "running": ("Running", "badge-blue"),
     "leased": ("Leased", "badge-blue"),
     "scheduled": ("Scheduled", "badge-gray"),
@@ -122,7 +127,7 @@ _STATUS_BADGE = {
 # its status bucket and shown in the dedicated orange one.
 _BAR_BUCKETS = (
     ("Completed", "bar-green", ("integrated", "passed")),
-    ("In Progress", "bar-blue", ("implemented", "leased", "running")),
+    ("In Progress", "bar-blue", ("implemented", "leased", "running", "reviewing")),
     ("Stale", "bar-orange", ()),
     ("Failed", "bar-red", ("failed",)),
     ("Pending", "bar-gray", ("scheduled", "created")),
@@ -266,10 +271,11 @@ def _event_status(ev: dict[str, Any]) -> tuple[str | None, int]:
         return None, 0
 
     if type_ == "judgment":
-        verdict = ev.get("verdict", "")
-        if verdict == "PASS":
+        verdict = str(ev.get("verdict", ""))
+        v_upper = verdict.upper()
+        if v_upper in ("PASS", "REVIEW.PASS", "PASSED"):
             return "passed", STATUS_RANK["passed"]
-        if verdict == "FAIL":
+        if v_upper in ("FAIL", "REVIEW.FAIL", "FAILED", "JUDGMENT_UNAVAILABLE"):
             return "failed", STATUS_RANK["failed"]
         if verdict:
             return f"judgment:{verdict}", _rank_of(f"judgment:{verdict}")
@@ -457,9 +463,10 @@ def build_model(
         ev_ts = float(ev.get("ts") or 0)
         cur_ts = float(entry["updated_at"] or 0)
 
-        # If a retry/re-invocation occurs (status == "running"), and the event's timestamp
-        # is newer than or equal to current updated_at, reset previous failed state and set status to running.
-        if status == "running" and (not cur_ts or ev_ts >= cur_ts):
+        # If a retry/re-invocation or review occurs (status in ("running", "reviewing")),
+        # and the event's timestamp is newer than or equal to current updated_at,
+        # reset previous failed/implemented state and set status to running/reviewing.
+        if status in ("running", "reviewing") and (not cur_ts or ev_ts >= cur_ts):
             entry["status"] = status
             entry["_rank"] = rank
             entry["reason"] = ""
@@ -497,16 +504,17 @@ def build_model(
 
     for parent_id, entry in aggregated.items():
         entry.pop("_rank", None)
-        # Check progress side-channel for active running status override (e.g. retried task)
-        if progress:
+        # Check progress side-channel for active running/reviewing status override
+        # (unless the task has already reached terminal completed status: integrated/passed).
+        if progress and entry["status"] not in ("integrated", "passed"):
             for p_key, p_val in progress.items():
                 if _logical_parent(p_key) == parent_id:
                     p_status = p_val.get("status")
                     lat = p_val.get("last_activity_ts")
-                    if p_status in ("running", "thinking", "implementing"):
+                    if p_status in ("running", "thinking", "implementing", "reviewing"):
                         cur_ts = float(entry["updated_at"] or 0)
                         if lat and (not cur_ts or lat >= cur_ts):
-                            entry["status"] = "running"
+                            entry["status"] = "reviewing" if p_status == "reviewing" else "running"
                             entry["reason"] = ""
                             break
 
@@ -708,6 +716,7 @@ _HTML_CSS = """
   .badge { display:inline-block; padding:.2rem .65rem; border-radius:999px; font-size:.78rem; font-weight:600; }
   .badge-green { background:rgba(34,197,94,.18); color:#4ade80; }
   .badge-blue  { background:rgba(59,130,246,.18); color:#60a5fa; }
+  .badge-purple{ background:rgba(168,85,247,.18); color:#c084fc; }
   .badge-red   { background:rgba(239,68,68,.18);  color:#f87171; }
   .badge-gray  { background:rgba(148,163,184,.18); color:#cbd5e1; }
   .badge-orange { background:rgba(249,115,22,.20); color:#fb923c; }

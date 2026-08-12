@@ -761,3 +761,27 @@ def test_build_model_progress_running_overrides_failed_status() -> None:
     assert model["T1"]["status"] == "running"
     assert model["T1"]["reason"] == ""
 
+
+def test_build_model_reviewing_status() -> None:
+    """When a reviewer is invoked, the task status becomes 'reviewing'."""
+    events = [
+        {"task_id": "T1", "type": "task.created", "ts": 100},
+        {"task_id": "T1", "type": "task.implemented", "ts": 200},
+        {"task_id": "T1", "type": "reviewer.invoked", "vendor": "codex", "ts": 300},
+    ]
+    model = build_model(events, now=310)
+    assert model["T1"]["status"] == "reviewing"
+    assert model["T1"]["reason"] == ""
+
+
+def test_build_model_judgment_unavailable_reason() -> None:
+    """When a review produces judgment_unavailable or fails, why is stored in reason."""
+    events = [
+        {"task_id": "T1", "type": "reviewer.invoked", "vendor": "codex", "ts": 100},
+        {"task_id": "T1", "type": "judgment", "verdict": "judgment_unavailable", "why": "reviewer produced no parseable output", "ts": 200},
+    ]
+    model = build_model(events, now=210)
+    assert model["T1"]["status"] == "failed"
+    assert model["T1"]["reason"] == "reviewer produced no parseable output"
+
+

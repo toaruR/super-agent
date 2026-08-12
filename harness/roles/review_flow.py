@@ -45,6 +45,135 @@ REVIEW_SCHEMA = {
     "required": ["findings"],
 }
 
+import re
+
+
+def _normalize_findings(parsed: dict) -> dict:
+    """Ensure `findings` is a list and populate it from alternative keys like
+    `findings_and_issues`, `areas_for_improvement`, or `recommendations` if `findings` is empty."""
+    findings = parsed.get("findings")
+    if not isinstance(findings, list):
+        findings = []
+
+    if not findings:
+        raw_items = (
+            parsed.get("findings_and_issues") or
+            parsed.get("areas_for_improvement") or
+            parsed.get("issues") or
+            parsed.get("recommendations") or
+            []
+        )
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                if isinstance(item, dict):
+                    cites = item.get("cites") or []
+                    if not isinstance(cites, list):
+                        cites = [str(cites)]
+                    sev = item.get("severity") or item.get("impact") or "medium"
+                    desc = item.get("description") or item.get("summary") or item.get("issue") or str(item)
+                    remedy = item.get("remediation") or item.get("remedy") or ""
+                    if remedy:
+                        desc = f"{desc} (Remedy: {remedy})"
+                    findings.append({"cites": cites, "severity": str(sev), "summary": str(desc)})
+                elif isinstance(item, str):
+                    findings.append({"cites": [], "severity": "medium", "summary": item})
+
+    parsed["findings"] = findings
+    return parsed
+
+
+def _parse_markdown_review(text: str) -> dict | None:
+    """Parse a plain Markdown code review report into a structured findings dictionary
+    when the vendor LLM returns human-readable Markdown instead of JSON Schema output."""
+    if not text or not isinstance(text, str):
+        return None
+
+    if not any(k in text for k in ("Code Review", "Findings", "Executive Summary", "####", "###")):
+        return None
+
+    findings = []
+    sections = re.split(r"\n(?=#{2,4}\s+)", text)
+    for sec in sections:
+        sec_str = sec.strip()
+        if not sec_str:
+            continue
+        lines = sec_str.splitlines()
+        header = lines[0].lstrip("#").strip()
+
+        if any(h in header.lower() for h in ("executive summary", "omitted material", "table of contents")):
+            continue
+
+        cites = sorted(list(set(re.findall(r"\bE-\d+\b", sec_str))))
+        clean_header = re.sub(r"^\d+\.\s*", "", header)
+
+        desc_lines = []
+        for line in lines[1:]:
+            line_str = line.strip()
+            if line_str.startswith("* **Finding**:") or line_str.startswith("**Finding**:") or line_str.startswith("Finding:"):
+                desc_lines.append(re.sub(r"^\*\s*\*\*Finding\*\*:\s*", "", line_str))
+            elif line_str.startswith("* ") or line_str.startswith("- "):
+                desc_lines.append(line_str.lstrip("*- ").strip())
+
+        desc = " ".join(desc_lines) if desc_lines else clean_header
+        summary = f"{clean_header}: {desc}" if desc != clean_header else clean_header
+
+        findings.append({
+            "cites": cites,
+            "severity": "medium",
+            "summary": summary[:300]
+        })
+
+    if not findings:
+        ev_ids = sorted(list(set(re.findall(r"\bE-\d+\b", text))))
+        findings.append({
+            "cites": ev_ids,
+            "severity": "medium",
+            "summary": text[:200].replace("\n", " ").strip()
+        })
+
+    return {"findings": findings}
+
+
+def _extract_json_review(res: dict) -> dict | None:
+    """Fallback parser to extract structured JSON from raw text or markdown code blocks
+    when the reviewer vendor returns plain text instead of strict JSON Schema output."""
+    if not isinstance(res, dict):
+        return None
+    result = res.get("result")
+    if isinstance(result, dict):
+        return _normalize_findings(result)
+
+    raw_texts = []
+    if isinstance(result, str):
+        raw_texts.append(result)
+    for k in ("raw", "output", "stdout"):
+        v = res.get(k)
+        if isinstance(v, str):
+            raw_texts.append(v)
+
+    for text in raw_texts:
+        if not text:
+            continue
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        candidate = m.group(1) if m else None
+        if not candidate:
+            m = re.search(r"(\{.*\})", text, re.DOTALL)
+            candidate = m.group(1) if m else None
+        if candidate:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return _normalize_findings(parsed)
+            except Exception:
+                pass
+
+        # If no JSON candidate could be parsed, attempt Markdown report parsing
+        md_parsed = _parse_markdown_review(text)
+        if md_parsed and md_parsed.get("findings"):
+            return md_parsed
+
+    return None
+
 
 def run_pipeline(
     task_id: str,
@@ -101,6 +230,15 @@ def run_pipeline(
     decls = load_vendors(CONFIG_DIR)
     reviewer = decls.get(reviewer_vendor, decls["codex"])
     emit(task_id, "reviewer.invoked", vendor=reviewer_vendor)
+    try:
+        from harness.core.progress import write_progress
+        from harness.cli import auto_update_dashboard
+        ledger_path = str(seq.path if seq is not None else CONFIG_DIR.parent / "ledger" / "events.jsonl")
+        write_progress(task_id, ledger_path, vendor=reviewer_vendor, status="reviewing", detail="reviewing task...")
+        auto_update_dashboard()
+    except Exception:
+        pass
+
     if dry_run:
         # record intent, skip live call
         emit(task_id, "reviewer.skipped", reason="dry_run")
@@ -112,20 +250,25 @@ def run_pipeline(
                      **invoke_kwargs)
         try:
             review = res.get("result")
+            if not isinstance(review, dict) or "findings" not in review:
+                review = _extract_json_review(res)
         except Exception:
-            review = None
-        # The vendor may return raw text instead of structured JSON (e.g. a
-        # free-tier model that ignores the schema). Treat anything that isn't a
-        # dict as "no structured review" so adjudicate() doesn't crash on
-        # review.get(...) — it falls back to evidence-only judgment.
-        if not isinstance(review, dict):
-            review = None
+            review = _extract_json_review(res)
         emit(task_id, "reviewer.raw", returncode=res.get("returncode"))
 
     # 4) Adjudicate (evidence-only; independent of reviewer's environment)
     judgment = adjudicate(evidence, review)
+    if judgment.get("verdict") == "pass":
+        emit(task_id, "review.pass")
+    else:
+        emit(task_id, "review.fail", why=judgment.get("why", ""))
     emit(task_id, "judgment", verdict=judgment["verdict"], why=judgment["why"],
          tree_hash=judgment["tree_hash"], n_advisory=len(judgment.get("advisory", [])))
+    try:
+        from harness.cli import auto_update_dashboard
+        auto_update_dashboard()
+    except Exception:
+        pass
     return judgment
 
 

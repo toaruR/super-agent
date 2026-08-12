@@ -570,6 +570,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
     seq = ensure_ledger()
     seq.start()
+    auto_update_dashboard()
     task_id = getattr(args, "task", None) or f"T-{uuid.uuid4().hex[:8]}"
     r = resolve_role("review", CONFIG_DIR,
                      explicit_vendor=args.reviewer,
@@ -589,6 +590,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         timeout=r["timeout"],
     )
     seq.stop()
+    auto_update_dashboard()
     print(json.dumps(j, ensure_ascii=False, indent=2))
     return 0
 
@@ -770,21 +772,14 @@ def _render_dashboard_once(fmt: str, out_path: str | None,
             sys.stdout.write(html_content)
 
 
-def auto_update_dashboard() -> None:
-    """Auto-refresh dashboard.html/dashboard.md files in the cwd or docs/ if present."""
-    targets = [
-        Path("dashboard.html"),
-        Path("dashboard.md"),
-        Path("docs/dashboard.html"),
-        Path("docs/dashboard.md"),
-    ]
-    for target in targets:
-        if target.exists():
-            try:
-                _render_dashboard_once("both", str(target.parent))
-            except Exception:
-                pass
-            break
+def auto_update_dashboard(refresh_interval: int = 5) -> None:
+    """Auto-refresh dashboard.html/dashboard.md files in the cwd or docs/ if present,
+    embedding an auto-refresh meta tag into HTML so browser tabs auto-reload."""
+    try:
+        # Always auto-generate/update dashboard.html in cwd
+        _render_dashboard_once("both", ".", refresh_interval=refresh_interval)
+    except Exception:
+        pass
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:

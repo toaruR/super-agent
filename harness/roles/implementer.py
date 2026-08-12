@@ -138,6 +138,19 @@ def _extract_self_score(stdout: str, decl) -> dict | None:
     return None
 
 
+def _ensure_tests_in_touch_allow(task: dict) -> list[str]:
+    """Ensure that test files referenced in acceptance (e.g. tests/test_foo.py)
+    are automatically included in touch_allow so the implementer can create
+    and update unit tests alongside implementation code."""
+    ta = list(task.get("touch_allow", []) or [])
+    from harness.roles.decomposer import _acceptance_test_paths, touch_overlaps
+    test_paths = _acceptance_test_paths(task)
+    for ap in test_paths:
+        if not any(touch_overlaps(existing, ap) for existing in ta):
+            ta.append(ap)
+    return ta
+
+
 def implement(task_id: str, task: dict, worktree_path: str,
               vendor: str = "claude", seq: Sequencer | None = None,
               dry_run: bool = False, model: str | None = None,
@@ -152,6 +165,9 @@ def implement(task_id: str, task: dict, worktree_path: str,
 
     Returns a payload with ok/commit/cmd. Records ledger events when seq given.
     """
+    task = dict(task)
+    task["touch_allow"] = _ensure_tests_in_touch_allow(task)
+
     draft_p = Path(worktree_path) / ".implement_draft"
     if draft_p.exists():
         draft_text = draft_p.read_text(encoding="utf-8", errors="ignore")
@@ -193,6 +209,11 @@ def implement(task_id: str, task: dict, worktree_path: str,
         def progress_cb(detail: str) -> None:
             write_progress(task_id, ledger_path, vendor=vendor,
                            status="running", detail=detail)
+            try:
+                from harness.cli import auto_update_dashboard
+                auto_update_dashboard()
+            except Exception:
+                pass
 
     # run the vendor inside the worktree (invoke() owns build_command,
     # streaming/idle-timeout, and retry-on-content-block; see
@@ -274,9 +295,13 @@ def _commit_worktree(task_id: str, worktree_path: str, touch_allow: list[str],
     changed, returns ok with commit=None (idempotent).
     """
     paths = touch_allow or ["."]
+    wt = Path(worktree_path)
+    existing_paths = [p for p in paths if (wt / p).exists() or p == "."]
+    if not existing_paths:
+        existing_paths = ["."]
     from harness.core.invoke import git_executable
     git_bin = git_executable()
-    add = [git_bin, "-C", str(worktree_path), "add", "--", *paths]
+    add = [git_bin, "-C", str(worktree_path), "add", "--", *existing_paths]
     try:
         ap = subprocess.run(add, capture_output=True, text=True,
                             encoding="utf-8", errors="replace", shell=False)

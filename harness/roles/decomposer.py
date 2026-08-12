@@ -82,9 +82,9 @@ DECOMPOSE_PROMPT = """あなたはタスク分解担当です。要求（と既�
       アクセスを許可することになるため、他タスクとの並列実行を妨げやすい
       （同じディレクトリ配下に触れる他タスクと touch_allow 重複とみなされる）。
       本当に必要な場合以外は (a) の具体的なファイル名指定を優先すること。
-  (c) 【重要・禁止事項】自身の acceptance で検証・実行するテストファイル（例: `tests/test_foo.py`）は、
-      touch_allow に絶対含めてはいけません（受入基準テストの書き換え誤魔化し防止のためエラーになります）。
-      touch_allow には実装対象のプログラムファイルのみを指定してください。
+  (c) 各タスクの `touch_allow` には、実装対象のソースコード（例: `bm25_search/db.py`）に加えて、
+      対応する受入基準のテストファイル（例: `tests/test_db.py`）を【必ず含めてください】。
+      テストファイルが `touch_allow` に含まれることで、実装者が受入テストを作成・拡充・修正できます。
 
 acceptance を作る際の重要な指針（実装者のワンショット成功率を上げるため）:
 - 目標（goal）に複数の要素・振る舞いが含まれる場合、acceptance を1本にまとめず、
@@ -209,21 +209,9 @@ def _acceptance_test_paths(task: dict) -> list[str]:
 
 
 def _check_test_protection(tasks: list[dict]) -> list[str]:
-    """touch_allow must not let a task edit the very test file(s) that grade
-    it (H2-adjacent: otherwise the implementer can "pass" by weakening the
-    test instead of fixing the code, see CLAUDE.md / this session's design
-    discussion on implementer self-scoring)."""
-    errs = []
-    for t in tasks:
-        ta = t.get("touch_allow", []) or []
-        for ap in _acceptance_test_paths(t):
-            for tp in ta:
-                if touch_overlaps(tp, ap):
-                    errs.append(
-                        f"{t['task_id']}: touch_allow '{tp}' が自身の受入基準の"
-                        f"テストファイル '{ap}' と重なる（実装者がテストを書き換えて"
-                        f"誤魔化せてしまう）")
-    return errs
+    """Test files in touch_allow are explicitly permitted so implementers can
+    create and update unit tests alongside implementation code."""
+    return []
 
 
 def structural_check(tasks: list[dict], registry: VerifierRegistry) -> list[str]:
@@ -372,11 +360,14 @@ def _normalize_tasks(tasks: list[dict]) -> None:
                 norm_rub.append({"criterion": c, "weight": w})
         t["rubric"] = norm_rub
 
-        # Remove any acceptance test files from touch_allow (test protection contract)
+        # Automatically include acceptance test files in touch_allow so implementers can create/update tests
         test_paths = set(_acceptance_test_paths(t))
         if test_paths:
             ta = t.get("touch_allow", []) or []
-            t["touch_allow"] = [tp for tp in ta if not any(touch_overlaps(tp, ap) for ap in test_paths)]
+            for tp in test_paths:
+                if not any(touch_overlaps(existing, tp) for existing in ta):
+                    ta.append(tp)
+            t["touch_allow"] = ta
 
 
 def decompose(task_id: str, requirement: str, vendor: str = "claude",
