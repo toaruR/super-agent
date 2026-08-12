@@ -156,7 +156,14 @@ class Ledger:
         with open(tmp, "w", encoding="utf-8") as fh:
             for c in chunks:
                 fh.write(json.dumps(c, ensure_ascii=False, separators=(",", ":")) + "\n")
-        os.replace(tmp, self.path)
+        for attempt in range(10):
+            try:
+                os.replace(tmp, self.path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.1)
 
     def load(self) -> list[dict[str, Any]]:
         """Reconstruct the full chunk stream (crash-safe: drops partial tail)."""

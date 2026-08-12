@@ -273,9 +273,9 @@ def _event_status(ev: dict[str, Any]) -> tuple[str | None, int]:
     if type_ == "judgment":
         verdict = str(ev.get("verdict", ""))
         v_upper = verdict.upper()
-        if v_upper in ("PASS", "REVIEW.PASS", "PASSED"):
+        if v_upper in ("PASS", "REVIEW.PASS", "PASSED", "PASS_WITH_FINDINGS") or v_upper.startswith("PASS"):
             return "passed", STATUS_RANK["passed"]
-        if v_upper in ("FAIL", "REVIEW.FAIL", "FAILED", "JUDGMENT_UNAVAILABLE"):
+        if v_upper in ("FAIL", "REVIEW.FAIL", "FAILED", "JUDGMENT_UNAVAILABLE") or v_upper.startswith("FAIL"):
             return "failed", STATUS_RANK["failed"]
         if verdict:
             return f"judgment:{verdict}", _rank_of(f"judgment:{verdict}")
