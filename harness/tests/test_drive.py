@@ -57,6 +57,46 @@ def test_drive_calls_pipeline_per_task_in_order() -> None:
     int_calls = [c.args[0] for c in m_int.call_args_list]
     assert any("T1" in t for t in int_calls) and any("T2" in t for t in int_calls)
 
+def test_drive_integrates_each_layer_before_next_layer_starts() -> None:
+    """Regression: a downstream task's worktree must be cut from a
+    target_branch that already contains its dependency's integrated code.
+    create_worktree() has no merge step of its own (`git worktree add` off
+    the current target_branch HEAD), so if integrate() for layer N were
+    deferred until every layer finished, layer N+1's worktree would still be
+    based on pre-N code even though N+1 depends on N. (This is what made T3
+    in the --version design fail: `from harness._version import __version__`
+    didn't exist in T3's worktree because T1's integrate hadn't run yet.)"""
+    calls: list[str] = []
+
+    def _impl(tid, *a, **k):
+        calls.append(f"implement:{tid}")
+        return {"ok": True, "commit": "c1"}
+
+    def _cw(tid, *a, **k):
+        calls.append(f"create_worktree:{tid}")
+        return {"ok": True, "path": f"workspaces/{tid}", "branch": f"task/{tid}"}
+
+    def _int(tid, *a, **k):
+        calls.append(f"integrate:{tid}")
+        return {"ok": True, "commit": "c2"}
+
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement", side_effect=_impl), \
+         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+         mock.patch.object(drive, "integrate", side_effect=_int), \
+         mock.patch.object(drive, "create_worktree", side_effect=_cw), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(drive, "parse_tasks_md", return_value=[
+             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},
+             {"task_id": "T2", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": ["T1"]},
+         ]):
+        out = drive.drive("", None, "probe/sample/my-design-tasks.md",
+                          seq=None, dry_run=False)
+
+    assert out["ok"] is True
+    assert calls.index("integrate:T1") < calls.index("create_worktree:T2")
+
+
 def test_drive_resolves_vendors_from_roles_yaml_when_unspecified() -> None:
     """Stage B consolidation (A/B/C): drive must resolve implement/reviewer
     vendors from vendors.yaml `roles:` defaults, not hardcoded fallbacks."""

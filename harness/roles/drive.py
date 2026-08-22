@@ -409,9 +409,53 @@ def drive(
                                "verdict": None, "error": str(ex)}
             return entry
 
-    # Phase A: run task pipelines. Independent tasks (topo layers) run in parallel;
-    # layers themselves run serially so dependencies are satisfied before a task
-    # is implemented. Each task's channels are already parallel inside _run_task.
+    def _integrate_and_record(tid: str) -> None:
+        """Merge tid's winning channel into target_branch and tear down its
+        channel worktrees, right after tid's own pipeline finishes (not
+        deferred to the very end). create_worktree() cuts a task's branch
+        from target_branch's CURRENT HEAD with no merge step of its own, so
+        a dependent task only sees a dependency's code if that dependency was
+        already integrated by the time the dependent's worktree is created —
+        integrating per-task (instead of only after ALL topo layers ran) is
+        what makes that guarantee hold across layers."""
+        entry = results_by_id.get(tid)
+        if entry is None:
+            return
+        task = by_id.get(tid, {})
+        winner = entry.pop("_winner", None)
+        channel_ids = entry.pop("_channel_ids", [tid])
+        if not dry_run and winner is not None:
+            try:
+                integ = integrate(winner["task_id"], task, winner["worktree"],
+                                 target_branch=target_branch, seq=seq, dry_run=dry_run,
+                                 design_file=spec_path or "", all_tasks=tasks)
+                entry["integrate"] = {"ok": integ.get("ok"),
+                                      "commit": integ.get("commit"),
+                                      "winner": winner["vendor"]}
+                if not integ.get("ok"):
+                    entry["integrate"]["error"] = integ.get("error")
+            except Exception as ex:
+                # integrate must never abort the whole drive; record and move on
+                entry["integrate"] = {"ok": False, "winner": winner["vendor"],
+                                      "error": str(ex)}
+                if seq is not None:
+                    seq.propose(winner["task_id"], "integrate.error",
+                                error=str(ex)[:300])
+        else:
+            entry["integrate"] = {"skipped": True,
+                                  "reason": "dry_run" if dry_run else "no passing channel"}
+        # cleanup: remove all channel worktrees/branches for this task
+        if not dry_run:
+            for cid in channel_ids:
+                teardown_worktree(cid, root="workspaces", dry_run=dry_run,
+                                   design_file=spec_path or "")
+        results.append(entry)
+
+    # Phase A+B interleaved per topo layer: implement+review a layer (Phase A,
+    # parallel within the layer), THEN integrate that layer's winners (Phase B,
+    # serialized) before the NEXT layer starts — see _integrate_and_record's
+    # docstring for why deferring every integrate to after all layers finish
+    # would leave dependents implemented against pre-dependency code.
     if parallel_tasks:
         layers = topo_layers(tasks)
         # Use a while-loop (not `for layer in layers`) because the planner may
@@ -456,50 +500,16 @@ def drive(
                     itid = it.get("task_id", "investigate")
                     if itid in by_id and itid not in layer:
                         results_by_id[itid] = _run_task_pipeline(itid)
+                        _integrate_and_record(itid)
             with ThreadPoolExecutor(max_workers=max_task_workers) as ex:
                 for entry in ex.map(_run_task_pipeline, layer):
                     results_by_id[entry["task_id"]] = entry
+            for tid in layer:
+                _integrate_and_record(tid)
     else:
         for tid in order:
             results_by_id[tid] = _run_task_pipeline(tid)
-
-    # Phase B: integrate winners serially (git checkout/merge on the shared repo
-    # root must not run concurrently). Ordered by topo_order so a child is merged
-    # after its parents. Then tear down every channel worktree so loser channels
-    # don't linger.
-    for tid in order:
-        entry = results_by_id.get(tid)
-        if entry is None:
-            continue
-        task = by_id.get(tid, {})
-        winner = entry.pop("_winner", None)
-        channel_ids = entry.pop("_channel_ids", [tid])
-        if not dry_run and winner is not None:
-            try:
-                integ = integrate(winner["task_id"], task, winner["worktree"],
-                                 target_branch=target_branch, seq=seq, dry_run=dry_run,
-                                 design_file=spec_path or "", all_tasks=tasks)
-                entry["integrate"] = {"ok": integ.get("ok"),
-                                      "commit": integ.get("commit"),
-                                      "winner": winner["vendor"]}
-                if not integ.get("ok"):
-                    entry["integrate"]["error"] = integ.get("error")
-            except Exception as ex:
-                # integrate must never abort the whole drive; record and move on
-                entry["integrate"] = {"ok": False, "winner": winner["vendor"],
-                                      "error": str(ex)}
-                if seq is not None:
-                    seq.propose(winner["task_id"], "integrate.error",
-                                error=str(ex)[:300])
-        else:
-            entry["integrate"] = {"skipped": True,
-                                  "reason": "dry_run" if dry_run else "no passing channel"}
-        # cleanup: remove all channel worktrees/branches for this task
-        if not dry_run:
-            for cid in channel_ids:
-                teardown_worktree(cid, root="workspaces", dry_run=dry_run,
-                                   design_file=spec_path or "")
-        results.append(entry)
+            _integrate_and_record(tid)
 
     # Restore the caller's branch so drive() doesn't leave the repo on the
     # target branch as a side effect. Also pop any auto-stash we created.
