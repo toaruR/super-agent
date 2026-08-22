@@ -481,3 +481,24 @@ def test_resolve_design_file_arg_infers_from_directory_structure(tmp_path):
     assert resolved == str(design_file)
 
 
+def test_version_flag_outputs_prog_and_version_number(monkeypatch):
+    monkeypatch.chdir(REPO)
+    from harness._version import __version__
+    res = _run("--version")
+    assert res.stdout.strip() == f"super-agent {__version__}"
+
+
+def test_version_flag_exits_zero(monkeypatch):
+    monkeypatch.chdir(REPO)
+    res = _run("--version", expect_rc=0)
+    assert res.returncode == 0
+
+
+def test_version_flag_works_without_subcommand(monkeypatch):
+    """--version must short-circuit before argparse's `required` subparser
+    check, so it works even though no subcommand is given."""
+    monkeypatch.chdir(REPO)
+    res = _run("--version")
+    assert res.stderr == ""
+
+
