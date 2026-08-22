@@ -7,10 +7,10 @@
 # vendorサブプロセスの待ち時間（既定 DEFAULT_TIMEOUT=1800秒）を上書きできる。
 # 例: design: { vendor: claude, model: claude-sonnet-5, effort: high, timeout: 3600 }
 roles:
-  # design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
-  # planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務） 
-  design:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
-  planner:   { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
+  planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務） 
+  # design:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  # planner:   { vendor: agy,    model: gemini-3.6-flash, effort: high }
   # implement はチャンネルリスト（Stage B 並列(b) のマルチチャンネル実装）。
   # 各エントリが1チャンネル = 独立 worktree で並列実行。チャンネル数 = リスト長。
   # model/effort はチャンネルごとに指定可。単一辞書 {vendor,model,effort} も後方互換。
@@ -21,16 +21,22 @@ roles:
   # 勝者を統合）は非デフォルトのモードで、--speculative フラグを付けたときのみ有効。
   # その際はこのリスト全体が fan-out される（agy×2 + hermes×3 = 5チャンネル）。
   implement:
-    - { vendor: hermes, model: hy3:Free,         effort: high }
-    - { vendor: hermes, model: hy3:Free,         effort: high }
-    - { vendor: hermes, model: hy3:Free,         effort: high }
-    - { vendor: hermes, model: hy3:Free,         effort: high }
-    - { vendor: hermes, model: hy3:Free,         effort: high }
+    - { vendor: claude, model: claude-sonnet-5,  effort: high }
+    - { vendor: claude, model: claude-sonnet-5,  effort: high }
+    - { vendor: claude, model: claude-sonnet-5,  effort: high }
+    - { vendor: claude, model: claude-sonnet-5,  effort: high }
+    - { vendor: claude, model: claude-sonnet-5,  effort: high }
+    # - { vendor: hermes, model: hy3:Free,         effort: high }
+    # - { vendor: hermes, model: hy3:Free,         effort: high }
+    # - { vendor: hermes, model: hy3:Free,         effort: high }
+    # - { vendor: hermes, model: hy3:Free,         effort: high }
+    # - { vendor: hermes, model: hy3:Free,         effort: high }
     # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
     # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
   # review:    { vendor: codex,  model: gpt-5.6-luna,    effort: high }   # codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価: $0.20/$1.20 vs gpt-5.5 の $5/$30）
   # review:    { vendor: claude, model: claude-sonnet-5,  effort: high }
-  review:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  # review:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  review:    { vendor: claude, model: claude-sonnet-5,  effort: high }
 
 claude:
   model_flag: "--model"

@@ -114,6 +114,7 @@ class _StubSeq:
     """Minimal seq stand-in: records every propose() call's kwargs."""
     def __init__(self):
         self.calls: list[tuple[str, str, dict]] = []
+        self.path = "docs/design/_stub_ledger.jsonl"
 
     def propose(self, task_id, type_, **fields):
         self.calls.append((task_id, type_, fields))
@@ -136,6 +137,7 @@ def test_decompose_propagates_design_file_to_all_events(monkeypatch):
         }
     }
     monkeypatch.setattr(decomposer, "invoke", lambda *a, **k: fake_result)
+    monkeypatch.setattr(decomposer, "write_progress", lambda *a, **k: None)
 
     seq = _StubSeq()
     out = decomposer.decompose("T-parent", "req", vendor="claude", seq=seq,
@@ -155,6 +157,7 @@ def test_decompose_propagates_design_file_on_rejection(monkeypatch):
 
     fake_result = {"result": {"tasks": [{"task_id": "T1", "goal": "g", "acceptance": []}]}}
     monkeypatch.setattr(decomposer, "invoke", lambda *a, **k: fake_result)
+    monkeypatch.setattr(decomposer, "write_progress", lambda *a, **k: None)
 
     seq = _StubSeq()
     out = decomposer.decompose("T-parent", "req", vendor="claude", seq=seq,

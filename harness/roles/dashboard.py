@@ -15,9 +15,10 @@ Improvements (dashboard-improvement design):
 
 Awareness improvements (dashboard-awareness design):
   * Stale detection: non-terminal tasks (``created`` / ``scheduled`` /
-    ``leased`` / ``implemented``) whose ``updated_at`` is older than a
-    threshold (default 30 minutes) are flagged ``is_stale`` so a stuck task is
-    not shown with the same badge as a healthy in-progress one.
+    ``leased`` / ``implemented`` / ``designing`` / ``planning``) whose
+    ``updated_at`` is older than a threshold (default 30 minutes) are flagged
+    ``is_stale`` so a stuck task is not shown with the same badge as a
+    healthy in-progress one.
   * Failure reason: when a task settles on ``failed``, the reason string of the
     causing event (``error`` → ``reason`` → ``why``) is kept on the model and
     surfaced by both renderers.
@@ -68,10 +69,14 @@ STATUS_RANK = {
     "integrated": 6,
     "passed": 5,
     "implemented": 4,
+    "designed": 4,
+    "planned": 4,
     "failed": 3,
     "reviewing": 2.5,
     "leased": 2,
     "running": 2,
+    "designing": 0.5,
+    "planning": 0.5,
     "scheduled": 1,
     "created": 0,
     "unknown": -1,
@@ -85,7 +90,7 @@ _DONE_STATUSES = ("integrated", "passed")
 # outstanding, so it is a candidate for stale detection. Every other status
 # (integrated / passed / failed / judgment:* / custom) is treated as terminal
 # and is never flagged stale.
-_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "running", "implemented", "reviewing")
+_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "running", "implemented", "reviewing", "designing", "planning")
 
 # Default stale threshold: a non-terminal task untouched for this long (in
 # seconds) is considered stuck. Overridable per call via build_model(...,
@@ -114,8 +119,12 @@ _STATUS_BADGE = {
     "integrated": ("Integrated", "badge-green"),
     "passed": ("Passed", "badge-green"),
     "implemented": ("Implemented", "badge-blue"),
+    "designed": ("Designed", "badge-green"),
+    "planned": ("Planned", "badge-green"),
     "reviewing": ("Reviewing", "badge-purple"),
     "running": ("Running", "badge-blue"),
+    "designing": ("Designing", "badge-purple"),
+    "planning": ("Planning", "badge-purple"),
     "leased": ("Leased", "badge-blue"),
     "scheduled": ("Scheduled", "badge-gray"),
     "created": ("Created", "badge-gray"),
@@ -127,7 +136,7 @@ _STATUS_BADGE = {
 # its status bucket and shown in the dedicated orange one.
 _BAR_BUCKETS = (
     ("Completed", "bar-green", ("integrated", "passed")),
-    ("In Progress", "bar-blue", ("implemented", "leased", "running", "reviewing")),
+    ("In Progress", "bar-blue", ("implemented", "leased", "running", "reviewing", "designing", "planning")),
     ("Stale", "bar-orange", ()),
     ("Failed", "bar-red", ("failed",)),
     ("Pending", "bar-gray", ("scheduled", "created")),
@@ -238,10 +247,10 @@ def _is_stale(
 ) -> bool:
     """Return True when a non-terminal task has been untouched for too long.
 
-    Only ``created`` / ``scheduled`` / ``leased`` / ``implemented`` qualify;
-    terminal statuses (``integrated`` / ``passed`` / ``failed`` / custom) are
-    never stale. Tasks without a usable ``updated_at`` are not stale either —
-    we cannot prove they are stuck.
+    Only ``created`` / ``scheduled`` / ``leased`` / ``implemented`` /
+    ``designing`` / ``planning`` qualify; terminal statuses (``integrated`` /
+    ``passed`` / ``failed`` / custom) are never stale. Tasks without a usable
+    ``updated_at`` are not stale either — we cannot prove they are stuck.
     """
     if status not in _NON_TERMINAL_STATUSES:
         return False
@@ -415,10 +424,10 @@ def build_model(
     Finally each logical task is annotated with:
 
     * ``is_stale``: True when the task sits in a non-terminal status
-      (``created`` / ``scheduled`` / ``leased`` / ``implemented``) and its
-      ``updated_at`` is older than ``stale_after`` seconds relative to ``now``.
-      Terminal statuses (``integrated`` / ``passed`` / ``failed`` / custom) are
-      never stale.
+      (``created`` / ``scheduled`` / ``leased`` / ``implemented`` /
+      ``designing`` / ``planning``) and its ``updated_at`` is older than
+      ``stale_after`` seconds relative to ``now``. Terminal statuses
+      (``integrated`` / ``passed`` / ``failed`` / custom) are never stale.
     * ``reason``: for tasks that settled on ``failed``, the reason string of the
       causing event (``error`` → ``reason`` → ``why``, first match wins). Left
       as ``""`` when unavailable or when the task did not fail — never padded
@@ -511,10 +520,13 @@ def build_model(
                 if _logical_parent(p_key) == parent_id:
                     p_status = p_val.get("status")
                     lat = p_val.get("last_activity_ts")
-                    if p_status in ("running", "thinking", "implementing", "reviewing"):
+                    if p_status in ("running", "thinking", "implementing", "reviewing", "designing", "planning"):
                         cur_ts = float(entry["updated_at"] or 0)
                         if lat and (not cur_ts or lat >= cur_ts):
-                            entry["status"] = "reviewing" if p_status == "reviewing" else "running"
+                            if p_status in ("reviewing", "designing", "planning"):
+                                entry["status"] = p_status
+                            else:
+                                entry["status"] = "running"
                             entry["reason"] = ""
                             break
 

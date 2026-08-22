@@ -16,9 +16,10 @@ All ledger events flow through the shared Sequencer (single writer, thread-safe)
 from __future__ import annotations
 
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from harness.core.ledger import Sequencer
 from harness.roles.decomposer import (
@@ -40,7 +41,7 @@ from harness.roles.implementer import implement
 from harness.roles.review_flow import run_pipeline
 from harness.roles.integrator import integrate
 from harness.core.verifiers import VerifierRegistry
-from harness.core.invoke import resolve_role, resolve_role_channels
+from harness.core.invoke import resolve_role, resolve_role_channels, slugify
 
 def _resolve_acceptance(task: dict, tasks_text: str | None = None) -> list[dict]:
     acc = task.get("acceptance") or []
@@ -75,6 +76,7 @@ def drive(
     implement_effort: str | None = None,
     implement_timeout: int | None = None,
     task_file: str | None = None,
+    on_status_change: Callable[[], None] | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
 
@@ -132,15 +134,27 @@ def drive(
 
     # Register the task root (design_file + task_file) up front so that every
     # downstream role can recover task_file from the ledger via resolve_task_file.
+    # Named/status like cmd_plan's own decompose task (plan-<slug>-<hex>,
+    # status="planning") so drive's plan phase is visible on the dashboard
+    # too, not just a generic "T-<hex>"/"created" row.
     if seq is not None:
-        tid = f"T-{uuid_short()}"
+        tid = f"plan-{slugify(requirement or 'drive')}-{uuid.uuid4().hex[:6]}"
         seq.propose(tid, "task.created", goal=requirement, role="decomposer",
                     design_file=spec_path or "",
-                    task_file=task_file or str(tasks_file.resolve()))
+                    task_file=task_file or str(tasks_file.resolve()),
+                    status="planning")
+        if on_status_change is not None:
+            on_status_change()
 
     if tasks_file.exists():
         tasks = parse_tasks_md(str(tasks_file))
         reused = True
+        if seq is not None:
+            seq.propose(tid, "decompose.ok", n_tasks=len(tasks), source="tasks.md",
+                        status="planned", design_file=spec_path or "",
+                        task_file=task_file or str(tasks_file.resolve()))
+            if on_status_change is not None:
+                on_status_change()
     else:
         design_role = resolve_role("design", config_dir)
         out = decomposer_decompose(
@@ -150,6 +164,8 @@ def drive(
             seq=seq, design_file=spec_path or "", timeout=design_role["timeout"],
         )
         if not out.get("ok"):
+            if on_status_change is not None:
+                on_status_change()
             return {"ok": False, "error": "decompose failed", "detail": out}
         tasks = out.get("tasks", [])
         schedule(tid if seq is not None else "T-drive", tasks, root="workspaces",
@@ -157,6 +173,8 @@ def drive(
                  design_file=spec_path or "")
         render_tasks_md_safe(tasks, requirement, tasks_file)
         reused = False
+        if on_status_change is not None:
+            on_status_change()
 
     errs = structural_check(tasks, registry)
     if errs:

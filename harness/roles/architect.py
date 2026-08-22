@@ -90,10 +90,10 @@ def _invoke_design(decl, prompt: str, *, vendor: str, model: str | None, effort:
 
         def progress_cb(detail: str) -> None:
             write_progress(task_id, ledger_path, vendor=vendor,
-                           status="running", detail=detail)
+                           status="designing", detail=detail)
 
         write_progress(task_id, ledger_path, vendor=vendor,
-                       status="running", detail="starting architect proposal")
+                       status="designing", detail="starting architect proposal")
 
     try:
         res = invoke(decl, prompt, schema=ADR_SCHEMA, model=model, effort=effort,
@@ -196,4 +196,10 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
     for d in adr.get("decisions", []):
         emit(task_id, "adr.written", topic=d.get("topic", ""),
               decision=d.get("decision", ""), rationale=d.get("rationale", ""))
+
+    # design is complete (as opposed to the transient "designing" status set
+    # at task.created time) — a terminal event so the dashboard doesn't show
+    # the design task as perpetually in-progress.
+    emit(task_id, "architect.done", status="designed",
+          n_decisions=len(adr.get("decisions", [])))
     return adr

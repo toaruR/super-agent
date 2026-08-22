@@ -161,7 +161,7 @@ Super Agent は、`super-agent` 自身以外の**任意の Git リポジトリ**
 | コマンド | 役割 | § |
 |---|---|---|
 | `architect "<要求>"` | 設計決定を ADR として台帳に記録（Stage 1＝①） | 2.1 |
-| `drive --task_file <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.2 |
+| `drive --design_file <md>` | DAG 全タスクを implement→review→integrate 一括駆動（Stage B） | 2.2 |
 | `plan "<要求>"` | 分解(②)→編成・worktree・リース(③)。`--task_file` 既存なら分解をスキップ | 2.3 |
 | `implement --task T1` | タスクを worktree 内で実装しコミット（Stage 4＝④） | 2.4 |
 | `review-task --task T1` | 実装済みタスクを読み取り専用でレビュー（Stage 5＝⑤⑥⑦） | 2.5 |
@@ -222,8 +222,8 @@ super-agent architect "Web API を作れ" --dry-run
 
 `plan` → `implement` → `review` → `integrate` を、**DAG 内の全タスクに対して**実行します。各タスクの worktree は自動で作成（または既存を再利用）されます。
 
-- `--task_file <md>`: 分解済みタスク DAG。`--task_file` が存在しない場合は `--design_file` から分解→worktree 作成→`<md>` に書き出します。
-- `--design_file <md>`: 設計ファイル（`--task_file` が無い時に使用）。
+- `--design_file <md>`: 設計ファイル。`--task_file` が無い時に使用され、分解→worktree 作成→`<md>` に書き出します。
+- `--task_file <md>`: 分解済みタスク DAG。既存なら `--design_file` からの分解をスキップして再利用します。
 - `--target <branch>`: 統合先ブランチ（既定は `--design_file` から導出する `design/<stem>-<crc32>`。設計ファイル未設定時のみ `main` にフォールバック。存在しないブランチは自動作成される）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
 - `--model` / `--effort`: **implement チャンネル全てのモデル / effort を一括上書き**（既定は `vendors.yaml` の `roles.implement` 各チャンネル値）。短名（例: `hy3:Free`）も可 — コード側 `normalize_model()` が実名（例: `tencent/hy3:free`）に自動正規化される。review ベンダーは影響しない。
@@ -239,7 +239,10 @@ super-agent architect "Web API を作れ" --dry-run
 **投機的マルチチャンネル（Stage B 並列(b)、opt-in）**: `--speculative`（または `--implement-vendors` で複数チャンネル指定）時のみ有効。`roles.implement` はチャンネル**リスト**で宣言され、各エントリが1チャンネル＝独立 worktree で並列実装、model/effort はチャンネルごとに指定可。review を通した**最初のチャンネルだけ**を統合し、他は破棄。これにより agy×2 + hermes×3 のような異ベンダー混載も同時実行できる。
 
 ```bash
-# デフォルト: 各タスクを単一チャンネルで実装、独立タスクは自動並行
+# 通常運用：設計から一気に分解→worktree作成→実装→レビュー→統合
+super-agent drive --design_file my-design.md
+
+# デフォルト: 分解済みタスクファイルを直接指定（各タスクを単一チャンネルで実装、独立タスクは自動並行）
 super-agent drive --task_file ./probe/sample/my-design-tasks.md
 
 # 投機的モード: 各タスクを roles.implement の全5チャンネルで競わせ、勝者を統合

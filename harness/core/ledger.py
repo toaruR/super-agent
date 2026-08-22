@@ -240,6 +240,7 @@ class Sequencer:
             task_file = item["task_file"]
             for ev in item["events"]:
                 self._ledger.append_event(design_file, task_file, ev)
+            self._queue.task_done()
 
     def propose_chunk(self, design_file: str, task_file: str,
                       events: list[dict[str, Any]]) -> None:
@@ -285,6 +286,26 @@ class Sequencer:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
+
+    def flush(self, timeout: float = 2.0) -> None:
+        """Block until every currently-queued event has been written to disk.
+
+        propose()/propose_chunk() only enqueue; the actual append happens on
+        the background thread. ``Queue.empty()`` alone is not a safe signal
+        here: ``_run()`` pulls an item off the queue (making it "empty")
+        *before* writing it to disk, so a caller polling ``empty()`` can
+        observe an empty queue while the write is still in flight. ``_run()``
+        instead calls ``task_done()`` only after the disk write completes, so
+        we poll ``unfinished_tasks`` (the count Queue.join() itself waits on)
+        to get an accurate "fully written" signal.
+
+        Callers that queue a status event and then immediately need to read
+        it back (e.g. cli.py refreshing dashboard.html right after emitting
+        "designing") must flush first or they can read stale data.
+        """
+        deadline = time.time() + timeout
+        while self._queue.unfinished_tasks and time.time() < deadline:
+            time.sleep(0.01)
 
     def load(self) -> list[dict[str, Any]]:
         """Read the full chunk stream (delegates to the underlying Ledger)."""

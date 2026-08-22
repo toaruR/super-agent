@@ -214,16 +214,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
         config_dir = Path(__file__).resolve().parent / "config"
         registry = VerifierRegistry(config_dir / "verifiers.yaml")
         errs = structural_check(tasks, registry)
-        task_id = f"T-{uuid.uuid4().hex[:8]}"
+        task_id = f"plan-{slugify(requirement or 'plan')}-{uuid.uuid4().hex[:6]}"
         if errs:
-            seq.propose(task_id, "decompose.rejected", errors=errs,
+            seq.propose(task_id, "decompose.rejected", errors=errs, status="failed",
                         design_file=args.design_file, task_file=str(tasks_file.resolve()))
             seq.stop()
+            auto_update_dashboard()
             print(json.dumps({"ok": False, "errors": errs, "tasks": tasks},
                              ensure_ascii=False, indent=2))
             return 0
         out = {"ok": True, "tasks": tasks, "reused_tasks_file": True}
         seq.propose(task_id, "decompose.ok", n_tasks=len(tasks), source="tasks.md",
+                    status="planned",
                     design_file=args.design_file, task_file=str(tasks_file.resolve()))
     else:
         # decompose via vendor (creates the task DAG)
@@ -232,9 +234,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
                              ensure_ascii=False, indent=2))
             seq.stop()
             return 1
-        task_id = f"T-{uuid.uuid4().hex[:8]}"
+        task_id = f"plan-{slugify(requirement or 'plan')}-{uuid.uuid4().hex[:6]}"
         seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
-                    design_file=args.design_file, task_file=str(tasks_file.resolve()))
+                    design_file=args.design_file, task_file=str(tasks_file.resolve()),
+                    status="planning")
+        auto_update_dashboard(seq=seq)
         design_role = resolve_role("design", CONFIG_DIR, explicit_vendor=args.vendor,
                                    explicit_model=getattr(args, "model", None),
                                    explicit_effort=getattr(args, "effort", None),
@@ -250,6 +254,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         )
         if not out.get("ok"):
             seq.stop()
+            auto_update_dashboard()
             print(json.dumps(out, ensure_ascii=False, indent=2))
             return 0
 
@@ -260,6 +265,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         dry_run=args.dry_run, seq=seq, design_file=args.design_file,
     )
     seq.stop()
+    auto_update_dashboard()
 
     if args.task_file and not args.dry_run and out.get("ok") and not out.get("reused_tasks_file"):
         tasks_out = Path(args.task_file)
@@ -321,8 +327,10 @@ def cmd_architect(args: argparse.Namespace) -> int:
         args.design_file = str(unique_path(PATH_DEFAULTS["design_dir"], slugify(requirement)))
     seq = ensure_ledger()
     seq.start()
-    task_id = f"T-{uuid.uuid4().hex[:8]}"
-    seq.propose(task_id, "task.created", goal=requirement, role="architect", design_file=args.design_file)
+    task_id = f"design-{slugify(requirement)}-{uuid.uuid4().hex[:6]}"
+    seq.propose(task_id, "task.created", goal=requirement, role="architect",
+               design_file=args.design_file, status="designing")
+    auto_update_dashboard(seq=seq)
     r = resolve_role("design", CONFIG_DIR,
                      explicit_vendor=args.vendor,
                      explicit_model=getattr(args, "model", None),
@@ -340,6 +348,7 @@ def cmd_architect(args: argparse.Namespace) -> int:
         timeout=r["timeout"],
     )
     seq.stop()
+    auto_update_dashboard()
     print(json.dumps(adr, ensure_ascii=False, indent=2))
     return 0
 
@@ -520,8 +529,10 @@ def cmd_drive(args: argparse.Namespace) -> int:
         implement_effort=args.effort,
         implement_timeout=args.timeout,
         task_file=str(Path(args.task_file).resolve()),
+        on_status_change=lambda: auto_update_dashboard(seq=seq),
     )
     seq.stop()
+    auto_update_dashboard()
     print(json.dumps(out, ensure_ascii=False, indent=2))
     if not out.get("ok"):
         return 1
@@ -772,10 +783,22 @@ def _render_dashboard_once(fmt: str, out_path: str | None,
             sys.stdout.write(html_content)
 
 
-def auto_update_dashboard(refresh_interval: int = 5) -> None:
+def auto_update_dashboard(refresh_interval: int = 5, seq: Sequencer | None = None) -> None:
     """Auto-refresh dashboard.html/dashboard.md files in the cwd or docs/ if present,
-    embedding an auto-refresh meta tag into HTML so browser tabs auto-reload."""
+    embedding an auto-refresh meta tag into HTML so browser tabs auto-reload.
+
+    Every stage command (architect/plan/drive/implement/review) calls this
+    right after emitting a status event, so it is the one place that keeps
+    "propose a status -> make it visible on the dashboard" consistent. Pass
+    ``seq`` when the caller just proposed an event: Sequencer.propose() only
+    enqueues, the actual disk write happens on its background thread, so a
+    render here would otherwise race and reflect stale (pre-event) data.
+    ``seq`` can be omitted when there is nothing new to flush (e.g. right
+    after ``seq.stop()``, which already blocks until its queue is drained).
+    """
     try:
+        if seq is not None:
+            seq.flush()
         # Always auto-generate/update dashboard.html in cwd
         _render_dashboard_once("both", ".", refresh_interval=refresh_interval)
     except Exception:

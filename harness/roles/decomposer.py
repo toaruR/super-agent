@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 
 from harness.core.invoke import invoke, load_vendors
+from harness.core.progress import write_progress
 from harness.core.verifiers import VerifierRegistry
 
 DECOMPOSE_SCHEMA = {
@@ -416,16 +417,36 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
     decls = load_vendors(config_dir)
     decl = decls.get(vendor, decls["claude"])
     prompt = DECOMPOSE_PROMPT.format(requirement=requirement, existing=existing_design, verbs=verbs)
+
+    progress_cb = None
+    if seq is not None:
+        ledger_path = seq.path
+
+        def progress_cb(detail: str) -> None:
+            write_progress(task_id, ledger_path, vendor=vendor,
+                           status="planning", detail=detail)
+
+        write_progress(task_id, ledger_path, vendor=vendor,
+                       status="planning", detail="starting task decomposition")
+
     try:
-        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort, role="design", dry_run=False, **invoke_kwargs)
+        res = invoke(decl, prompt, schema=DECOMPOSE_SCHEMA, model=model, effort=effort,
+                     role="design", dry_run=False, progress_cb=progress_cb, **invoke_kwargs)
     except FileNotFoundError as e:
         err = str(e)
-        emit(task_id, "decompose.error", error=err)
+        emit(task_id, "decompose.error", error=err, status="failed")
+        if seq is not None:
+            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
         return {"ok": False, "error": err}
     except subprocess.TimeoutExpired as e:
         err = f"vendor subprocess timed out after {e.timeout}s"
-        emit(task_id, "decompose.error", error=err)
+        emit(task_id, "decompose.error", error=err, status="failed")
+        if seq is not None:
+            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
         return {"ok": False, "error": err}
+
+    if seq is not None:
+        write_progress(task_id, seq.path, vendor=vendor, status="done", detail="")
 
     parsed = res.get("result") or {}
     if isinstance(parsed, str):
@@ -440,7 +461,7 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
 
     errs = structural_check(tasks, registry)
     if errs:
-        emit(task_id, "decompose.rejected", errors=errs)
+        emit(task_id, "decompose.rejected", errors=errs, status="failed")
         return {"ok": False, "errors": errs, "tasks": tasks}
 
     if draft_p and draft_p.exists():
@@ -449,7 +470,7 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
         except OSError:
             pass
 
-    emit(task_id, "decompose.ok", n_tasks=len(tasks))
+    emit(task_id, "decompose.ok", n_tasks=len(tasks), status="planned")
     for t in tasks:
         emit(t["task_id"], "task.created",
              goal=t.get("goal", ""),
