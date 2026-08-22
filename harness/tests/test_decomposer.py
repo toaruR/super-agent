@@ -316,3 +316,39 @@ def test_decomposer_draft_saved_and_resumed(tmp_path, monkeypatch):
     assert "前回の試行で途中まで作成されたタスク分解ドラフト" in prompts_captured[-1]
     assert "途中の思考ログ: タスク分解案" in prompts_captured[-1]
 
+
+def test_decomposer_debug_log_kept_on_zero_tasks_then_removed_on_success(tmp_path, monkeypatch):
+    """decompose がベンダー呼び出し自体は成功したのにタスク0件で構造チェックに落ちた場合、
+    ベンダーの生 stdout/stderr を書いた vendor-debug.json が残り、戻り値の debug_log で
+    参照できること。次の成功実行でそのファイルが削除されることを確認する。"""
+    import harness.roles.decomposer as decomp_mod
+
+    task_file = tmp_path / "tasks.md"
+    debug_log_path = tmp_path / "tasks.md.vendor-debug.json"
+
+    def fake_invoke_empty(decl, prompt, **kw):
+        dlp = kw.get("debug_log_path")
+        if dlp:
+            from harness.core.invoke import write_vendor_debug_log
+            write_vendor_debug_log(dlp, cmd=[decl.name], returncode=0,
+                                   stdout="", stderr="unexpected empty response")
+        return {"cmd": [decl.name], "returncode": 0, "result": {"tasks": []}}
+
+    monkeypatch.setattr(decomp_mod, "invoke", fake_invoke_empty)
+    res1 = decomp_mod.decompose("T1", "要件", "claude", task_file=str(task_file))
+    assert res1.get("ok") is False
+    assert "タスクが0件" in res1["errors"]
+    assert res1["debug_log"] == str(debug_log_path)
+    assert debug_log_path.exists()
+    assert "unexpected empty response" in debug_log_path.read_text(encoding="utf-8")
+
+    def fake_invoke_pass(decl, prompt, **kw):
+        return {"cmd": [decl.name], "returncode": 0,
+                "result": {"tasks": [{"task_id": "T1", "goal": "goal1",
+                                       "acceptance": [{"verb": "pytest", "args": ["tests/"]}]}]}}
+
+    monkeypatch.setattr(decomp_mod, "invoke", fake_invoke_pass)
+    res2 = decomp_mod.decompose("T2", "要件", "claude", task_file=str(task_file))
+    assert res2.get("ok") is True
+    assert not debug_log_path.exists()
+

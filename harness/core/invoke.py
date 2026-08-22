@@ -742,6 +742,29 @@ def atomic_write_draft(draft_path: str | Path | None, content: str) -> None:
         pass  # best-effort; atomic flush failure should not crash execution
 
 
+def write_vendor_debug_log(log_path: str | Path | None, **fields: Any) -> None:
+    """Best-effort JSON dump of one vendor subprocess attempt's raw cmd/stdout/stderr
+    (post-mortem material for "vendor answered with something invoke() couldn't use",
+    e.g. decompose ending up with 0 tasks despite no exception).
+
+    Same lifecycle as `atomic_write_draft`'s draft file: `invoke()` overwrites this on
+    every attempt when `debug_log_path` is given; it is the CALLER's job to delete it
+    once the call is deemed a real success (see decomposer.decompose()'s draft_p
+    cleanup for the pattern)."""
+    if not log_path:
+        return
+    p = Path(log_path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"ts": time.time(), **fields}
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                       encoding="utf-8", errors="replace")
+        os.replace(tmp, p)
+    except OSError:
+        pass  # best-effort; logging failure should not crash execution
+
+
 def _run_streaming(
     cmd: list[str],
     *,
@@ -1031,6 +1054,7 @@ def invoke(
     progress_cb: Callable[[str], None] | None = None,
     max_retries: int = 3,
     draft_path: str | Path | None = None,
+    debug_log_path: str | Path | None = None,
 ) -> dict[str, Any]:
     cmd = build_command(decl, prompt, schema=schema, session_id=session_id,
                         worktree=worktree, model=model, effort=effort, role=role)
@@ -1056,18 +1080,28 @@ def invoke(
                 decl, prompt, schema=schema, session_id=resume_sid,
                 worktree=worktree, model=model, effort=effort, role=role,
             )
-        if decl.name == "hermes":
-            run = _run_hermes(
-                run_cmd, cwd=cwd, timeout=timeout,
-                idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
-                draft_path=draft_path,
-            )
-        else:
-            run = _run_streaming(
-                run_cmd, cwd=cwd, stdin_input=stdin_input, timeout=timeout,
-                idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
-                vendor_name=decl.name, draft_path=draft_path,
-            )
+        try:
+            if decl.name == "hermes":
+                run = _run_hermes(
+                    run_cmd, cwd=cwd, timeout=timeout,
+                    idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
+                    draft_path=draft_path,
+                )
+            else:
+                run = _run_streaming(
+                    run_cmd, cwd=cwd, stdin_input=stdin_input, timeout=timeout,
+                    idle_timeout=effective_idle_timeout, progress_cb=progress_cb,
+                    vendor_name=decl.name, draft_path=draft_path,
+                )
+        except FileNotFoundError as e:
+            write_vendor_debug_log(debug_log_path, cmd=run_cmd, attempt=attempt,
+                                   error=f"FileNotFoundError: {e}")
+            raise
+        write_vendor_debug_log(
+            debug_log_path, cmd=run_cmd, attempt=attempt,
+            returncode=run["returncode"], stdout=run["stdout"], stderr=run["stderr"],
+            timed_out=run["timed_out"], stall_reason=run["stall_reason"],
+        )
         if run["timed_out"]:
             effective_timeout = (
                 effective_idle_timeout if run["stall_reason"] == "idle" else timeout
