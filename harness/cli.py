@@ -37,6 +37,7 @@ from harness.roles.integrator import integrate
 from harness.roles.drive import drive
 from harness.roles.improver import mine as improver_mine, report as improver_report
 from harness.core.verifiers import VerifierRegistry
+from harness._version import __version__
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 # design.md / tasks.md のデフォルト出力先（harness/config/paths.yaml）。
@@ -840,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
     p = argparse.ArgumentParser(prog="super-agent")
+    p.add_argument("--version", action="version",
+                   version=f"{p.prog} {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("architect", help="record design decisions as ADRs (Stage 1)")
