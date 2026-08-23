@@ -57,46 +57,6 @@ def test_drive_calls_pipeline_per_task_in_order() -> None:
     int_calls = [c.args[0] for c in m_int.call_args_list]
     assert any("T1" in t for t in int_calls) and any("T2" in t for t in int_calls)
 
-def test_drive_integrates_each_layer_before_next_layer_starts() -> None:
-    """Regression: a downstream task's worktree must be cut from a
-    target_branch that already contains its dependency's integrated code.
-    create_worktree() has no merge step of its own (`git worktree add` off
-    the current target_branch HEAD), so if integrate() for layer N were
-    deferred until every layer finished, layer N+1's worktree would still be
-    based on pre-N code even though N+1 depends on N. (This is what made T3
-    in the --version design fail: `from harness._version import __version__`
-    didn't exist in T3's worktree because T1's integrate hadn't run yet.)"""
-    calls: list[str] = []
-
-    def _impl(tid, *a, **k):
-        calls.append(f"implement:{tid}")
-        return {"ok": True, "commit": "c1"}
-
-    def _cw(tid, *a, **k):
-        calls.append(f"create_worktree:{tid}")
-        return {"ok": True, "path": f"workspaces/{tid}", "branch": f"task/{tid}"}
-
-    def _int(tid, *a, **k):
-        calls.append(f"integrate:{tid}")
-        return {"ok": True, "commit": "c2"}
-
-    with mock.patch.object(drive, "structural_check", return_value=[]), \
-         mock.patch.object(drive, "implement", side_effect=_impl), \
-         mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
-         mock.patch.object(drive, "integrate", side_effect=_int), \
-         mock.patch.object(drive, "create_worktree", side_effect=_cw), \
-         mock.patch.object(drive, "schedule"), \
-         mock.patch.object(drive, "parse_tasks_md", return_value=[
-             {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": []},
-             {"task_id": "T2", "goal": "g", "acceptance": [], "touch_allow": [], "depends_on": ["T1"]},
-         ]):
-        out = drive.drive("", None, "probe/sample/my-design-tasks.md",
-                          seq=None, dry_run=False)
-
-    assert out["ok"] is True
-    assert calls.index("integrate:T1") < calls.index("create_worktree:T2")
-
-
 def test_drive_resolves_vendors_from_roles_yaml_when_unspecified() -> None:
     """Stage B consolidation (A/B/C): drive must resolve implement/reviewer
     vendors from vendors.yaml `roles:` defaults, not hardcoded fallbacks."""
@@ -314,6 +274,135 @@ def test_drive_adaptive_calls_planner_replan() -> None:
         drive.drive("", None, "probe/sample/my-design-tasks.md",
                     seq=m_seq, dry_run=False, adaptive=True)
     assert m_planner.replan.called, "planner.replan must be called in adaptive mode"
+
+
+def test_drive_integrates_each_layer_before_next_layer_starts() -> None:
+    """Regression: integrate() for a topo layer's tasks must run BEFORE the
+    next layer's implement() calls start, so a downstream task (T2 depends_on
+    T1) is implemented against a worktree that already contains T1's merged
+    output (previously integrate ran once, after ALL layers, so T2 could be
+    implemented/reviewed before T1 was ever merged into target_branch)."""
+    calls: list[str] = []
+
+    def _impl(tid, *a, **k):
+        calls.append(f"implement:{tid}")
+        return {"ok": True, "commit": "c1"}
+
+    def _rev(tid, *a, **k):
+        calls.append(f"review:{tid}")
+        return {"verdict": "pass"}
+
+    def _integ(tid, *a, **k):
+        calls.append(f"integrate:{tid}")
+        return {"ok": True, "commit": "cInt"}
+
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement", side_effect=_impl), \
+         mock.patch.object(drive, "run_pipeline", side_effect=_rev), \
+         mock.patch.object(drive, "integrate", side_effect=_integ), \
+         mock.patch.object(drive, "create_worktree",
+                          return_value={"ok": True, "path": "workspaces/T"}), \
+         mock.patch.object(drive, "schedule"):
+        out = drive.drive("", None, SAMPLE_TASKS, seq=None, dry_run=False)
+
+    assert out["ok"] is True
+    assert calls.index("integrate:T1") < calls.index("implement:T2"), calls
+
+
+def _write_integrated_chunk(ledger_path, tasks_path: str, task_id: str, commit: str) -> None:
+    from pathlib import Path as _Path
+    from harness.core.ledger import Ledger
+    task_file = str(_Path(tasks_path).resolve())
+    Ledger(str(ledger_path)).append_chunk("", task_file, [
+        {"event_id": f"{task_id}:0", "type": "integrated", "commit": commit,
+         "branch": f"task/{task_id}", "target": "main"},
+    ])
+
+
+def test_drive_resume_skips_already_integrated_task(tmp_path) -> None:
+    """Resume (default, resume=True): a task with a confirmed `integrated`
+    ledger event whose commit is still an ancestor of target_branch must be
+    skipped (not re-implemented/reviewed/integrated) on a re-run; a sibling
+    task with no such event must still run normally."""
+    import subprocess as _sp
+    from harness.core.ledger import Sequencer
+
+    tasks_md = "probe/sample/my-design-tasks-parallel.md"  # PA, PB (independent)
+    ledger_path = tmp_path / "events.jsonl"
+    _write_integrated_chunk(ledger_path, tasks_md, "PA", "deadbeef")
+    seq = Sequencer(str(ledger_path))
+    real_run = _sp.run
+
+    def fake_run(cmd, *a, **k):
+        if cmd[:2] == ["git", "merge-base"]:
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+        return real_run(cmd, *a, **k)
+
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement") as m_impl, \
+         mock.patch.object(drive, "run_pipeline") as m_rev, \
+         mock.patch.object(drive, "integrate") as m_int, \
+         mock.patch.object(drive, "create_worktree",
+                          return_value={"ok": True, "path": "workspaces/PB"}), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(_sp, "run", side_effect=fake_run):
+        m_impl.return_value = {"ok": True, "commit": "c1"}
+        m_rev.return_value = {"verdict": "pass"}
+        m_int.return_value = {"ok": True, "commit": "cInt"}
+
+        out = drive.drive("", None, tasks_md, seq=seq, dry_run=False, adaptive=False)
+
+    assert out["ok"] is True
+    pa = next(t for t in out["tasks"] if t["task_id"] == "PA")
+    pb = next(t for t in out["tasks"] if t["task_id"] == "PB")
+    assert pa["integrate"]["skipped"] is True
+    assert pa["integrate"]["commit"] == "deadbeef"
+    assert pb["integrate"]["ok"] is True
+    # only PB (no prior integrated event) actually ran the pipeline
+    assert m_impl.call_count == 1
+    assert m_impl.call_args.args[0] == "PB"
+    m_int.assert_called_once()
+
+
+def test_drive_resume_false_forces_full_rerun(tmp_path) -> None:
+    """--no-resume (resume=False) must ignore prior `integrated` ledger state
+    and re-run every task, matching pre-resume-feature behavior."""
+    import subprocess as _sp
+    from harness.core.ledger import Sequencer
+
+    tasks_md = SAMPLE_TASKS  # T1, T2
+    ledger_path = tmp_path / "events.jsonl"
+    _write_integrated_chunk(ledger_path, tasks_md, "T1", "deadbeef")
+    seq = Sequencer(str(ledger_path))
+    real_run = _sp.run
+
+    def fake_run(cmd, *a, **k):
+        if cmd[:2] == ["git", "merge-base"]:
+            raise AssertionError("merge-base must not be called when resume=False")
+        return real_run(cmd, *a, **k)
+
+    with mock.patch.object(drive, "structural_check", return_value=[]), \
+         mock.patch.object(drive, "implement") as m_impl, \
+         mock.patch.object(drive, "run_pipeline") as m_rev, \
+         mock.patch.object(drive, "integrate") as m_int, \
+         mock.patch.object(drive, "create_worktree",
+                          return_value={"ok": True, "path": "workspaces/T"}), \
+         mock.patch.object(drive, "schedule"), \
+         mock.patch.object(_sp, "run", side_effect=fake_run):
+        m_impl.return_value = {"ok": True, "commit": "c1"}
+        m_rev.return_value = {"verdict": "pass"}
+        m_int.return_value = {"ok": True, "commit": "cInt"}
+
+        out = drive.drive("", None, tasks_md, seq=seq, dry_run=False,
+                          adaptive=False, resume=False)
+
+    assert out["ok"] is True
+    assert m_impl.call_count == 2  # both T1 and T2 re-implemented
+    assert m_int.call_count == 2
 
 
 def test_drive_checks_out_target_branch_before_integrate() -> None:

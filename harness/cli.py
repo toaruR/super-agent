@@ -529,6 +529,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         implement_effort=args.effort,
         implement_timeout=args.timeout,
         task_file=str(Path(args.task_file).resolve()),
+        resume=getattr(args, "resume", True),
         on_status_change=lambda: auto_update_dashboard(seq=seq),
     )
     seq.stop()
@@ -1002,6 +1003,16 @@ def main(argv: list[str] | None = None) -> int:
                          "On by default. Use --no-adaptive to stick to the static DAG.")
     dr.add_argument("--no-adaptive", dest="adaptive", action="store_false",
                     help="disable adaptive re-planning (use the initial static DAG).")
+    dr.add_argument("--resume", action="store_true", default=True,
+                    help="skip tasks that already have a confirmed `integrated` "
+                         "ledger event for this --design_file/--task_file (commit "
+                         "still an ancestor of --target). On by default so "
+                         "re-running drive after a partial failure doesn't "
+                         "re-implement already-integrated tasks. Non-speculative "
+                         "mode only.")
+    dr.add_argument("--no-resume", dest="resume", action="store_false",
+                    help="force a full re-run of every task, ignoring prior "
+                         "integrated state (previous default behavior).")
     dr.add_argument("--max-task-workers", type=int, default=4,
                     help="max concurrent tasks (used when tasks are independent)")
     dr.add_argument("--dry-run", action="store_true",
