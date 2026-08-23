@@ -76,6 +76,7 @@ def drive(
     implement_effort: str | None = None,
     implement_timeout: int | None = None,
     task_file: str | None = None,
+    resume: bool = True,
     on_status_change: Callable[[], None] | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
@@ -98,6 +99,16 @@ def drive(
     fans out), merge over-split tasks that share a file (can't be parallel
     worktrees), or re-order so interface-defining tasks run before consumers.
     Set adaptive=False to stick to the static initial DAG.
+
+    Resume (resume=True, default): before running a task, drive checks the
+    ledger for a prior `integrated` event for that (design_file, task_file,
+    task_id) whose commit is still an ancestor of target_branch, and skips
+    re-running it (implement/review/integrate) if found. This makes re-running
+    `drive` on the same --task_file after a partial failure safe: only tasks
+    that never integrated (or whose integration was since rolled back) are
+    (re)executed. Only applies in non-speculative mode and when `seq` is
+    given (the ledger is the source of truth); pass resume=False to force a
+    full re-run of every task regardless of prior ledger state.
 
     Channel declaration (precedence):
       1. `implement_channels` arg (parsed from CLI `--implement-vendors "agy:2,hermes:3"`)
@@ -251,6 +262,68 @@ def drive(
     by_id = {t["task_id"]: t for t in tasks}
     results: list[dict] = []
     results_by_id: dict[str, dict] = {}
+
+    def _norm_path_str(p: str) -> str:
+        if not p:
+            return ""
+        try:
+            return str(Path(p).resolve())
+        except (OSError, ValueError):
+            return p
+
+    def _resumable_task_ids() -> dict[str, dict]:
+        """task_id -> {"commit": ...} for tasks that already have a confirmed
+        `integrated` event for this (design_file, task_file) in the ledger,
+        whose commit is still an ancestor of target_branch.
+
+        Best-effort: any failure (unreadable ledger, git not available, seq a
+        test double without a usable load_flat()) is swallowed and treated as
+        "nothing resumable" so drive falls back to its previous behavior
+        (re-run everything) rather than silently skipping work it can't
+        actually confirm. Restricted to non-speculative mode: the `integrated`
+        event's task_id is the plain task_id only in the single-channel path;
+        in speculative mode it is a composite channel id (T1__vendor_0) that
+        can't be mapped back to the base task_id reliably.
+        """
+        if not resume or seq is None or speculative:
+            return {}
+        wanted_design = _norm_path_str(spec_path or "")
+        wanted_task_file = _norm_path_str(task_file or str(tasks_file.resolve()))
+        try:
+            latest: dict[str, dict] = {}
+            for ev in seq.load_flat():
+                if ev.get("type") != "integrated":
+                    continue
+                if _norm_path_str(ev.get("design_file", "")) != wanted_design:
+                    continue
+                if wanted_task_file and _norm_path_str(ev.get("task_file", "")) != wanted_task_file:
+                    continue
+                event_id = ev.get("event_id", "")
+                tid = event_id.split(":", 1)[0] if event_id else ""
+                if tid:
+                    latest[tid] = ev  # later events (later in the stream) win
+            confirmed: dict[str, dict] = {}
+            for tid, ev in latest.items():
+                commit = ev.get("commit")
+                if not commit:
+                    continue
+                r = _git_run(["merge-base", "--is-ancestor", commit, target_branch], cwd=".")
+                if r.returncode == 0:
+                    confirmed[tid] = {"commit": commit}
+            return confirmed
+        except Exception:
+            return {}
+
+    def _synthetic_skip_entry(tid: str, info: dict) -> dict:
+        return {
+            "task_id": tid,
+            "implement": {"skipped": "already_integrated"},
+            "review": {"skipped": "already_integrated"},
+            "integrate": {"ok": True, "commit": info.get("commit"),
+                          "skipped": True, "reason": "already_integrated"},
+        }
+
+    resumable = _resumable_task_ids()
 
     # Resolve the implement channel fan-out once (shared by all tasks).
     # Default (speculative=False): collapse to a SINGLE channel so each task is
@@ -409,9 +482,62 @@ def drive(
                                "verdict": None, "error": str(ex)}
             return entry
 
-    # Phase A: run task pipelines. Independent tasks (topo layers) run in parallel;
-    # layers themselves run serially so dependencies are satisfied before a task
-    # is implemented. Each task's channels are already parallel inside _run_task.
+    def _integrate_and_record(tid: str, entry: dict) -> None:
+        """Phase B for ONE task: integrate its winning channel (if any) into
+        target_branch, tear down all its channel worktrees, and append the
+        finished entry to `results`. Callers must invoke this serially
+        (git checkout/merge on the shared repo root must never run
+        concurrently), and only after the task's dependencies have already
+        been integrated here — see docs/plans/drive-resume.md Phase 0."""
+        task = by_id.get(tid, {})
+        winner = entry.pop("_winner", None)
+        channel_ids = entry.pop("_channel_ids", [tid])
+        if not dry_run and winner is not None:
+            try:
+                integ = integrate(winner["task_id"], task, winner["worktree"],
+                                 target_branch=target_branch, seq=seq, dry_run=dry_run,
+                                 design_file=spec_path or "", all_tasks=tasks)
+                entry["integrate"] = {"ok": integ.get("ok"),
+                                      "commit": integ.get("commit"),
+                                      "winner": winner["vendor"]}
+                if not integ.get("ok"):
+                    entry["integrate"]["error"] = integ.get("error")
+            except Exception as ex:
+                # integrate must never abort the whole drive; record and move on
+                entry["integrate"] = {"ok": False, "winner": winner["vendor"],
+                                      "error": str(ex)}
+                if seq is not None:
+                    seq.propose(winner["task_id"], "integrate.error",
+                                error=str(ex)[:300])
+        else:
+            entry["integrate"] = {"skipped": True,
+                                  "reason": "dry_run" if dry_run else "no passing channel"}
+        # cleanup: remove all channel worktrees/branches for this task
+        if not dry_run:
+            for cid in channel_ids:
+                teardown_worktree(cid, root="workspaces", dry_run=dry_run,
+                                   design_file=spec_path or "")
+        results.append(entry)
+
+    def _run_and_integrate(tid: str) -> None:
+        """Resume (skip) an already-integrated task, or run the full
+        implement->review->integrate pipeline for one task."""
+        if tid in resumable:
+            entry = _synthetic_skip_entry(tid, resumable[tid])
+            results_by_id[tid] = entry
+            results.append(entry)
+            return
+        entry = _run_task_pipeline(tid)
+        results_by_id[tid] = entry
+        _integrate_and_record(tid, entry)
+
+    # Phase A+B, interleaved PER TOPO LAYER: each layer's implement+review runs
+    # concurrently (task-level parallelism), then that layer's winners are
+    # integrated (serially) BEFORE the next layer starts. This ensures a later
+    # layer's tasks are implemented against a worktree that already contains
+    # their dependencies' merged output (see docs/plans/drive-resume.md Phase 0
+    # — previously integrate ran only once, after ALL layers, so a downstream
+    # task could be implemented/reviewed before its dependency was merged).
     if parallel_tasks:
         layers = topo_layers(tasks)
         # Use a while-loop (not `for layer in layers`) because the planner may
@@ -455,51 +581,21 @@ def drive(
                 for it in rep.get("investigation_needed", []):
                     itid = it.get("task_id", "investigate")
                     if itid in by_id and itid not in layer:
-                        results_by_id[itid] = _run_task_pipeline(itid)
+                        _run_and_integrate(itid)
             with ThreadPoolExecutor(max_workers=max_task_workers) as ex:
-                for entry in ex.map(_run_task_pipeline, layer):
-                    results_by_id[entry["task_id"]] = entry
+                run_tids = [tid for tid in layer if tid not in resumable]
+                layer_entries = list(ex.map(_run_task_pipeline, run_tids)) if run_tids else []
+            for entry in layer_entries:
+                results_by_id[entry["task_id"]] = entry
+                _integrate_and_record(entry["task_id"], entry)
+            for tid in layer:
+                if tid in resumable:
+                    entry = _synthetic_skip_entry(tid, resumable[tid])
+                    results_by_id[tid] = entry
+                    results.append(entry)
     else:
         for tid in order:
-            results_by_id[tid] = _run_task_pipeline(tid)
-
-    # Phase B: integrate winners serially (git checkout/merge on the shared repo
-    # root must not run concurrently). Ordered by topo_order so a child is merged
-    # after its parents. Then tear down every channel worktree so loser channels
-    # don't linger.
-    for tid in order:
-        entry = results_by_id.get(tid)
-        if entry is None:
-            continue
-        task = by_id.get(tid, {})
-        winner = entry.pop("_winner", None)
-        channel_ids = entry.pop("_channel_ids", [tid])
-        if not dry_run and winner is not None:
-            try:
-                integ = integrate(winner["task_id"], task, winner["worktree"],
-                                 target_branch=target_branch, seq=seq, dry_run=dry_run,
-                                 design_file=spec_path or "", all_tasks=tasks)
-                entry["integrate"] = {"ok": integ.get("ok"),
-                                      "commit": integ.get("commit"),
-                                      "winner": winner["vendor"]}
-                if not integ.get("ok"):
-                    entry["integrate"]["error"] = integ.get("error")
-            except Exception as ex:
-                # integrate must never abort the whole drive; record and move on
-                entry["integrate"] = {"ok": False, "winner": winner["vendor"],
-                                      "error": str(ex)}
-                if seq is not None:
-                    seq.propose(winner["task_id"], "integrate.error",
-                                error=str(ex)[:300])
-        else:
-            entry["integrate"] = {"skipped": True,
-                                  "reason": "dry_run" if dry_run else "no passing channel"}
-        # cleanup: remove all channel worktrees/branches for this task
-        if not dry_run:
-            for cid in channel_ids:
-                teardown_worktree(cid, root="workspaces", dry_run=dry_run,
-                                   design_file=spec_path or "")
-        results.append(entry)
+            _run_and_integrate(tid)
 
     # Restore the caller's branch so drive() doesn't leave the repo on the
     # target branch as a side effect. Also pop any auto-stash we created.

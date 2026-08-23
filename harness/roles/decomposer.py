@@ -400,8 +400,15 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
             )
             existing_design = (existing_design + notice) if existing_design else notice
         invoke_kwargs["draft_path"] = str(draft_p)
+        # ベンダー呼び出しの生 stdout/stderr を失敗時の事後調査用に残す（§ハマりポイント
+        # 「decompose がタスク0件で落ちる」対策。invoke() が試行ごとに上書きし、成功時は
+        # 下で削除する — draft_p と同じライフサイクル）。
+        debug_log_p = Path(f"{task_file}.vendor-debug.json")
+        invoke_kwargs["debug_log_path"] = str(debug_log_p)
     else:
         draft_p = None
+        debug_log_p = None
+    debug_log_str = str(debug_log_p) if debug_log_p else None
 
     config_dir = Path(__file__).resolve().parent.parent / "config"
     registry = VerifierRegistry(config_dir / "verifiers.yaml")
@@ -434,16 +441,16 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
                      role="design", dry_run=False, progress_cb=progress_cb, **invoke_kwargs)
     except FileNotFoundError as e:
         err = str(e)
-        emit(task_id, "decompose.error", error=err, status="failed")
+        emit(task_id, "decompose.error", error=err, status="failed", debug_log=debug_log_str)
         if seq is not None:
             write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
-        return {"ok": False, "error": err}
+        return {"ok": False, "error": err, "debug_log": debug_log_str}
     except subprocess.TimeoutExpired as e:
         err = f"vendor subprocess timed out after {e.timeout}s"
-        emit(task_id, "decompose.error", error=err, status="failed")
+        emit(task_id, "decompose.error", error=err, status="failed", debug_log=debug_log_str)
         if seq is not None:
             write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
-        return {"ok": False, "error": err}
+        return {"ok": False, "error": err, "debug_log": debug_log_str}
 
     if seq is not None:
         write_progress(task_id, seq.path, vendor=vendor, status="done", detail="")
@@ -461,12 +468,17 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
 
     errs = structural_check(tasks, registry)
     if errs:
-        emit(task_id, "decompose.rejected", errors=errs, status="failed")
-        return {"ok": False, "errors": errs, "tasks": tasks}
+        emit(task_id, "decompose.rejected", errors=errs, status="failed", debug_log=debug_log_str)
+        return {"ok": False, "errors": errs, "tasks": tasks, "debug_log": debug_log_str}
 
     if draft_p and draft_p.exists():
         try:
             draft_p.unlink()
+        except OSError:
+            pass
+    if debug_log_p and debug_log_p.exists():
+        try:
+            debug_log_p.unlink()
         except OSError:
             pass
 

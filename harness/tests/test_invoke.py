@@ -401,6 +401,40 @@ def test_invoke_retries_on_content_block(monkeypatch) -> None:
     assert "ABC123" in res["cmd"]
 
 
+def test_invoke_writes_vendor_debug_log(monkeypatch, tmp_path) -> None:
+    """When debug_log_path is given, invoke() must persist the raw cmd/stdout/stderr
+    of the attempt, so a vendor call that "succeeds" (no exception raised) but
+    returns nothing usable still leaves a post-mortem trail (see decomposer's
+    "タスクが0件" failure mode, where invoke() itself never errors)."""
+    import json
+
+    import harness.core.invoke as inv
+    from harness.core.invoke import VendorDecl
+
+    decl = VendorDecl("claude", {
+        "model_flag": "--model", "effort_flag": "--effort",
+        "headless": ["claude", "-p", "{prompt}"],
+        "permission": {"readonly": ["--allowedTools", "Read,Grep,Glob"]},
+    })
+
+    def fake_run_streaming(cmd, **kw):
+        return {"returncode": 0, "stdout": "", "stderr": "some raw stderr text",
+                "timed_out": False, "stall_reason": None}
+
+    monkeypatch.setattr(inv, "_run_streaming", fake_run_streaming)
+
+    log_path = tmp_path / "task.md.vendor-debug.json"
+    res = inv.invoke(decl, "do something", role="design", timeout=10,
+                     debug_log_path=str(log_path))
+
+    assert res["stdout"] == ""
+    assert log_path.exists()
+    payload = json.loads(log_path.read_text(encoding="utf-8"))
+    assert payload["stderr"] == "some raw stderr text"
+    assert payload["returncode"] == 0
+    assert payload["stdout"] == ""
+
+
 def test_invoke_idle_timeout_enabled_for_hermes_via_log_tail(monkeypatch) -> None:
     """hermes has no streaming NDJSON stdout, but §2's log-tail path gives it
     a real liveness signal, so invoke() now dispatches hermes to
