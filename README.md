@@ -18,7 +18,7 @@
 - **台帳（証拠の束縛）** — 全イベントをクラッシュセーフな JSONL に記録。`tree_hash` で「どの成果物の証拠か」を保証。
 - **worktree 隔離** — 各タスク/チャンネルは独立 git worktree で実行され、統合後に自動で片付く（敗者チャンネルも残らない）。
 - **read-only レビュア** — レビュアは実装者と別ベンダーかつ読み取り専用。独立性は権限ではなく裁定器で担保。
-- **自己改良（Stage 6: evolve）** — 台帳から失敗パターンを拾い、同種が3回以上继续したら `acceptance` テンプレまたは憲法への昇格を提案。`evolve --dry-run` で確認、実行で `design.proposed` を台帳に記録。
+- **自己改良（Stage 6: evolve）** — 台帳から失敗パターンを拾い、同種が3回以上继续したら `acceptance` テンプレまたは憲法への昇格を提案。`evolve --dry-run` で確認、実行で `design.proposed` を台帳に記録。改良対象は super-agent 自身（`harness/constitution.md` / `acceptance-templates.md`）であり、成果物（ターゲットプロジェクト）ではない。**未実装**：書き出した提案を `decompose`/`review` が読み込んで実際の判断に反映するフィードバックループ（提案は蓄積されるのみ）。
 - **liveness 監視付きダッシュボード** — 長時間のベンダー呼び出しは、絶対タイムアウトではなく無活動検知（idle-timeout、既定300秒）でハングを判定（ACPには非依存）。`dashboard --watch` でN秒ごとに自動再生成し、HTML は自動リロードする。
 
 ---

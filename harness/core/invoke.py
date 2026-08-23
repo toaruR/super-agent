@@ -49,6 +49,46 @@ def git_executable() -> str:
 
     return "git"
 
+
+def detect_primary_branch(cwd: str = ".") -> str:
+    """Best-effort detection of the repo's actual primary branch (e.g. "master"
+    vs "main"), so callers never fall back to a hardcoded "main" that git would
+    happily auto-create even when it was never the repo's real base branch.
+
+    Resolution order:
+      1. `origin/HEAD` symbolic ref, if a remote is configured and its HEAD is
+         already known locally (set via `git remote set-head origin -a` or a
+         full clone).
+      2. An existing local branch: "master" takes priority over "main" when
+         both exist (an established "master" is far more likely to be the
+         real primary than a "main" that was auto-created by a stray
+         `git checkout -b main`); otherwise whichever of the two exists.
+      3. `git config init.defaultBranch`, if set.
+      4. "main" as an absolute last resort (git's current upstream default).
+    """
+    git_bin = git_executable()
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run([git_bin, *args], cwd=cwd, capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", shell=False)
+        except FileNotFoundError:
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="")
+
+    r = _run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip().rsplit("/", 1)[-1]
+
+    for candidate in ("master", "main"):
+        if _run(["show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"]).returncode == 0:
+            return candidate
+
+    r = _run(["config", "--get", "init.defaultBranch"])
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+
+    return "main"
+
 # Known-bad model-name aliases (CODE-side, intentionally NOT in vendors.yaml).
 #
 # vendors.yaml may carry a friendly/shorthand model name that our gateway /

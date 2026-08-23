@@ -45,6 +45,16 @@ def test_topo_order_cycle_safe():
     assert set(topo_order(tasks)) == {"A", "B"}
 
 
+def test_design_branch_name_empty_uses_detected_primary_branch(monkeypatch):
+    """No design_file: design_branch_name must defer to detect_primary_branch()
+    (which may resolve to e.g. "master") instead of a hardcoded "main"."""
+    from harness.roles import scheduler
+    from harness.core import invoke as inv
+
+    monkeypatch.setattr(inv, "detect_primary_branch", lambda: "master")
+    assert scheduler.design_branch_name("") == "master"
+
+
 def test_create_worktree_reuses_existing_checked_out_branch(tmp_path):
     from harness.roles.scheduler import create_worktree
     # simulate: `git worktree list --porcelain` reports the branch already checked out

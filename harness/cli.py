@@ -448,11 +448,16 @@ def cmd_integrate(args: argparse.Namespace) -> int:
                          ensure_ascii=False, indent=2))
         return 1
 
+    target = args.target
+    if target is None:
+        from harness.core.invoke import detect_primary_branch
+        target = detect_primary_branch()
+
     seq = ensure_ledger()
     seq.start()
     out = integrate(
         args.task, task, worktree,
-        target_branch=args.target, seq=seq, dry_run=args.dry_run,
+        target_branch=target, seq=seq, dry_run=args.dry_run,
         all_tasks=tasks,
     )
     seq.stop()
@@ -953,8 +958,10 @@ def main(argv: list[str] | None = None) -> int:
                          f"and paths.yaml's tasks_dir ({PATH_DEFAULTS['tasks_dir']}, legacy layout).")
     ig.add_argument("--worktree", default=None,
                     help="worktree path (default: workspaces/<task>)")
-    ig.add_argument("--target", default="main",
-                    help="integration target branch (default: main)")
+    ig.add_argument("--target", default=None,
+                    help="integration target branch (default: the repo's detected "
+                         "primary branch, e.g. master/main — see detect_primary_branch; "
+                         "never hardcoded to 'main')")
     ig.add_argument("--dry-run", action="store_true",
                     help="show the merge/verify plan without touching git")
     ig.set_defaults(func=cmd_integrate)
@@ -975,7 +982,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="integration target branch (default: derived from "
                          "--design_file as design/<stem>-<crc32>, so drive "
                          "never auto-creates a stray 'main'; falls back to "
-                         "'main' if no design file is known)")
+                         "the repo's detected primary branch, e.g. master/main, "
+                         "if no design file is known)")
     dr.add_argument("--vendor", default=None, help="implementer vendor (default: roles.implement)")
     dr.add_argument("--reviewer", default=None, help="reviewer vendor (default: roles.review)")
     dr.add_argument("--model", default=None,

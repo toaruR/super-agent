@@ -38,10 +38,12 @@ def design_branch_name(design_file: str) -> str:
     resolved full path, same scheme as effective_worktree_id) keeps re-runs of
     drive() on the same design_file landing on the same branch, and keeps
     different design_files from colliding onto one shared "main". Falls back
-    to "main" when no design_file is known (e.g. ad-hoc --requirement runs).
+    to the repo's detected primary branch (see detect_primary_branch; may be
+    "master") when no design_file is known (e.g. ad-hoc --requirement runs).
     """
     if not design_file:
-        return "main"
+        from harness.core.invoke import detect_primary_branch
+        return detect_primary_branch()
     full_path = str(Path(design_file).resolve())
     tag = f"{zlib.crc32(full_path.encode('utf-8')):08x}"
     return f"design/{Path(design_file).stem}-{tag}"

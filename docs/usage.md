@@ -224,7 +224,7 @@ super-agent architect "Web API を作れ" --dry-run
 
 - `--design_file <md>`: 設計ファイル。`--task_file` が無い時に使用され、分解→worktree 作成→`<md>` に書き出します。
 - `--task_file <md>`: 分解済みタスク DAG。既存なら `--design_file` からの分解をスキップして再利用します。
-- `--target <branch>`: 統合先ブランチ（既定は `--design_file` から導出する `design/<stem>-<crc32>`。設計ファイル未設定時のみ `main` にフォールバック。存在しないブランチは自動作成される）。
+- `--target <branch>`: 統合先ブランチ（既定は `--design_file` から導出する `design/<stem>-<crc32>`。設計ファイル未設定時のみ、リポジトリの実際の主ブランチを自動検出してフォールバック（`detect_primary_branch`、`master`/`main` 等の既存ローカルブランチや `origin/HEAD` を見る。何も検出できなければ最終的に `main`）。存在しないブランチは自動作成される）。
 - `--vendor` / `--reviewer`: 実装者 / レビュア のベンダー（既定は `vendors.yaml` の `roles.implement` / `roles.review`）。
 - `--model` / `--effort`: **implement チャンネル全てのモデル / effort を一括上書き**（既定は `vendors.yaml` の `roles.implement` 各チャンネル値）。短名（例: `hy3:Free`）も可 — コード側 `normalize_model()` が実名（例: `tencent/hy3:free`）に自動正規化される。review ベンダーは影響しない。
 - `--implement-vendors "agy:2,hermes:3"`: **マルチチャンネル override（投機的モードのトリガー）**。各 `vendor:N` が N チャンネルの並列実装になる（省略時は `vendors.yaml` の `roles.implement` リストを使用）。**この指定自体が投機的モードを意味する** — 複数チャンネルが同じタスクを競って実装し、最初に review を通した勝者を統合する。
@@ -358,16 +358,16 @@ super-agent review-task --task T1 --task_file my-design-tasks.md --dry-run
  # 統合シミュレーション（git/worktree は触らない。ok:true が返る）
  super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md --dry-run
 
- # 実際の統合：task/T1 を main へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
+ # 実際の統合：task/T1 を検出された主ブランチ（本リポジトリでは master）へ --no-ff マージ → CVE 再実行 → integrated 記録 → worktree 削除
  super-agent integrate --task T1 --task_file ./probe/sample/my-design-tasks.md
- # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "main", "commit": "..."}
+ # → {"ok": true, "task_id": "T1", "branch": "task/T1", "target": "master", "commit": "..."}
  ```
 
  | オプション | 意味 |
  |---|---|
  | `--task` | 統合するタスクID |
  | `--task_file` | タスク定義 DAG（touch_allow / acceptance 解決用、既定 `probe/sample/my-design-tasks.md`） |
- | `--target` | 統合先ブランチ（既定 `main`）。**現在の本流ブランチは `master`** なので、実運用では `--target master` を指定する（コードの既定値は `main` のまま） |
+ | `--target` | 統合先ブランチ（既定は `detect_primary_branch()` によるリポジトリの実際の主ブランチの自動検出。既存ローカルブランチの `master`/`main`、`origin/HEAD`、`init.defaultBranch` の順に見て、何も見つからなければ最終的に `main`。手動で上書きしたい場合のみ `--target <branch>` を指定する） |
  | `--worktree` | worktree パス（既定 `workspaces/<task>`；無ければ `task/<id>` から再作成） |
  | `--dry-run` | マージ/後片付けを実行せず計画のみ表示 |
 
@@ -414,6 +414,11 @@ super-agent evolve --dry-run
 
 > 失敗パターンがしきい値（3回）に満たない場合は「何も提案しない」と表示されます。
 > 提案はあくまで**案**であり、実際の acceptance ルール／憲法の変更は人間がレビューして反映します。
+
+> [!IMPORTANT]
+> **`evolve` が改良するのは super-agent 自身（ハーネス）であり、super-agent で作った成果物（ターゲットプロジェクト）ではありません。** 書き込み先の `constitution.md` / `acceptance-templates.md` は `harness/` 直下に置かれる、super-agent 自身の行動規約・受け入れ基準テンプレートです。
+>
+> **未実装**：`evolve` は台帳から提案を*書き出す*だけで、書き出した `constitution.md` / `acceptance-templates.md` を `decompose`（②）や `review`（⑤⑥⑦）が**読み込んで実際の判断に反映する経路はまだ実装されていません**。つまり自己改良ループの「書く」側は完成しているが「読んで活かす」側（フィードバックループ）が未接続で、現状は提案が蓄積されるのみです。
 
 ### 2.8 `super-agent dashboard` — 台帳からダッシュボード生成
 

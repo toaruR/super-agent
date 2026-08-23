@@ -513,6 +513,58 @@ def test_git_executable_fallback_windows(monkeypatch) -> None:
     assert len(executable) > 0
 
 
+def test_detect_primary_branch_prefers_origin_head(monkeypatch) -> None:
+    import subprocess as sp
+    from harness.core import invoke as inv
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1:] == ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]:
+            return sp.CompletedProcess(cmd, 0, stdout="origin/develop\n", stderr="")
+        return sp.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(inv.subprocess, "run", fake_run)
+    assert inv.detect_primary_branch() == "develop"
+
+
+def test_detect_primary_branch_prefers_master_over_main(monkeypatch) -> None:
+    import subprocess as sp
+    from harness.core import invoke as inv
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1:4] == ["show-ref", "--verify", "--quiet"] and cmd[-1] in (
+            "refs/heads/master", "refs/heads/main"
+        ):
+            return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return sp.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(inv.subprocess, "run", fake_run)
+    assert inv.detect_primary_branch() == "master"
+
+
+def test_detect_primary_branch_falls_back_to_init_default_branch(monkeypatch) -> None:
+    import subprocess as sp
+    from harness.core import invoke as inv
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1:] == ["config", "--get", "init.defaultBranch"]:
+            return sp.CompletedProcess(cmd, 0, stdout="trunk\n", stderr="")
+        return sp.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(inv.subprocess, "run", fake_run)
+    assert inv.detect_primary_branch() == "trunk"
+
+
+def test_detect_primary_branch_absolute_fallback_is_main(monkeypatch) -> None:
+    import subprocess as sp
+    from harness.core import invoke as inv
+
+    monkeypatch.setattr(
+        inv.subprocess, "run",
+        lambda cmd, **kwargs: sp.CompletedProcess(cmd, 1, stdout="", stderr="")
+    )
+    assert inv.detect_primary_branch() == "main"
+
+
 def test_claude_stream_detail_and_terminal() -> None:
     from harness.core.invoke import _claude_stream_detail, _STREAM_PARSERS
 
