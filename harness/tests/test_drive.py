@@ -464,3 +464,104 @@ def test_drive_checks_out_target_branch_before_integrate() -> None:
             _os.environ.pop("SUPER_AGENT_TEST", None)
     assert "feat/dashboard" in captured, f"expected checkout feat/dashboard, got {captured}"
     assert captured[-1] == "feat/planner", f"expected restore to feat/planner, got {captured}"
+
+
+def _init_repo_with_design_and_tasks(tmp_path):
+    """A real, isolated git repo with a design file + its task-DAG file
+    already on disk (but not yet committed), for the design/task auto-commit
+    and --push tests below (which disable SUPER_AGENT_TEST to exercise real
+    git behavior and must never touch the dev's actual repo)."""
+    import subprocess as _sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q", str(repo)], check=True)
+    _sp.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    _sp.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    _sp.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+
+    design = repo / "docs" / "design" / "my-design.md"
+    design.parent.mkdir(parents=True)
+    design.write_text("# 設計\n", encoding="utf-8")
+    tasks_dir = repo / "docs" / "design" / "my-design_tasks"
+    tasks_dir.mkdir()
+    task_file = tasks_dir / "my-design.md"
+    task_file.write_text(
+        "# タスク分解（decompose 出力）\n\n要求: x\n\nタスク数: 1\n\n"
+        "## 1. T1\n\n- 目標: g\n- 依存: （なし）\n- 触ってよい範囲: f.py\n",
+        encoding="utf-8",
+    )
+    return repo, design, task_file
+
+
+def test_drive_commits_design_and_task_files_onto_target_branch(tmp_path, monkeypatch) -> None:
+    """The design file and its task-DAG dir must land on target_branch as a
+    real commit (mirrors the "docs: add X design and task DAG" commits users
+    used to make by hand), and re-running drive() on the same pair must not
+    fail with "nothing to commit"."""
+    import os as _os
+    import subprocess as _sp
+
+    repo, design, task_file = _init_repo_with_design_and_tasks(tmp_path)
+    monkeypatch.chdir(repo)
+    _old = _os.environ.pop("SUPER_AGENT_TEST", None)
+    try:
+        with mock.patch.object(drive, "structural_check", return_value=[]), \
+             mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+             mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+             mock.patch.object(drive, "integrate", return_value={"ok": True, "commit": "c2"}), \
+             mock.patch.object(drive, "create_worktree", return_value={"ok": True, "path": str(repo)}), \
+             mock.patch.object(drive, "schedule"):
+            out1 = drive.drive("", str(design), str(task_file), seq=None, dry_run=False,
+                                target_branch="design/my-design")
+            out2 = drive.drive("", str(design), str(task_file), seq=None, dry_run=False,
+                                target_branch="design/my-design")
+    finally:
+        if _old is not None:
+            _os.environ["SUPER_AGENT_TEST"] = _old
+
+    assert out1["ok"] is True and out2["ok"] is True
+    log = _sp.run(["git", "-C", str(repo), "log", "design/my-design", "--oneline"],
+                   capture_output=True, text=True).stdout
+    assert "design and task DAG" in log
+    # exactly one docs commit even though drive() ran twice (nothing new to commit the 2nd time)
+    assert log.count("design and task DAG") == 1
+    tracked = _sp.run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "design/my-design"],
+                       capture_output=True, text=True).stdout
+    assert "docs/design/my-design.md" in tracked
+    assert "docs/design/my-design_tasks/my-design.md" in tracked
+
+
+def test_drive_push_flag_pushes_target_branch_once(tmp_path, monkeypatch) -> None:
+    """--push (push=True) must push target_branch to origin once, after all
+    tasks finish; push=False (default) must never call `git push`."""
+    import os as _os
+    import subprocess as _sp
+
+    repo, design, task_file = _init_repo_with_design_and_tasks(tmp_path)
+    remote = tmp_path / "remote.git"
+    _sp.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    _sp.run(["git", "-C", str(repo), "remote", "add", "origin", str(remote)], check=True)
+    monkeypatch.chdir(repo)
+    _old = _os.environ.pop("SUPER_AGENT_TEST", None)
+    try:
+        with mock.patch.object(drive, "structural_check", return_value=[]), \
+             mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+             mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+             mock.patch.object(drive, "integrate", return_value={"ok": True, "commit": "c2"}), \
+             mock.patch.object(drive, "create_worktree", return_value={"ok": True, "path": str(repo)}), \
+             mock.patch.object(drive, "schedule"):
+            out_no_push = drive.drive("", str(design), str(task_file), seq=None, dry_run=False,
+                                       target_branch="design/my-design", push=False)
+            out_pushed = drive.drive("", str(design), str(task_file), seq=None, dry_run=False,
+                                      target_branch="design/my-design", push=True)
+    finally:
+        if _old is not None:
+            _os.environ["SUPER_AGENT_TEST"] = _old
+
+    assert out_no_push["ok"] is True and "push" not in out_no_push
+    assert out_pushed["ok"] is True
+    assert out_pushed["push"]["ok"] is True
+    remote_log = _sp.run(["git", "--git-dir", str(remote), "log", "design/my-design", "--oneline"],
+                          capture_output=True, text=True).stdout
+    assert "design and task DAG" in remote_log

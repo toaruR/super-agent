@@ -77,6 +77,7 @@ def drive(
     implement_timeout: int | None = None,
     task_file: str | None = None,
     resume: bool = True,
+    push: bool = False,
     on_status_change: Callable[[], None] | None = None,
 ) -> dict:
     """Drive every task in the DAG through implement -> review -> integrate.
@@ -109,6 +110,17 @@ def drive(
     (re)executed. Only applies in non-speculative mode and when `seq` is
     given (the ledger is the source of truth); pass resume=False to force a
     full re-run of every task regardless of prior ledger state.
+
+    Design/task commit (always, once target_branch is checked out): drive
+    commits spec_path and its task-DAG directory (tasks_dir_for_design) onto
+    target_branch before any task runs, so the branch always carries its own
+    specs (mirrors the "docs: add X design and task DAG" commits users were
+    making by hand). No-op if nothing changed (re-running drive on an
+    already-committed design/task pair never fails on "nothing to commit").
+
+    Push (push=False, default): when True, target_branch is pushed to
+    `origin` once, after every task has finished (successfully or not),
+    right before drive restores the caller's original branch.
 
     Channel declaration (precedence):
       1. `implement_channels` arg (parsed from CLI `--implement-vendors "agy:2,hermes:3"`)
@@ -238,6 +250,71 @@ def drive(
                 _git_run(["stash", "pop"], cwd=".")
                 _stashed = False
 
+    # Remember which spec_path/task_file (+ task-DAG dir) paths exist BEFORE
+    # any branch switch: once _commit_design_and_tasks() below commits them,
+    # they become tracked ONLY on target_branch, so _restore_branch()'s
+    # checkout back to the caller's branch (which never had them) deletes
+    # them from the working tree per normal git checkout semantics.
+    # Re-materializing them afterwards (see _restore_docs_snapshot) keeps
+    # drive() from deleting design/task files the caller had on disk before
+    # calling it. Restored via `git checkout <target> -- <path>` (not a raw
+    # byte copy) so autocrlf/other worktree filters produce the exact same
+    # bytes git itself would check out, then unstaged so the path goes back
+    # to being untracked, matching its state before drive() ran.
+    _docs_paths_before: set[str] = set()
+
+    def _snapshot_docs() -> None:
+        from harness.core.invoke import tasks_dir_for_design
+        for c in (spec_path, task_file or str(tasks_file)):
+            if c and Path(c).is_file():
+                _docs_paths_before.add(c)
+        if spec_path:
+            tdir = tasks_dir_for_design(spec_path)
+            if tdir.is_dir():
+                for f in tdir.rglob("*"):
+                    if f.is_file():
+                        _docs_paths_before.add(str(f))
+
+    def _rel_to_cwd(p: str) -> str:
+        try:
+            return Path(p).resolve().relative_to(Path(".").resolve()).as_posix()
+        except ValueError:
+            return Path(p).as_posix()
+
+    def _restore_docs_snapshot() -> None:
+        for c in _docs_paths_before:
+            if Path(c).exists():
+                continue
+            rel = _rel_to_cwd(c)
+            _git_run(["checkout", target_branch, "--", rel], cwd=".")
+            _git_run(["reset", "--", rel], cwd=".")
+
+    def _stash_docs_if_untracked(cwd: str = ".") -> bool:
+        """Stash (with -u, scoped to just the design/task doc paths) any of
+        them that are currently untracked at `cwd`. A design/task doc file
+        left over (untracked) from a prior drive() run on this same
+        target_branch makes a full-branch `git checkout` refuse outright
+        ("would be overwritten"), even when its content is byte-identical to
+        what target_branch already tracks there (observed on Windows git).
+        Scoped to just these paths (not a blanket -u stash) for the same
+        reason the surrounding auto-stash skips -u: other untracked files
+        (.gitignore, unrelated drafts) must never be touched."""
+        rels = [_rel_to_cwd(p) for p in _docs_paths_before if Path(p).exists()]
+        if not rels:
+            return False
+        st = _git_run(["status", "--porcelain", "--", *rels], cwd=cwd)
+        untracked = [line[3:].strip() for line in st.stdout.splitlines() if line.startswith("??")]
+        if not untracked:
+            return False
+        s = _git_run(["stash", "push", "-u", "-m", "drive-docs-stash", "--", *untracked], cwd=cwd)
+        return s.returncode == 0 and "No local changes" not in (s.stdout or "")
+
+    def _pop_docs_stash_if_needed(stashed: bool, cwd: str = ".") -> None:
+        if stashed:
+            _git_run(["stash", "pop"], cwd=cwd)
+
+    _snapshot_docs()
+
     if not _os.environ.get("SUPER_AGENT_TEST"):
         try:
             # If the repo root is ALREADY on the target branch, nothing to do.
@@ -246,17 +323,53 @@ def drive(
                 _st = _git_run(["stash", "push", "-m", "drive-auto-stash"], cwd=".")
                 if _st.returncode == 0 and "No local changes" not in _st.stdout:
                     _stashed = True
+                _docs_stashed = _stash_docs_if_untracked()
                 _co = _git_run(["checkout", target_branch], cwd=".")
                 if _co.returncode != 0:
                     _cb = _git_run(["checkout", "-b", target_branch], cwd=".")
-                    if _cb.returncode != 0:
-                        _restore_branch()
-                        return {"ok": False,
-                                "error": f"cannot checkout target_branch {target_branch}: "
-                                         f"{_co.stderr or _cb.stderr}"}
+                    _checkout_ok = _cb.returncode == 0
+                else:
+                    _checkout_ok = True
+                _pop_docs_stash_if_needed(_docs_stashed)
+                if not _checkout_ok:
+                    _restore_branch()
+                    return {"ok": False,
+                            "error": f"cannot checkout target_branch {target_branch}: "
+                                     f"{_co.stderr or _cb.stderr}"}
         except Exception as _ex:  # pragma: no cover - defensive
             _restore_branch()
             return {"ok": False, "error": f"checkout target_branch failed: {_ex}"}
+
+    def _commit_design_and_tasks() -> None:
+        """Commit spec_path + its task-DAG dir onto target_branch, once.
+
+        Best-effort: `git add` whatever of {spec_path, tasks_dir_for_design(
+        spec_path), task_file} exists on disk, then skip the commit entirely
+        if nothing ended up staged — re-running drive() on a design/task pair
+        that's already committed must not fail on "nothing to commit".
+        """
+        from harness.core.invoke import tasks_dir_for_design
+        paths: list[str] = []
+        if spec_path and Path(spec_path).exists():
+            paths.append(Path(spec_path).as_posix())
+            tdir = tasks_dir_for_design(spec_path)
+            if tdir.is_dir():
+                paths.append(tdir.as_posix())
+        tpath = task_file or str(tasks_file)
+        if tpath and Path(tpath).exists():
+            tpath_posix = Path(tpath).as_posix()
+            if tpath_posix not in paths:
+                paths.append(tpath_posix)
+        if not paths:
+            return
+        _git_run(["add", "--", *paths], cwd=".")
+        if _git_run(["diff", "--cached", "--quiet"], cwd=".").returncode == 0:
+            return  # nothing staged
+        slug = Path(spec_path).stem if spec_path else Path(tpath).stem
+        _git_run(["commit", "-m", f"docs: add {slug} design and task DAG"], cwd=".")
+
+    if not _os.environ.get("SUPER_AGENT_TEST") and not dry_run:
+        _commit_design_and_tasks()
 
     order = topo_order(tasks)
     by_id = {t["task_id"]: t for t in tasks}
@@ -597,12 +710,26 @@ def drive(
         for tid in order:
             _run_and_integrate(tid)
 
+    # Push target_branch to origin (opt-in): once, after every task has
+    # finished, while still checked out on target_branch — before restoring
+    # the caller's branch below.
+    push_result: dict | None = None
+    if push and not dry_run and not _os.environ.get("SUPER_AGENT_TEST"):
+        p = _git_run(["push", "-u", "origin", target_branch], cwd=".")
+        push_result = {"ok": p.returncode == 0}
+        if p.returncode != 0:
+            push_result["error"] = (p.stderr or p.stdout).strip()[:500]
+
     # Restore the caller's branch so drive() doesn't leave the repo on the
     # target branch as a side effect. Also pop any auto-stash we created.
     # If we never left the target branch (caller was already on it), there is
     # nothing to restore and no stash to pop.
     _restore_branch()
-    return {"ok": True, "reused_tasks_file": reused, "tasks": results}
+    _restore_docs_snapshot()
+    out = {"ok": True, "reused_tasks_file": reused, "tasks": results}
+    if push_result is not None:
+        out["push"] = push_result
+    return out
 
 
 def uuid_short() -> str:

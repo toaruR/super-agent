@@ -536,6 +536,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         implement_timeout=args.timeout,
         task_file=str(Path(args.task_file).resolve()),
         resume=getattr(args, "resume", True),
+        push=getattr(args, "push", False),
         on_status_change=lambda: auto_update_dashboard(seq=seq),
     )
     seq.stop()
@@ -1026,6 +1027,10 @@ def main(argv: list[str] | None = None) -> int:
                          "integrated state (previous default behavior).")
     dr.add_argument("--max-task-workers", type=int, default=4,
                     help="max concurrent tasks (used when tasks are independent)")
+    dr.add_argument("--push", action="store_true",
+                    help="push target_branch to origin once, after every task has "
+                         "finished. Off by default (git push affects the shared "
+                         "remote, so it's opt-in).")
     dr.add_argument("--dry-run", action="store_true",
                     help="assemble plans and run CVE, but skip vendor calls and git changes")
     dr.set_defaults(func=cmd_drive)
