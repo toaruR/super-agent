@@ -9,3 +9,7 @@ workspaces/
 harness/ledger/
 # 実環境依存の設定（サンプルは verification_env_sample.yaml）。各環境で作成する。
 harness/config/verification_env.yaml
+# harness/cli.py の auto_update_dashboard() がリポジトリルート直下に無条件生成する成果物。
+# 未追跡のままだと drive の integration.merge が conflict になるため常に除外する。
+/dashboard.html
+/dashboard.md
