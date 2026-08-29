@@ -9,3 +9,7 @@ workspaces/
 harness/ledger/
 # 実環境依存の設定（サンプルは verification_env_sample.yaml）。各環境で作成する。
 harness/config/verification_env.yaml
+# auto_update_dashboard()（harness/cli.py）が全ステージコマンド実行のたびに
+# cwd直下へ無条件で書き出すライブダッシュボード（生成物、コミット対象外）。
+/dashboard.html
+/dashboard.md
