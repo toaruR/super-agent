@@ -247,8 +247,17 @@ def drive(
         if not dry_run and _prev_branch and _head != target_branch:
             _git_run(["checkout", _prev_branch], cwd=".")
             if _stashed:
-                _git_run(["stash", "pop"], cwd=".")
-                _stashed = False
+                _pop = _git_run(["stash", "pop"], cwd=".")
+                if _pop.returncode != 0:
+                    # Don't silently drop the stash entry: whatever caused
+                    # the pop to fail (lock contention, conflict) means the
+                    # caller's pre-drive local edits are still sitting in
+                    # `git stash list` instead of back on disk. Surfacing
+                    # this beats losing uncommitted work without a trace.
+                    print(f"[warn] drive-auto-stash pop failed, left in stash list: "
+                          f"{(_pop.stderr or _pop.stdout).strip()}")
+                else:
+                    _stashed = False
 
     # Remember which spec_path/task_file (+ task-DAG dir) paths exist BEFORE
     # any branch switch: once _commit_design_and_tasks() below commits them,
@@ -302,7 +311,13 @@ def drive(
         rels = [_rel_to_cwd(p) for p in _docs_paths_before if Path(p).exists()]
         if not rels:
             return False
-        st = _git_run(["status", "--porcelain", "--", *rels], cwd=cwd)
+        # -c core.quotepath=false: Windows git otherwise quotes non-ASCII
+        # paths (e.g. Japanese filenames) as C-style octal escapes in
+        # --porcelain output, which line[3:].strip() below would pass through
+        # unmodified as a bogus pathspec to `git stash push`, silently
+        # stashing nothing and leaving the doc files untracked for the
+        # subsequent full-branch checkout to reject.
+        st = _git_run(["-c", "core.quotepath=false", "status", "--porcelain", "--", *rels], cwd=cwd)
         untracked = [line[3:].strip() for line in st.stdout.splitlines() if line.startswith("??")]
         if not untracked:
             return False
