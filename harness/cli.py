@@ -36,6 +36,9 @@ from harness.roles.implementer import implement
 from harness.roles.integrator import integrate
 from harness.roles.drive import drive
 from harness.roles.improver import mine as improver_mine, report as improver_report
+from harness.roles.extract import run_pipeline as extract_run_pipeline
+from harness.roles.extract import run_refine as extract_run_refine
+from harness.roles.extract import run_store as extract_run_store
 from harness.core.verifiers import VerifierRegistry
 from harness._version import __version__
 
@@ -838,6 +841,81 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _default_extract_driver():
+    """extract run のデフォルトブラウザドライバ。playwright への依存は
+    PlaywrightBrowserDriver.__init__ まで遅延するので、この関数自体は import 時に
+    playwright を要求しない。テストではこの関数を差し替えて実ブラウザ起動を避ける。"""
+    from harness.extract.fetch import PlaywrightBrowserDriver
+    return PlaywrightBrowserDriver()
+
+
+def _default_extract_robots_checker(url: str, user_agent: str | None):
+    """extract run のデフォルト RobotsChecker。対象サイトの /robots.txt をネットワーク
+    越しに取得する。テストではこの関数を差し替えて実ネットワークアクセスを避ける。"""
+    from harness.extract.robots import RobotsChecker, DEFAULT_USER_AGENT
+    return RobotsChecker.from_site(url, user_agent=user_agent or DEFAULT_USER_AGENT)
+
+
+def cmd_extract_run(args: argparse.Namespace) -> int:
+    """`extract run <url>`: harness.roles.extract.run_pipeline() (fetch->analyze->
+    tokenize->generate->store) をそのまま呼び出す薄いラッパー。パイプライン自体の
+    ロジックはここでは一切再実装しない。"""
+    driver = _default_extract_driver()
+    robots_checker = _default_extract_robots_checker(args.url, args.user_agent)
+    try:
+        result = extract_run_pipeline(
+            args.url,
+            driver,
+            robots_checker=robots_checker,
+            base_dir=args.base_dir,
+            site=args.site,
+            breakpoints=args.breakpoints,
+            component_types=args.component_types,
+        )
+    finally:
+        close = getattr(driver, "close", None)
+        if callable(close):
+            close()
+
+    print(json.dumps({
+        "ok": True,
+        "url": result.url,
+        "design_file": result.design_file,
+        "snapshot_dir": str(result.snapshot_dir),
+        "tokens_path": str(result.tokens_path),
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_extract_refine(args: argparse.Namespace) -> int:
+    """`extract refine <instruction>`: 自然言語の再調整指示を既存のトークンJSONへ反映し、
+    プロンプトを再生成する harness.roles.extract.run_refine()(=apply_refinement())への
+    薄いラッパー。--out_dir を指定したときのみ、更新結果を run_store() で新しい
+    スナップショットとして保存する(これも role 側の既存関数をそのまま呼ぶだけ)。"""
+    tokens_path = Path(args.tokens_file)
+    if not tokens_path.exists():
+        print(json.dumps({"ok": False, "error": f"tokens_file not found: {args.tokens_file}"},
+                         ensure_ascii=False, indent=2))
+        return 1
+    tokens = json.loads(tokens_path.read_text(encoding="utf-8"))
+
+    result = extract_run_refine(args.instruction, tokens, url=args.url)
+
+    out: dict = {
+        "ok": True,
+        "tokens": result.tokens,
+        "delta": result.delta,
+        "prompt": result.prompt,
+    }
+    if args.out_dir:
+        snapshot_dir = extract_run_store(
+            args.out_dir, args.site or args.url or "refined", result.tokens, result.prompt)
+        out["snapshot_dir"] = str(snapshot_dir)
+
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Windows consoles/pipes default to the system locale codepage (e.g. cp932),
     # which can't encode arbitrary unicode pulled from design docs (em-dashes,
@@ -1046,6 +1124,46 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--dry-run", action="store_true",
                     help="show proposed upgrades without recording them to the ledger")
     ev.set_defaults(func=cmd_evolve)
+
+    ex = sub.add_parser(
+        "extract",
+        help="design-extract pipeline: extract reusable design tokens/prompts from a "
+             "live page (独立ロール; plan/drive とは疎結合)")
+    ex_sub = ex.add_subparsers(dest="extract_cmd", required=True)
+
+    er = ex_sub.add_parser(
+        "run", help="fetch->analyze->tokenize->generate->store を一括実行する")
+    er.add_argument("url", help="デザイン抽出対象のページURL")
+    er.add_argument("--base_dir", default="design-extracts",
+                    help="スナップショット(トークンJSON/プロンプト)の保存先ルート "
+                         "(default: design-extracts)")
+    er.add_argument("--site", default=None,
+                    help="スナップショットのサイト識別子 (default: url)")
+    er.add_argument("--breakpoints", type=int, nargs="+", default=None,
+                    help="取得するビューポート幅(px)のリスト "
+                         "(default: harness/config/design_extract.yaml の breakpoints)")
+    er.add_argument("--component-types", dest="component_types", nargs="+", default=None,
+                    help="解析対象のコンポーネント種別(button/card/nav/form等) "
+                         "(default: 既知の全種別)")
+    er.add_argument("--user-agent", dest="user_agent", default=None,
+                    help="robots.txt判定に使うUser-Agent (default: DesignExtractBot/1.0)")
+    er.set_defaults(func=cmd_extract_run)
+
+    erf = ex_sub.add_parser(
+        "refine",
+        help="自然言語の再調整指示を既存のトークンJSONへ反映し、デザインプロンプトを再生成する")
+    erf.add_argument("instruction",
+                     help="自然言語の再調整指示 (例: 'ボタンの角丸をもっと大きくして')")
+    erf.add_argument("--tokens_file", required=True,
+                     help="更新対象のトークンJSON(tokens.json、W3C Design Tokens形式)のパス")
+    erf.add_argument("--url", default=None,
+                     help="再生成するデザインプロンプトに含めるURL(省略可)")
+    erf.add_argument("--out_dir", default=None,
+                     help="指定すると、更新後のトークンJSON/プロンプトを新しいスナップショット"
+                          "として保存する(省略時は標準出力のみ)")
+    erf.add_argument("--site", default=None,
+                     help="--out_dir 保存時のサイト識別子 (default: --url)")
+    erf.set_defaults(func=cmd_extract_refine)
 
     db = sub.add_parser("dashboard", help="generate dashboard (md/html/both)")
     db.add_argument("--format", choices=["md", "html", "both"], default="md",
