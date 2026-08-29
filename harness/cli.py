@@ -31,7 +31,7 @@ from harness.roles.review_flow import run_pipeline
 from harness.roles.architect import propose as architect_propose
 from harness.roles.decomposer import decompose as decomposer_decompose
 from harness.roles.decomposer import render_tasks_md, parse_tasks_md, structural_check
-from harness.roles.scheduler import schedule
+from harness.roles.scheduler import schedule, stable_tag
 from harness.roles.implementer import implement
 from harness.roles.integrator import integrate
 from harness.roles.drive import drive
@@ -218,7 +218,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         config_dir = Path(__file__).resolve().parent / "config"
         registry = VerifierRegistry(config_dir / "verifiers.yaml")
         errs = structural_check(tasks, registry)
-        task_id = f"plan-{slugify(requirement or 'plan')}-{uuid.uuid4().hex[:6]}"
+        task_id = f"plan-{slugify(requirement or 'plan')}-" \
+                  f"{stable_tag(args.design_file + '|' + str(tasks_file.resolve()))}"
         if errs:
             seq.propose(task_id, "decompose.rejected", errors=errs, status="failed",
                         design_file=args.design_file, task_file=str(tasks_file.resolve()))
@@ -238,7 +239,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
                              ensure_ascii=False, indent=2))
             seq.stop()
             return 1
-        task_id = f"plan-{slugify(requirement or 'plan')}-{uuid.uuid4().hex[:6]}"
+        task_id = f"plan-{slugify(requirement or 'plan')}-" \
+                  f"{stable_tag(args.design_file + '|' + str(tasks_file.resolve()))}"
         seq.propose(task_id, "task.created", goal=requirement, role="decomposer",
                     design_file=args.design_file, task_file=str(tasks_file.resolve()),
                     status="planning")

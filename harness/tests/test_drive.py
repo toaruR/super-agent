@@ -35,6 +35,39 @@ def test_drive_defaults_target_branch_to_design_branch_name() -> None:
     assert m_int.call_args.kwargs["target_branch"] == expected
 
 
+def test_drive_reruns_reuse_same_plan_task_id(tmp_path) -> None:
+    """Re-running drive() on the same (design_file, task_file) must register
+    its plan/decompose bookkeeping event under the SAME task_id every time,
+    not a fresh `plan-<slug>-<uuid>` per invocation -- otherwise every re-run
+    leaves behind another permanent phantom row on the dashboard."""
+    from harness.core.ledger import Sequencer, Ledger
+
+    ledger_path = tmp_path / "events.jsonl"
+
+    def _run_once():
+        seq = Sequencer(str(ledger_path))
+        seq.start()
+        try:
+            with mock.patch.object(drive, "structural_check", return_value=[]), \
+                 mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+                 mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+                 mock.patch.object(drive, "integrate") as m_int:
+                m_int.return_value = {"ok": True, "commit": "c2"}
+                out = drive.drive("", "probe/sample/my-design.md", SAMPLE_TASKS,
+                                  seq=seq, dry_run=False, adaptive=False)
+        finally:
+            seq.stop()
+        assert out["ok"] is True
+
+    _run_once()
+    _run_once()
+
+    events = Ledger(str(ledger_path)).load_flat()
+    plan_task_ids = {e["event_id"].split(":")[0]
+                     for e in events if e["event_id"].split(":")[0].startswith("plan-")}
+    assert len(plan_task_ids) == 1
+
+
 def test_drive_calls_pipeline_per_task_in_order() -> None:
     with mock.patch.object(drive, "structural_check", return_value=[]), \
          mock.patch.object(drive, "implement") as m_impl, \

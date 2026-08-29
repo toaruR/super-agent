@@ -15,6 +15,17 @@ import zlib
 from pathlib import Path
 
 
+def stable_tag(text: str) -> str:
+    """8 hex-char CRC32 of `text`, for deterministic id suffixes.
+
+    Same scheme as effective_worktree_id/design_branch_name below: callers
+    that need a re-run to land on the *same* derived id (branch name,
+    worktree id, dashboard row) hash a stable input (e.g. a resolved path)
+    instead of minting a fresh uuid each time.
+    """
+    return f"{zlib.crc32(text.encode('utf-8')):08x}"
+
+
 def effective_worktree_id(task_id: str, design_file: str = "") -> str:
     """task_id, tagged with an 8 hex-char CRC32 of design_file when given.
 
@@ -25,8 +36,7 @@ def effective_worktree_id(task_id: str, design_file: str = "") -> str:
     """
     if not design_file:
         return task_id
-    tag = f"{zlib.crc32(design_file.encode('utf-8')):08x}"
-    return f"{task_id}__{tag}"
+    return f"{task_id}__{stable_tag(design_file)}"
 
 
 def design_branch_name(design_file: str) -> str:
@@ -45,8 +55,7 @@ def design_branch_name(design_file: str) -> str:
         from harness.core.invoke import detect_primary_branch
         return detect_primary_branch()
     full_path = str(Path(design_file).resolve())
-    tag = f"{zlib.crc32(full_path.encode('utf-8')):08x}"
-    return f"design/{Path(design_file).stem}-{tag}"
+    return f"design/{Path(design_file).stem}-{stable_tag(full_path)}"
 
 
 def topo_order(tasks: list[dict]) -> list[str]:

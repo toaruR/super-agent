@@ -30,6 +30,7 @@ from harness.roles.decomposer import (
 )
 from harness.roles import planner as planner_role
 from harness.roles.scheduler import (
+    stable_tag,
     create_worktree,
     design_branch_name,
     schedule,
@@ -159,12 +160,17 @@ def drive(
     # downstream role can recover task_file from the ledger via resolve_task_file.
     # Named/status like cmd_plan's own decompose task (plan-<slug>-<hex>,
     # status="planning") so drive's plan phase is visible on the dashboard
-    # too, not just a generic "T-<hex>"/"created" row.
+    # too, not just a generic "T-<hex>"/"created" row. The hex tag is derived
+    # (CRC32 of design_file+task_file, not uuid4) so re-running drive on the
+    # same design/task_file lands on the SAME dashboard row instead of
+    # minting a new "plan-...-<random>" entry every single run.
+    effective_task_file = task_file or str(tasks_file.resolve())
     if seq is not None:
-        tid = f"plan-{slugify(requirement or 'drive')}-{uuid.uuid4().hex[:6]}"
+        tag = stable_tag((spec_path or "") + "|" + effective_task_file)
+        tid = f"plan-{slugify(requirement or 'drive')}-{tag}"
         seq.propose(tid, "task.created", goal=requirement, role="decomposer",
                     design_file=spec_path or "",
-                    task_file=task_file or str(tasks_file.resolve()),
+                    task_file=effective_task_file,
                     status="planning")
         if on_status_change is not None:
             on_status_change()
@@ -175,7 +181,7 @@ def drive(
         if seq is not None:
             seq.propose(tid, "decompose.ok", n_tasks=len(tasks), source="tasks.md",
                         status="planned", design_file=spec_path or "",
-                        task_file=task_file or str(tasks_file.resolve()))
+                        task_file=effective_task_file)
             if on_status_change is not None:
                 on_status_change()
     else:
