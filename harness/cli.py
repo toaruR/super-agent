@@ -688,9 +688,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         for design_file, tasks in group_by_design_file(model).items():
             print(f"  ## {design_file}")
             for task_id, info in sorted(tasks.items()):
+                # info["task_id"] is the bare id (never design_file-suffixed,
+                # unlike the dict key used to disambiguate same-id tasks
+                # across designs); already grouped under this design_file's
+                # heading, so the bare id is all that's needed here.
+                display_id = info.get("task_id") or task_id
                 created = format_ts(info["created_at"])
                 updated = format_ts(info["updated_at"])
-                print(f"    {task_id}\t{info['status']}"
+                print(f"    {display_id}\t{info['status']}"
                       f"\tcreated={created}\tupdated={updated}")
     else:
         print("  (no logical tasks recorded)")
@@ -808,6 +813,14 @@ def auto_update_dashboard(refresh_interval: int = 5, seq: Sequencer | None = Non
     after ``seq.stop()``, which already blocks until its queue is drained).
     """
     try:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            # Under pytest, LEDGER_PATH is frequently pointed at a throwaway
+            # tmp_path ledger via SUPER_AGENT_LEDGER (subprocess CLI tests),
+            # while cwd stays the real repo root -- writing here would clobber
+            # the real project's dashboard.html/dashboard.md with test-fixture
+            # data. No test asserts on this function's output, so it's safe
+            # to no-op for the whole pytest run.
+            return
         if seq is not None:
             seq.flush()
         # Always auto-generate/update dashboard.html in cwd

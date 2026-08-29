@@ -113,6 +113,41 @@ def test_build_model_meta_missing_ts_defaults_empty() -> None:
     assert info["updated_at"] == ""
 
 
+def test_build_model_same_task_id_across_designs_does_not_merge() -> None:
+    """Two unrelated designs both decomposing into "T1"/"T2"/"T3" (the
+    decomposer always numbers from T1) must not be folded into a single
+    entry: each design's T1 keeps its own status/design_file, and neither
+    design's rows silently disappear."""
+    events = [
+        {"task_id": "T1", "type": "task.created",
+         "design_file": "design-a.md", "task_file": "tasks-a.md", "ts": 100},
+        {"task_id": "T1", "type": "integrate.ok",
+         "design_file": "design-a.md", "task_file": "tasks-a.md", "ts": 200},
+        {"task_id": "T1", "type": "task.created",
+         "design_file": "design-b.md", "task_file": "tasks-b.md", "ts": 300},
+        {"task_id": "T1", "type": "implementer.error",
+         "design_file": "design-b.md", "task_file": "tasks-b.md", "ts": 400},
+    ]
+    model = build_model(events)
+    assert set(model) == {"T1 (design-a.md)", "T1 (design-b.md)"}
+    a = model["T1 (design-a.md)"]
+    assert a["design_file"] == "design-a.md"
+    assert a["status"] == "integrated"
+    b = model["T1 (design-b.md)"]
+    assert b["design_file"] == "design-b.md"
+    assert b["status"] == "failed"
+
+
+def test_build_model_unique_task_id_keeps_bare_id() -> None:
+    """A task id that appears under only one design_file is unaffected by
+    the collision-disambiguation logic (back-compat: model["T1"] works)."""
+    events = [
+        {"task_id": "T1", "type": "task.created", "design_file": "d.md", "ts": 100},
+    ]
+    model = build_model(events)
+    assert set(model) == {"T1"}
+
+
 def test_group_by_design_file() -> None:
     model = {
         "task-1": {"status": "integrated", "design_file": "b.md", "task_file": "",

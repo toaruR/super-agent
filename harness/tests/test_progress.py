@@ -27,6 +27,7 @@ def test_write_and_read_progress(tmp_path) -> None:
     got = read_progress("PA__hermes_0", ledger_path)
     assert got == {
         "task_id": "PA__hermes_0",
+        "design_file": "",
         "vendor": "hermes",
         "status": "running",
         "detail": "step_update ACTIVE",
@@ -93,3 +94,49 @@ def test_load_all_progress_skips_unparseable(tmp_path) -> None:
 
     all_progress = load_all_progress(ledger_path)
     assert set(all_progress) == {"PA"}
+
+
+def test_progress_path_scoped_by_design_file_does_not_collide(tmp_path) -> None:
+    """Two designs that mint the same task id (the decomposer always numbers
+    from "T1" independently per design) must not share one heartbeat file:
+    write_progress()/read_progress() take an optional design_file and route
+    to a design-scoped filename."""
+    ledger_path = tmp_path / "events.jsonl"
+    write_progress("T1", ledger_path, design_file="design-a.md",
+                   vendor="claude", status="running", detail="a")
+    write_progress("T1", ledger_path, design_file="design-b.md",
+                   vendor="claude", status="reviewing", detail="b")
+
+    a = read_progress("T1", ledger_path, design_file="design-a.md")
+    b = read_progress("T1", ledger_path, design_file="design-b.md")
+    assert a["status"] == "running"
+    assert a["detail"] == "a"
+    assert b["status"] == "reviewing"
+    assert b["detail"] == "b"
+    assert progress_path("T1", ledger_path, design_file="design-a.md") != \
+        progress_path("T1", ledger_path, design_file="design-b.md")
+
+
+def test_progress_path_untagged_matches_legacy_bare_filename(tmp_path) -> None:
+    """No design_file given (the common/legacy call shape) keeps writing the
+    bare "<task_id>.json" filename -- no behaviour change for callers that
+    don't pass it."""
+    ledger_path = tmp_path / "events.jsonl"
+    assert progress_path("T1", ledger_path) == progress_dir(ledger_path) / "T1.json"
+    write_progress("T1", ledger_path, detail="untagged")
+    assert (progress_dir(ledger_path) / "T1.json").exists()
+
+
+def test_load_all_progress_same_task_id_across_designs_keeps_freshest(tmp_path) -> None:
+    """When two designs' progress files map to the same task_id,
+    load_all_progress()'s flat task_id-keyed dict deterministically keeps the
+    most recently active one instead of an arbitrary glob()-order pick."""
+    ledger_path = tmp_path / "events.jsonl"
+    write_progress("T1", ledger_path, design_file="design-a.md",
+                   status="running", detail="older", last_activity_ts=1.0)
+    write_progress("T1", ledger_path, design_file="design-b.md",
+                   status="reviewing", detail="newer", last_activity_ts=2.0)
+
+    all_progress = load_all_progress(ledger_path)
+    assert all_progress["T1"]["detail"] == "newer"
+    assert all_progress["T1"]["design_file"] == "design-b.md"

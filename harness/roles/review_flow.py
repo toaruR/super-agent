@@ -234,7 +234,8 @@ def run_pipeline(
         from harness.core.progress import write_progress
         from harness.cli import auto_update_dashboard
         ledger_path = str(seq.path if seq is not None else CONFIG_DIR.parent / "ledger" / "events.jsonl")
-        write_progress(task_id, ledger_path, vendor=reviewer_vendor, status="reviewing", detail="reviewing task...")
+        write_progress(task_id, ledger_path, design_file=design_file, vendor=reviewer_vendor,
+                       status="reviewing", detail="reviewing task...")
         auto_update_dashboard()
     except Exception:
         pass

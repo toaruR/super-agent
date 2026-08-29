@@ -73,7 +73,7 @@ ARCHITECT_PROMPT = """あなたはシステムアーキテクトです。要求�
 
 def _invoke_design(decl, prompt: str, *, vendor: str, model: str | None, effort: str | None,
                    dry_run: bool, invoke_kwargs: dict, task_id: str, seq, emit,
-                   draft_path: str | None = None) -> dict:
+                   draft_path: str | None = None, design_file: str = "") -> dict:
     """Run the read-only design LLM call, wired to the progress side-channel."""
     kwargs = dict(invoke_kwargs)
     if draft_path:
@@ -89,10 +89,10 @@ def _invoke_design(decl, prompt: str, *, vendor: str, model: str | None, effort:
         ledger_path = seq.path
 
         def progress_cb(detail: str) -> None:
-            write_progress(task_id, ledger_path, vendor=vendor,
+            write_progress(task_id, ledger_path, design_file=design_file, vendor=vendor,
                            status="designing", detail=detail)
 
-        write_progress(task_id, ledger_path, vendor=vendor,
+        write_progress(task_id, ledger_path, design_file=design_file, vendor=vendor,
                        status="designing", detail="starting architect proposal")
 
     try:
@@ -103,17 +103,20 @@ def _invoke_design(decl, prompt: str, *, vendor: str, model: str | None, effort:
         err = str(e)
         emit(task_id, "architect.error", error=err)
         if seq is not None:
-            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
+            write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                           status="error", detail=err[:200])
         return {"error": err}
     except subprocess.TimeoutExpired as e:
         err = f"vendor subprocess timed out after {e.timeout}s"
         emit(task_id, "architect.error", error=err)
         if seq is not None:
-            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
+            write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                           status="error", detail=err[:200])
         return {"error": err}
 
     if seq is not None:
-        write_progress(task_id, seq.path, vendor=vendor, status="done", detail="")
+        write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                       status="done", detail="")
 
     return _coerce_parsed(res.get("result"))
 
@@ -155,7 +158,7 @@ def propose(task_id: str, requirement: str, vendor: str, spec_path: str | None =
             result = _invoke_design(decl, prompt, vendor=vendor, model=model, effort=effort,
                                     dry_run=dry_run, invoke_kwargs=invoke_kwargs,
                                     task_id=task_id, seq=seq, emit=emit,
-                                    draft_path=str(draft_p))
+                                    draft_path=str(draft_p), design_file=spec_path or "")
             if result.get("dry_run"):
                 return {"source": "llm(dry)", "cmd": result.get("cmd"), "decisions": []}
             if "error" in result:

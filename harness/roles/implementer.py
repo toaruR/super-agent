@@ -204,10 +204,11 @@ def implement(task_id: str, task: dict, worktree_path: str,
     if seq is not None and not dry_run:
         ledger_path = seq.path
         seq.propose(task_id, "implementer.invoked", vendor=vendor, model=model, effort=effort, design_file=design_file)
-        write_progress(task_id, ledger_path, vendor=vendor, status="running", detail="implementing task...")
+        write_progress(task_id, ledger_path, design_file=design_file, vendor=vendor,
+                       status="running", detail="implementing task...")
 
         def progress_cb(detail: str) -> None:
-            write_progress(task_id, ledger_path, vendor=vendor,
+            write_progress(task_id, ledger_path, design_file=design_file, vendor=vendor,
                            status="running", detail=detail)
             try:
                 from harness.cli import auto_update_dashboard
@@ -243,7 +244,8 @@ def implement(task_id: str, task: dict, worktree_path: str,
         if seq is not None:
             seq.propose(task_id, "implementer.error", error=err, design_file=design_file)
         if progress_cb is not None:
-            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
+            write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                           status="error", detail=err[:200])
         return {"ok": False, "task_id": task_id, "error": err}
 
     self_score = _extract_self_score(run["stdout"], decl)
@@ -252,8 +254,8 @@ def implement(task_id: str, task: dict, worktree_path: str,
     commit = _commit_worktree(task_id, worktree_path, touch_allow, seq)
     if not commit.get("ok"):
         if progress_cb is not None:
-            write_progress(task_id, seq.path, vendor=vendor, status="error",
-                           detail=str(commit.get("error"))[:200])
+            write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                           status="error", detail=str(commit.get("error"))[:200])
         return {"ok": False, "task_id": task_id,
                 "error": commit.get("error"), "vendor_rc": run["returncode"]}
 
@@ -274,7 +276,7 @@ def implement(task_id: str, task: dict, worktree_path: str,
                     design_file=design_file)
 
     if progress_cb is not None:
-        write_progress(task_id, seq.path, vendor=vendor, status="done", detail="")
+        write_progress(task_id, seq.path, design_file=design_file, vendor=vendor, status="done", detail="")
 
     return {
         "ok": True,

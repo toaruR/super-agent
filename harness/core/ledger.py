@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _normalize_path(path: str) -> str:
+def normalize_path(path: str) -> str:
     """Normalize a non-empty path string to a resolved absolute path string.
     Returns "" if path is empty."""
     if not path:
@@ -51,7 +51,7 @@ def _same_path(a: str, b: str) -> bool:
     """
     if not a or not b:
         return False
-    return _normalize_path(a) == _normalize_path(b)
+    return normalize_path(a) == normalize_path(b)
 
 
 @dataclass
@@ -91,8 +91,8 @@ class Ledger:
         during the require->decompose phase). An empty task_file signals 'no tasks
         defined yet' and is a valid, distinct chunk.
         """
-        design_file = _normalize_path(design_file)
-        task_file = _normalize_path(task_file)
+        design_file = normalize_path(design_file)
+        task_file = normalize_path(task_file)
         if events is None:
             events = []
         key = (design_file, task_file)
@@ -124,8 +124,8 @@ class Ledger:
         and the whole file is rewritten atomically (temp + rename). Otherwise a new
         chunk line is appended.
         """
-        design_file = _normalize_path(design_file)
-        task_file = _normalize_path(task_file)
+        design_file = normalize_path(design_file)
+        task_file = normalize_path(task_file)
         with self._lock:
             chunks = self.load()
             target = None
@@ -244,8 +244,8 @@ class Sequencer:
 
     def propose_chunk(self, design_file: str, task_file: str,
                       events: list[dict[str, Any]]) -> None:
-        design_file = _normalize_path(design_file)
-        task_file = _normalize_path(task_file)
+        design_file = normalize_path(design_file)
+        task_file = normalize_path(task_file)
         if task_file:
             self._task_file_cache[design_file] = task_file
         self._queue.put({
@@ -261,8 +261,8 @@ class Sequencer:
         design_file (callers in the drive phase always pass task_file
         explicitly; downstream roles recover it from the ledger).
         """
-        design_file = _normalize_path(fields.pop("design_file", ""))
-        task_file = _normalize_path(fields.pop("task_file", ""))
+        design_file = normalize_path(fields.pop("design_file", ""))
+        task_file = normalize_path(fields.pop("task_file", ""))
         if not task_file and design_file:
             task_file = self.resolve_task_file(design_file)
         if not design_file and task_file:
@@ -322,7 +322,7 @@ class Sequencer:
         background writer thread, so a disk-only lookup here would race
         against very recently queued (not-yet-flushed) proposals.
         """
-        design_file = _normalize_path(design_file)
+        design_file = normalize_path(design_file)
         cached = self._task_file_cache.get(design_file)
         if cached:
             return cached
@@ -343,7 +343,7 @@ class Sequencer:
         there is no race against the background writer thread to guard
         against (unlike resolve_task_file(), which propose() calls mid-flight).
         """
-        task_file = _normalize_path(task_file)
+        task_file = normalize_path(task_file)
         for chunk in self._ledger.load():
             df = chunk.get("design_file", "")
             tf = chunk.get("task_file", "")

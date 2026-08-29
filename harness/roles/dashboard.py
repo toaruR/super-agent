@@ -27,6 +27,7 @@ Awareness improvements (dashboard-awareness design):
 from __future__ import annotations
 
 import html
+import os
 import time
 from datetime import datetime
 from typing import Any
@@ -390,7 +391,9 @@ def build_model(
 ) -> dict[str, dict[str, Any]]:
     """Convert ledger events into a structured model mapping task_id -> info.
 
-    Each info dict has keys: ``status``, ``design_file``, ``task_file``,
+    Each info dict has keys: ``task_id`` (the bare logical task id, never
+    design_file-suffixed -- see the Returns section below for how that
+    differs from the dict key), ``status``, ``design_file``, ``task_file``,
     ``created_at``, ``updated_at`` (the latter two are unix-epoch seconds, or
     ``""`` when no event carried a ``ts``), ``is_stale``, ``reason``,
     ``last_activity_ts``/``activity_detail`` (from the progress side-channel,
@@ -440,15 +443,28 @@ def build_model(
         stale_after: Stale threshold in seconds (default 30 minutes).
 
     Returns:
-        Dict mapping logical task_id to an info dict.
+        Dict mapping logical task_id to an info dict. Aggregation is always
+        scoped per design_file, so two designs that independently mint the
+        same task id (e.g. both decompose into "T1"/"T2"/"T3") never merge
+        into one entry. A task id unique across the whole model keeps its
+        bare id as the key; one reused by more than one design_file is
+        disambiguated as ``"<id> (<design_file basename>)"``.
     """
     if not events:
         return {}
 
     now_ts = time.time() if now is None else float(now)
 
-    # Pass 1: raw task id -> strongest status + meta.
-    raw: dict[str, dict[str, Any]] = {}
+    # Pass 1: (design_file, raw task id) -> strongest status + meta.
+    #
+    # Keyed by the pair, not the bare task id: the decomposer numbers tasks
+    # "T1", "T2", ... independently per design, so two unrelated designs
+    # routinely mint the same id. Keying by task id alone would fold their
+    # events into a single entry (design_file taken from whichever design's
+    # event happened to be seen first), silently dropping one design's rows
+    # and corrupting the other's status with events that never belonged to
+    # it.
+    raw: dict[tuple[str, str], dict[str, Any]] = {}
     for ev in events:
         if not isinstance(ev, dict):
             continue
@@ -456,7 +472,8 @@ def build_model(
         if not task_id:
             continue
 
-        entry = raw.setdefault(task_id, _empty_task_entry())
+        key = (ev.get("design_file") or "", task_id)
+        entry = raw.setdefault(key, _empty_task_entry())
         _merge_event_meta(entry, ev)
         if progress and task_id in progress and not entry["last_activity_ts"]:
             p = progress[task_id]
@@ -493,16 +510,19 @@ def build_model(
         if entry["status"] != "failed":
             entry["reason"] = ""
 
-    # Pass 2: aggregate speculative sub-channels into parent logical tasks.
-    aggregated: dict[str, dict[str, Any]] = {}
-    for task_id, entry in raw.items():
+    # Pass 2: aggregate speculative sub-channels into parent logical tasks,
+    # scoped per design_file for the same reason Pass 1 is keyed by pair —
+    # sub-channel aggregation must never cross design boundaries either.
+    aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    for (design_file, task_id), entry in raw.items():
         if entry["status"] is None:
             continue
         parent = _logical_parent(task_id)
-        agg = aggregated.get(parent)
+        key = (design_file, parent)
+        agg = aggregated.get(key)
         if agg is None:
             agg = _empty_task_entry()
-            aggregated[parent] = agg
+            aggregated[key] = agg
         if agg["_rank"] is None or entry["_rank"] > agg["_rank"]:
             agg["status"] = entry["status"]
             agg["_rank"] = entry["_rank"]
@@ -511,7 +531,14 @@ def build_model(
             agg["reason"] = entry["reason"]
         _merge_meta(agg, entry)
 
-    for parent_id, entry in aggregated.items():
+    # task id -> set of design_files it appears under, used below to decide
+    # whether the returned string key needs disambiguating.
+    id_design_files: dict[str, set[str]] = {}
+    for design_file, parent_id in aggregated:
+        id_design_files.setdefault(parent_id, set()).add(design_file)
+
+    result: dict[str, dict[str, Any]] = {}
+    for (design_file, parent_id), entry in aggregated.items():
         entry.pop("_rank", None)
         # Check progress side-channel for active running/reviewing status override
         # (unless the task has already reached terminal completed status: integrated/passed).
@@ -542,7 +569,22 @@ def build_model(
         entry["last_activity_display"] = _relative_time(
             lat or entry["updated_at"], now_ts
         )
-    return aggregated
+
+        # entry["task_id"] is always the bare id (never suffixed): renderers
+        # already group rows under a "### <design_file>" heading, so
+        # repeating the design_file inside the Task ID column would be
+        # redundant there. The *dict key* below is what needs disambiguating
+        # (ids unique to one design_file keep their bare id, back-compat with
+        # callers that do model["T1"]; an id reused across designs gets a
+        # suffixed key so neither task is dropped or overwritten) — it is an
+        # internal collision-avoidance detail, not something to display.
+        entry["task_id"] = parent_id
+        if len(id_design_files[parent_id]) > 1 and design_file:
+            display_id = f"{parent_id} ({os.path.basename(design_file)})"
+        else:
+            display_id = parent_id
+        result[display_id] = entry
+    return result
 
 
 # Heading used for tasks whose design_file couldn't be determined.
@@ -695,8 +737,12 @@ def render_markdown(model: dict[str, dict[str, Any]]) -> str:
             lines.append("| Task ID | Status | Created At | Updated At | Reason | Last Activity |")
             lines.append("| --- | --- | --- | --- | --- | --- |")
             for task_id, info in sorted(tasks.items()):
+                # info["task_id"] is the bare id (never design_file-suffixed);
+                # falls back to the dict key for hand-built model dicts (tests)
+                # that don't set it.
+                display_id = info.get("task_id") or task_id
                 lines.append(
-                    f"| {html.escape(task_id)} | {_md_status_cell(info)} | "
+                    f"| {html.escape(display_id)} | {_md_status_cell(info)} | "
                     f"{html.escape(format_ts(info['created_at']))} | "
                     f"{html.escape(format_ts(info['updated_at']))} | "
                     f"{_md_cell(info.get('reason') or '')} | "
@@ -813,8 +859,12 @@ def render_html(
         rows = ""
         for task_id, info in sorted(tasks.items()):
             label, cls = _task_badge(info)
+            # info["task_id"] is the bare id (never design_file-suffixed);
+            # falls back to the dict key for hand-built model dicts (tests)
+            # that don't set it.
+            display_id = info.get("task_id") or task_id
             rows += (
-                f'<tr><td>{html.escape(task_id)}</td>'
+                f'<tr><td>{html.escape(display_id)}</td>'
                 f'<td><span class="badge {cls}">{html.escape(label)}</span>'
                 f'{_reason_html(info)}</td>'
                 f'<td>{html.escape(format_ts(info["created_at"]))}</td>'

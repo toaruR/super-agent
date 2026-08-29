@@ -430,10 +430,10 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
         ledger_path = seq.path
 
         def progress_cb(detail: str) -> None:
-            write_progress(task_id, ledger_path, vendor=vendor,
+            write_progress(task_id, ledger_path, design_file=design_file, vendor=vendor,
                            status="planning", detail=detail)
 
-        write_progress(task_id, ledger_path, vendor=vendor,
+        write_progress(task_id, ledger_path, design_file=design_file, vendor=vendor,
                        status="planning", detail="starting task decomposition")
 
     try:
@@ -443,17 +443,19 @@ def decompose(task_id: str, requirement: str, vendor: str = "claude",
         err = str(e)
         emit(task_id, "decompose.error", error=err, status="failed", debug_log=debug_log_str)
         if seq is not None:
-            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
+            write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                           status="error", detail=err[:200])
         return {"ok": False, "error": err, "debug_log": debug_log_str}
     except subprocess.TimeoutExpired as e:
         err = f"vendor subprocess timed out after {e.timeout}s"
         emit(task_id, "decompose.error", error=err, status="failed", debug_log=debug_log_str)
         if seq is not None:
-            write_progress(task_id, seq.path, vendor=vendor, status="error", detail=err[:200])
+            write_progress(task_id, seq.path, design_file=design_file, vendor=vendor,
+                           status="error", detail=err[:200])
         return {"ok": False, "error": err, "debug_log": debug_log_str}
 
     if seq is not None:
-        write_progress(task_id, seq.path, vendor=vendor, status="done", detail="")
+        write_progress(task_id, seq.path, design_file=design_file, vendor=vendor, status="done", detail="")
 
     parsed = res.get("result") or {}
     if isinstance(parsed, str):
