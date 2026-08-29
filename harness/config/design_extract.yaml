@@ -1,0 +1,28 @@
+# design-extract パイプライン（Fetch/Analyze/Tokenize/Generate/Verify）共通設定。
+# 各段階のモジュールはこのファイルを harness.extract.robots.load_design_extract_config()
+# 等で読み込むだけにし、値をコード中にハードコードしない。
+
+# レスポンシブ検証用ビューポート幅(px)のリスト。Fetch/Verify 段階で、この幅ごとに
+# computed style / スクリーンショットを取得しブレークポイント差分を検出する。
+breakpoints:
+  - 375   # モバイル
+  - 768   # タブレット
+  - 1280  # デスクトップ
+  - 1920  # 大画面デスクトップ
+
+# クロール設定。robots.txt を必ず遵守し、トップ/代表的な一覧/代表的な詳細ページに限定する
+# ことで無制限クロールを避ける（harness.extract.robots.select_crawl_targets の上限と対応）。
+crawl:
+  user_agent: "DesignExtractBot/1.0"
+  respect_robots_txt: true
+  request_timeout_seconds: 10
+  max_pages: 10
+  max_top_pages: 1
+  max_listing_pages: 3
+  max_detail_pages: 3
+
+# 視覚的類似度検証（生成UI vs 元サイトのスクリーンショット）の設定。
+verify:
+  # 0.0〜1.0 の類似度スコア。この値以上であれば再現性ありと判定する。
+  similarity_threshold: 0.95
+  metric: "perceptual_hash"
