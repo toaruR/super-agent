@@ -170,6 +170,7 @@ Super Agent は、`super-agent` 自身以外の**任意の Git リポジトリ**
 | `dashboard` | 台帳からダッシュボード生成 | 2.8 |
 | `status` | 台帳の最近のイベントを表示 | 2.9 |
 | `log <task>` | 指定タスクの全イベントを表示 | 2.10 |
+| `extract run <url>` / `extract refine` | 既存サイトから再現用デザインプロンプトを抽出／自然言語で再調整（`plan`/`drive` とは独立） | 2.12 |
 
 ### 2.1 `super-agent architect "<要求>"` — 設計決定を ADR として記録（①）
 
@@ -504,6 +505,92 @@ JSON で裁定を標準出力に出します。
 super-agent review probe/n3/caseGreen --reviewer codex --dry-run
 # → verdict/judgment_unavailable, tree_hash が束縛される
 ```
+
+### 2.12 `super-agent extract run` / `extract refine` — 既存サイトからデザインを抽出（独立ロール）
+
+**これは何をするコマンドか**：見た目が気に入っている既存サイトの URL を渡すと、実ブラウザで
+レンダリングして HTML/CSS のデザインパターン（色・タイポグラフィ・余白・角丸・シャドウ）を
+コンポーネント（button/card/nav/form）単位で抽出し、**再現性のあるデザインプロンプト
+（Markdown）** とその根拠となる **トークン JSON** を出力します。`plan`/`drive`（DAG 実行）
+とは疎結合な独立ロールなので、単体でも、`--design_file` に渡して `drive` の入力にしても使えます。
+
+**事前準備**：実ブラウザ起動に Playwright を使うため、初回だけインストールが必要です。
+
+```bash
+.cve-venv/Scripts/python.exe -m pip install playwright
+.cve-venv/Scripts/python.exe -m playwright install chromium
+```
+
+#### `extract run <url>` — 一括抽出（fetch→analyze→tokenize→generate→store）
+
+```bash
+super-agent extract run https://example.com \
+  --base_dir design-extracts \
+  --site example \
+  --breakpoints 375 768 1280 1920 \
+  --component-types button card nav form
+```
+
+| オプション | 意味 |
+|---|---|
+| `<url>` | デザイン抽出対象のページ URL（必須） |
+| `--base_dir` | スナップショット（トークン JSON / プロンプト）の保存先ルート（既定 `design-extracts`） |
+| `--site` | スナップショットのサイト識別子（既定 `<url>` から自動導出） |
+| `--breakpoints` | 取得するビューポート幅（px）のリスト（既定は `design_extract.yaml` の `breakpoints`） |
+| `--component-types` | 解析対象のコンポーネント種別（既定 `button`/`card`/`nav`/`form` の全種別） |
+| `--user-agent` | robots.txt 判定に使う User-Agent（既定 `DesignExtractBot/1.0`） |
+
+対象サイトの `/robots.txt` を事前に確認し、許可されていない URL は拒否します。
+
+**出力例**：
+```json
+{
+  "ok": true,
+  "url": "https://example.com",
+  "design_file": "design-extracts/example.com/20260830T120000Z/prompt.md",
+  "snapshot_dir": "design-extracts/example.com/20260830T120000Z",
+  "tokens_path": "design-extracts/example.com/20260830T120000Z/tokens.json"
+}
+```
+
+`design_file`（= 生成された `prompt.md`）は `super-agent plan --design_file <path>` に
+そのまま渡せます。抽出したデザインを起点にそのまま実装タスクへつなげたい場合：
+
+```bash
+super-agent extract run https://example.com --site example
+super-agent drive --design_file design-extracts/example.com/<timestamp>/prompt.md
+```
+
+#### `extract refine "<指示>" --tokens_file <path>` — 自然言語で再調整
+
+一度抽出したトークン JSON に対し、「ボタンの角丸をもっと大きくして」のような自然言語の
+指示を反映し、プロンプトを再生成します。
+
+```bash
+super-agent extract refine "ボタンの角丸をもっと大きくして" \
+  --tokens_file design-extracts/example.com/20260830T120000Z/tokens.json \
+  --url https://example.com \
+  --out_dir design-extracts \
+  --site example-v2
+```
+
+| オプション | 意味 |
+|---|---|
+| `<instruction>` | 自然言語の再調整指示（必須） |
+| `--tokens_file` | 更新対象のトークン JSON（`tokens.json`、W3C Design Tokens 形式）のパス（必須） |
+| `--url` | 再生成するプロンプトに含める URL（省略可） |
+| `--out_dir` | 指定すると更新後のトークン JSON / プロンプトを新しいスナップショットとして保存（省略時は標準出力のみ） |
+| `--site` | `--out_dir` 保存時のサイト識別子（既定 `--url`） |
+
+指示の解釈だけを LLM（既定 `claude`）に行わせ、実際にどのトークンをどう書き換えるかは
+決定的なコードでマージするため、指定していない無関係なトークン（色や余白など）が
+LLM の出力ゆれで壊れることはありません。`--out_dir` を省略すると `tokens`/`delta`/`prompt`
+を JSON で標準出力するだけなので、まず内容を確認してから保存する、という使い方もできます。
+
+> 詳しい仕様（パイプライン各段階・robots.txt 判定ロジック・refine のマージ方式）は
+> `docs/spec.md` §11 を参照。
+
+---
 
 ## 3. 検証パイプラインを動かす（Stage C）
 

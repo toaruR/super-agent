@@ -20,6 +20,7 @@
 - **read-only レビュア** — レビュアは実装者と別ベンダーかつ読み取り専用。独立性は権限ではなく裁定器で担保。
 - **自己改良（Stage 6: evolve）** — 台帳から失敗パターンを拾い、同種が3回以上继续したら `acceptance` テンプレまたは憲法への昇格を提案。`evolve --dry-run` で確認、実行で `design.proposed` を台帳に記録。改良対象は super-agent 自身（`harness/constitution.md` / `acceptance-templates.md`）であり、成果物（ターゲットプロジェクト）ではない。**未実装**：書き出した提案を `decompose`/`review` が読み込んで実際の判断に反映するフィードバックループ（提案は蓄積されるのみ）。
 - **liveness 監視付きダッシュボード** — 長時間のベンダー呼び出しは、絶対タイムアウトではなく無活動検知（idle-timeout、既定300秒）でハングを判定（ACPには非依存）。`dashboard --watch` でN秒ごとに自動再生成し、HTML は自動リロードする。
+- **デザイン抽出（`extract`、独立ロール）** — 既存サイトの URL から HTML/CSS のデザインパターン（色・タイポグラフィ・余白・角丸・シャドウ）をコンポーネント単位で抽出し、W3C Design Tokens 形式の JSON と再現用の Markdown デザインプロンプトを生成する。robots.txt を遵守し、抽出結果は自然言語の指示（`extract refine`）で決定的に再調整できる。生成したプロンプトは `plan`/`drive` の `--design_file` にそのまま渡せる。
 
 ---
 
@@ -112,6 +113,10 @@ super-agent status                                # 台帳の最近のイベン�
 super-agent log T-XXXX                            # 指定タスクの全イベント
 super-agent evolve --dry-run                      # 台帳から失敗パターンを拾い自己改良を提案
 super-agent dashboard --format html --out dashboard.html --watch --interval 10  # 進捗を自動更新表示
+
+# 既存サイトからデザインを抽出し、そのままdriveの入力にする（独立ロール）
+super-agent extract run https://example.com --site example
+super-agent drive --design_file design-extracts/example.com/<timestamp>/prompt.md
 ```
 
 その他のコマンドと詳細な手順は [`docs/usage.md`](docs/usage.md) を参照。

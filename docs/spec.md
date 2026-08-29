@@ -491,3 +491,119 @@ O(n²) の書き込み増幅になる。よって heartbeat は台帳を経由�
 `harness/core/progress.py`、`harness/roles/implementer.py`、`harness/roles/dashboard.py`、`harness/cli.py`。
 **テスト**: `harness/tests/test_invoke.py`、`test_dashboard.py`、`test_implementer.py`、`test_cli.py`。
 **設計文書**: `docs/design/timeout-liveness-watchdog.md`。
+
+---
+
+## 11. design-extract パイプライン（デザイン抽出）仕様
+
+**動機**: 既存サイトの HTML/CSS から再現性のあるデザインプロンプトを機械的に導出する、
+`plan`/`drive`（DAG 実行）とは**疎結合な独立ロール**。`harness/roles/extract.py` が
+`harness/extract/{fetch,analyze,tokens,generate,storage,verify,refine,robots}` の
+各段階モジュールを import して束ねるだけで、各段階のロジック自体はこのロールに実装しない。
+
+### 11.1 パイプライン構成（T2〜T8）
+
+```
+fetch → analyze → tokenize → generate → store        （run_pipeline() が一括実行）
+                                            ↘ verify   （再生成UIとの視覚的類似度、別工程）
+                                   tokens ↘ refine     （自然言語での再調整、別工程）
+```
+
+| 段階 | モジュール | 入出力 |
+|---|---|---|
+| **fetch** | `harness.extract.fetch`（`fetch_rendered_page`） | URL → `PageFetchResult`（`breakpoints` ごとのレンダリング後 DOM/computed style）。`PlaywrightBrowserDriver` が既定実装（Playwright への依存は `__init__` まで遅延） |
+| **analyze** | `harness.extract.analyze`（`analyze_components`） | `PageFetchResult` → `ComponentAnalysis`。`component_types` 既定 `("button", "card", "nav", "form")`（`COMPONENT_TYPES`） |
+| **tokenize** | `harness.extract.tokens`（`build_design_tokens`） | `ComponentAnalysis` → W3C Design Tokens（DTCG）形式の JSON。各トークンは `{"$type": ..., "$value": ...}` |
+| **generate** | `harness.extract.generate`（`render_prompt`） | トークン JSON → Markdown デザインプロンプト。**テンプレート組み立てのみで LLM 呼び出しは一切行わない**。カテゴリ・コンポーネント種別・トークンキーを全てソートしてから組み立てるため、同一入力に対し常に同一出力（決定的） |
+| **store** | `harness.extract.storage`（`save_snapshot`/`load_snapshot`） | `tokens.json`/`prompt.md`（常にペア）/`metadata.json`/`screenshots/` を `<base_dir>/<site>/<timestamp>/` へ保存。既存 (site, timestamp) は上書きせず `SnapshotExistsError`。一時ディレクトリ書き込み後 `rename` でアトミック化 |
+| **verify** | `harness.extract.verify`（`compute_similarity`/`verify_against_threshold`） | 元サイトと再生成 UI のスクリーンショットの知覚的類似度（0.0〜1.0）を `design_extract.yaml` の `verify.similarity_threshold`（既定 0.95）と比較。`SimilarityScorer`/`ImageProvider` は呼び出し側が注入（本モジュールは Playwright/画像処理に依存しない） |
+| **refine** | `harness.extract.refine`（`apply_refinement`） | 自然言語指示 → トークン JSON の差分適用 → プロンプト再生成（§11.4） |
+
+**契約**: `PipelineResult.design_file`（= 保存済み `prompt.md` の絶対パス文字列）は
+`harness.roles.planner` の `--design_file` と同じ「プレーンテキストとして `read_text()`
+されるMarkdown」契約を満たすため、`plan`/`drive` への入力候補としてそのまま渡せる
+（`harness/roles/extract.py` は planner/decomposer/drive を一切 import しない）。
+
+**ledger との関係**: このロールは既存の `harness.core.ledger` を一切読み書きしない。
+抽出結果はサイト単位・抽出日時単位のスナップショットとして `harness.extract.storage` が
+独立管理する。
+
+### 11.2 設定ファイル（design_extract.yaml）
+
+**ファイル**: `harness/config/design_extract.yaml`。読み込みは
+`harness.extract.robots.load_design_extract_config()`（他段階も同じ関数を使う）。
+
+```yaml
+breakpoints: [375, 768, 1280, 1920]   # モバイル/タブレット/デスクトップ/大画面
+crawl:
+  user_agent: "DesignExtractBot/1.0"
+  respect_robots_txt: true
+  request_timeout_seconds: 10
+  max_pages: 10
+  max_top_pages: 1
+  max_listing_pages: 3
+  max_detail_pages: 3
+verify:
+  similarity_threshold: 0.95
+  metric: "perceptual_hash"
+```
+
+### 11.3 robots.txt 遵守とクロール対象選定
+
+- `RobotsChecker`（`harness.extract.robots`）: `urllib.robotparser` ではなく自前実装。
+  Google の Robots Exclusion Protocol の解釈に倣い、**最長一致（最も具体的なパターン）を
+  優先**し、同じ長さなら Allow を優先する（`Disallow: /a/` だが `Allow: /a/public/` の
+  ような例外を正しく扱う）。robots.txt 取得失敗時は不在時と同様に全許可扱い。
+- `select_crawl_targets()`: 候補 URL を `top`/`listing`/`detail`/`asset`（`classify_url()`、
+  パスセグメント数で分類）に振り分け、カテゴリごとの上限件数（既定 top=1, listing=3,
+  detail=3、`max_pages` で全体上限も指定可）でのみ採用し、無制限クロールを防ぐ
+  （`harness/config/verifiers.yaml` の verb ホワイトリストと同じ「機械的な上限強制」思想）。
+- `cli.py` の `extract run` は `RobotsChecker.from_site(url, user_agent=...)` を実行前に
+  必ず呼び出し、対象 URL 自体が禁止されていれば拒否する。
+
+### 11.4 refine（自然言語による再調整）の設計
+
+自然言語 → 構造化スペック（LLM 呼び出し）→ 決定的マージ（純粋関数）の二段構成で、
+LLM の出力ゆれが無関係なトークンを破壊しないようにする:
+
+1. `parse_instruction_to_delta()` が `invoke_fn`（既定 `harness.core.invoke.invoke`、
+   既定ベンダー `claude`）を呼び、指示を `REFINEMENT_SCHEMA`（`category`/
+   `component_type`/`property`/`value` の4フィールドのみ）に従った最小限のスペックへ
+   解釈させる。トークン JSON そのものの書き換えは LLM にやらせない。
+2. `spec_to_delta()`（純粋関数）がスペックと既存トークン JSON を突き合わせ、
+   一致したキーだけを含む `delta` を構築する。`component_type`/`property` が
+   `null` なら該当カテゴリ全体に適用。
+3. `merge_delta()`（`_deep_merge`、純粋関数）が `delta` を既存トークン JSON へ非破壊で
+   マージする。`delta` に現れないキーは一切変更されない。
+4. `render_prompt()`（generate 段階）を再実行し、更新後トークンからプロンプトを再生成する
+   （プロンプトは常にトークン JSON からの機械的な導出物、という整合性を再調整後も保つ）。
+
+`RefinementResult{tokens, delta, prompt}` は常に3点セットで返る。`invoke_fn` は差し替え
+可能（テストでは実ベンダー呼び出しなしのフェイクを注入）。
+
+### 11.5 CLI（`extract` サブコマンド）
+
+**ファイル**: `harness/cli.py`（`cmd_extract_run` / `cmd_extract_refine`）。詳細な実行例は
+`usage.md` を参照。
+
+```
+super-agent extract run <url> [--base_dir DIR] [--site NAME] [--breakpoints N...]
+                               [--component-types T...] [--user-agent UA]
+super-agent extract refine <instruction> --tokens_file FILE [--url URL]
+                               [--out_dir DIR] [--site NAME]
+```
+
+- `extract run`: `run_pipeline()`（fetch→analyze→tokenize→generate→store）をそのまま
+  呼ぶ薄いラッパー。`_default_extract_driver()` が既定の `PlaywrightBrowserDriver` を、
+  `_default_extract_robots_checker()` が既定の `RobotsChecker.from_site()` を生成する
+  （いずれもテストで差し替え可能）。
+- `extract refine`: `run_refine()`（= `apply_refinement()`）への薄いラッパー。
+  `--out_dir` 指定時のみ `run_store()` で新スナップショットとして保存する。
+- `verify` はロール層（`run_verify()`）にのみ実装され、CLI サブコマンドとしては未公開
+  （再生成後のスクリーンショット比較という追加入力が必要なため、現状はコード経由の呼び出し
+  のみ）。
+
+**実装**: `harness/roles/extract.py`、`harness/extract/{fetch,analyze,tokens,generate,
+storage,verify,refine,robots}.py`、`harness/config/design_extract.yaml`。
+**テスト**: `harness/tests/test_extract_{fetch,analyze,tokens,generate,storage,verify,
+refine,robots}.py`、`test_role_extract.py`。
