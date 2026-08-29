@@ -502,3 +502,128 @@ def test_version_flag_works_without_subcommand(monkeypatch):
     assert res.stderr == ""
 
 
+def test_extract_command_registered(monkeypatch):
+    """`extract` (and its `run`/`refine` sub-actions) must be wired into the
+    top-level argparse parser, without disturbing any existing subcommand."""
+    monkeypatch.chdir(REPO)
+    top = _run("--help")
+    assert "extract" in top.stdout
+
+    ex = _run("extract", "--help")
+    assert "run" in ex.stdout
+    assert "refine" in ex.stdout
+
+    ex_run = _run("extract", "run", "--help")
+    assert "url" in ex_run.stdout
+
+    ex_refine = _run("extract", "refine", "--help")
+    assert "instruction" in ex_refine.stdout
+    assert "--tokens_file" in ex_refine.stdout
+
+    # existing subcommands must remain untouched
+    for existing in ("architect", "plan", "review", "drive", "implement", "integrate"):
+        assert existing in top.stdout
+
+
+def test_extract_command_invokes_role_pipeline(tmp_path, monkeypatch, capsys):
+    """`extract run <url>` must be a thin wrapper around
+    harness.roles.extract.run_pipeline() (imported into cli.py as
+    extract_run_pipeline): no pipeline logic re-implemented in cli.py."""
+    import argparse
+    import harness.cli as cli_mod
+
+    calls = []
+
+    class FakeResult:
+        def __init__(self, url):
+            self.url = url
+            self.snapshot_dir = tmp_path / "snap"
+            self.tokens_path = self.snapshot_dir / "tokens.json"
+            self.design_file = str(self.snapshot_dir / "prompt.md")
+
+    def fake_run_pipeline(url, driver, *, robots_checker, base_dir, site=None,
+                          breakpoints=None, component_types=None, **kwargs):
+        calls.append({
+            "url": url,
+            "driver": driver,
+            "robots_checker": robots_checker,
+            "base_dir": base_dir,
+            "site": site,
+            "breakpoints": breakpoints,
+            "component_types": component_types,
+        })
+        return FakeResult(url)
+
+    sentinel_driver = object()
+    sentinel_robots = object()
+    monkeypatch.setattr(cli_mod, "_default_extract_driver", lambda: sentinel_driver)
+    monkeypatch.setattr(
+        cli_mod, "_default_extract_robots_checker",
+        lambda url, user_agent: sentinel_robots)
+    monkeypatch.setattr(cli_mod, "extract_run_pipeline", fake_run_pipeline)
+
+    ns = argparse.Namespace(
+        url="https://example.com/", base_dir=str(tmp_path), site=None,
+        breakpoints=[375, 1280], component_types=None, user_agent=None,
+    )
+    rc = cli_mod.cmd_extract_run(ns)
+    assert rc == 0
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["url"] == "https://example.com/"
+    assert call["driver"] is sentinel_driver
+    assert call["robots_checker"] is sentinel_robots
+    assert call["base_dir"] == str(tmp_path)
+    assert call["breakpoints"] == [375, 1280]
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert out["url"] == "https://example.com/"
+    assert out["design_file"] == str(tmp_path / "snap" / "prompt.md")
+
+
+def test_extract_refine_subcommand_invokes_refine_function(tmp_path, monkeypatch, capsys):
+    """`extract refine <instruction>` must be a thin wrapper around
+    harness.roles.extract.run_refine() (imported into cli.py as
+    extract_run_refine, itself a wrapper over apply_refinement())."""
+    import argparse
+    import harness.cli as cli_mod
+
+    tokens = {"color": {"button": {"bg": {"$type": "color", "$value": "#111111"}}}}
+    tokens_file = tmp_path / "tokens.json"
+    tokens_file.write_text(json.dumps(tokens), encoding="utf-8")
+
+    calls = []
+
+    class FakeRefinementResult:
+        def __init__(self):
+            self.tokens = {"color": {"button": {"bg": {"$type": "color", "$value": "#222222"}}}}
+            self.delta = {"color": {"button": {"bg": {"$type": "color", "$value": "#222222"}}}}
+            self.prompt = "# Design Prompt\n\nrefined"
+
+    def fake_run_refine(instruction, given_tokens, *, url=None, **kwargs):
+        calls.append({"instruction": instruction, "tokens": given_tokens, "url": url})
+        return FakeRefinementResult()
+
+    monkeypatch.setattr(cli_mod, "extract_run_refine", fake_run_refine)
+
+    instruction = "ボタンの角丸をもっと大きくして"
+    ns = argparse.Namespace(
+        instruction=instruction, tokens_file=str(tokens_file), url="https://example.com/",
+        out_dir=None, site=None,
+    )
+    rc = cli_mod.cmd_extract_refine(ns)
+    assert rc == 0
+
+    assert len(calls) == 1
+    assert calls[0]["instruction"] == instruction
+    assert calls[0]["tokens"] == tokens
+    assert calls[0]["url"] == "https://example.com/"
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert out["prompt"] == "# Design Prompt\n\nrefined"
+    assert out["tokens"]["color"]["button"]["bg"]["$value"] == "#222222"
+
+
