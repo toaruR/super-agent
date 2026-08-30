@@ -49,6 +49,10 @@ STATUS_MAP = {
     "implementer.invoked": "running",
     "task.running": "running",
     "implementing": "running",
+    "extract.ok": "extracted",
+    "extracted": "extracted",
+    "extract.start": "extracting",
+    "extracting": "extracting",
     "task.leased": "leased",
     "task.scheduled": "scheduled",
     "task.created": "created",
@@ -56,6 +60,7 @@ STATUS_MAP = {
     "review.failed": "failed",
     "implementer.error": "failed",
     "architect.error": "failed",
+    "extract.error": "failed",
     "worktree.error": "failed",
     "integration.failed": "failed",
     "integrated.failed": "failed",
@@ -72,12 +77,14 @@ STATUS_RANK = {
     "implemented": 4,
     "designed": 4,
     "planned": 4,
+    "extracted": 4,
     "failed": 3,
     "reviewing": 2.5,
     "leased": 2,
     "running": 2,
     "designing": 0.5,
     "planning": 0.5,
+    "extracting": 0.5,
     "scheduled": 1,
     "created": 0,
     "unknown": -1,
@@ -91,7 +98,17 @@ _DONE_STATUSES = ("integrated", "passed")
 # outstanding, so it is a candidate for stale detection. Every other status
 # (integrated / passed / failed / judgment:* / custom) is treated as terminal
 # and is never flagged stale.
-_NON_TERMINAL_STATUSES = ("created", "scheduled", "leased", "running", "implemented", "reviewing", "designing", "planning")
+_NON_TERMINAL_STATUSES = (
+    "created",
+    "scheduled",
+    "leased",
+    "running",
+    "implemented",
+    "reviewing",
+    "designing",
+    "planning",
+    "extracting",
+)
 
 # Default stale threshold: a non-terminal task untouched for this long (in
 # seconds) is considered stuck. Overridable per call via build_model(...,
@@ -122,10 +139,12 @@ _STATUS_BADGE = {
     "implemented": ("Implemented", "badge-blue"),
     "designed": ("Designed", "badge-green"),
     "planned": ("Planned", "badge-green"),
+    "extracted": ("Extracted", "badge-green"),
     "reviewing": ("Reviewing", "badge-purple"),
     "running": ("Running", "badge-blue"),
     "designing": ("Designing", "badge-purple"),
     "planning": ("Planning", "badge-purple"),
+    "extracting": ("Extracting", "badge-purple"),
     "leased": ("Leased", "badge-blue"),
     "scheduled": ("Scheduled", "badge-gray"),
     "created": ("Created", "badge-gray"),
@@ -136,8 +155,20 @@ _STATUS_BADGE = {
 # Colour buckets used by the HTML progress bar. A stale task is pulled out of
 # its status bucket and shown in the dedicated orange one.
 _BAR_BUCKETS = (
-    ("Completed", "bar-green", ("integrated", "passed")),
-    ("In Progress", "bar-blue", ("implemented", "leased", "running", "reviewing", "designing", "planning")),
+    ("Completed", "bar-green", ("integrated", "passed", "extracted")),
+    (
+        "In Progress",
+        "bar-blue",
+        (
+            "implemented",
+            "leased",
+            "running",
+            "reviewing",
+            "designing",
+            "planning",
+            "extracting",
+        ),
+    ),
     ("Stale", "bar-orange", ()),
     ("Failed", "bar-red", ("failed",)),
     ("Pending", "bar-gray", ("scheduled", "created")),

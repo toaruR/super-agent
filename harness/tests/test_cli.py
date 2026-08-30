@@ -157,10 +157,7 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
     We verify by feeding a synthetic ledger and checking the rendered output
     reflects the role module's canonical status mapping + markdown shape."""
     monkeypatch.chdir(REPO)
-    ledger = REPO / "harness" / "ledger" / "events.jsonl"
-    had = ledger.exists()
-    backup = ledger.read_text(encoding="utf-8") if had else None
-    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger = tmp_path / "events.jsonl"
     ledger.write_text(
         "\n".join([
             '{"design_file":"design.md","task_file":"tasks.md","events":['
@@ -171,20 +168,14 @@ def test_cli_dashboard_uses_role_renderers(tmp_path, monkeypatch):
         ]) + "\n",
         encoding="utf-8",
     )
-    try:
-        res = _run("dashboard", "--format", "md")
-        assert res.returncode == 0
-        out = res.stdout
-        # role module keys by task_id (not event_id) and maps statuses
-        assert "| T1 | integrated |" in out
-        assert "| T2 | failed |" in out
-        # role module's markdown header
-        assert out.startswith("# Dashboard")
-    finally:
-        if backup is not None:
-            ledger.write_text(backup, encoding="utf-8")
-        elif had:
-            ledger.unlink()
+    res = _run("dashboard", "--format", "md", env={"SUPER_AGENT_LEDGER": str(ledger)})
+    assert res.returncode == 0
+    out = res.stdout
+    # role module keys by task_id (not event_id) and maps statuses
+    assert "| T1 | integrated |" in out
+    assert "| T2 | failed |" in out
+    # role module's markdown header
+    assert out.startswith("# Dashboard")
 
 
 def test_cli_dashboard_watch_regenerates_until_interrupted(tmp_path, monkeypatch):
@@ -577,10 +568,114 @@ def test_extract_command_invokes_role_pipeline(tmp_path, monkeypatch, capsys):
     assert call["base_dir"] == str(tmp_path)
     assert call["breakpoints"] == [375, 1280]
 
-    out = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
     assert out["ok"] is True
     assert out["url"] == "https://example.com/"
     assert out["design_file"] == str(tmp_path / "snap" / "prompt.md")
+
+
+def test_extract_command_emits_ledger_events_and_progress(tmp_path, monkeypatch, capsys):
+    """`extract run <url>` must emit task.created / extract.ok ledger events,
+    write progress heartbeats, and output logs to stderr."""
+    import argparse
+    import harness.cli as cli_mod
+    from harness.core.ledger import Ledger
+    from harness.core.progress import read_progress
+
+    ledger_file = tmp_path / "ledger" / "events.jsonl"
+    monkeypatch.setenv("SUPER_AGENT_LEDGER", str(ledger_file))
+    monkeypatch.setattr(cli_mod, "LEDGER_PATH", ledger_file)
+
+    class FakeResult:
+        def __init__(self, url):
+            self.url = url
+            self.snapshot_dir = tmp_path / "snap"
+            self.tokens_path = self.snapshot_dir / "tokens.json"
+            self.design_file = str(self.snapshot_dir / "prompt.md")
+
+    def fake_run_pipeline(url, driver, *, log_fn=None, progress_cb=None, **kwargs):
+        if log_fn:
+            log_fn("[test] pipeline running")
+        if progress_cb:
+            progress_cb("extracting", "running mock stage")
+        return FakeResult(url)
+
+    monkeypatch.setattr(cli_mod, "_default_extract_driver", lambda: object())
+    monkeypatch.setattr(cli_mod, "_default_extract_robots_checker", lambda url, ua: object())
+    monkeypatch.setattr(cli_mod, "extract_run_pipeline", fake_run_pipeline)
+
+    ns = argparse.Namespace(
+        url="https://example.com/site", base_dir=str(tmp_path), site="mysite",
+        breakpoints=None, component_types=None, user_agent=None,
+    )
+    rc = cli_mod.cmd_extract_run(ns)
+    assert rc == 0
+
+    # Verify stdout has JSON and stderr has logs
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["ok"] is True
+    assert "[test] pipeline running" in captured.err
+
+    # Verify ledger events
+    ledger = Ledger(ledger_file)
+    events = [ev for chunk in ledger.load() for ev in chunk.get("events", [])]
+    assert len(events) >= 2
+    types = [e.get("type") for e in events]
+    assert "task.created" in types
+    assert "extract.ok" in types
+
+    created_ev = next(e for e in events if e.get("type") == "task.created")
+    assert created_ev["role"] == "extract"
+    assert created_ev["status"] == "extracting"
+
+    ok_ev = next(e for e in events if e.get("type") == "extract.ok")
+    assert ok_ev["status"] == "extracted"
+    assert ok_ev["url"] == "https://example.com/site"
+
+    # Verify progress file
+    task_id = created_ev.get("task_id") or created_ev["event_id"].split(":", 1)[0]
+    prog = read_progress(task_id, ledger_file)
+    assert prog is not None
+    assert prog["status"] == "done"
+
+
+def test_extract_command_handles_error_and_emits_error_event(tmp_path, monkeypatch, capsys):
+    """When extract pipeline raises an exception, cmd_extract_run emits extract.error,
+    returns 1, and prints error JSON."""
+    import argparse
+    import harness.cli as cli_mod
+    from harness.core.ledger import Ledger
+
+    ledger_file = tmp_path / "ledger" / "events.jsonl"
+    monkeypatch.setenv("SUPER_AGENT_LEDGER", str(ledger_file))
+    monkeypatch.setattr(cli_mod, "LEDGER_PATH", ledger_file)
+
+    def failing_run_pipeline(*args, **kwargs):
+        raise RuntimeError("Site unreachable (test error)")
+
+    monkeypatch.setattr(cli_mod, "_default_extract_driver", lambda: object())
+    monkeypatch.setattr(cli_mod, "_default_extract_robots_checker", lambda url, ua: object())
+    monkeypatch.setattr(cli_mod, "extract_run_pipeline", failing_run_pipeline)
+
+    ns = argparse.Namespace(
+        url="https://failing.example.com/", base_dir=str(tmp_path), site=None,
+        breakpoints=None, component_types=None, user_agent=None,
+    )
+    rc = cli_mod.cmd_extract_run(ns)
+    assert rc == 1
+
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["ok"] is False
+    assert "Site unreachable (test error)" in out["error"]
+    assert "[extract] Error during extraction:" in captured.err
+
+    # Verify ledger event
+    ledger = Ledger(ledger_file)
+    events = [ev for chunk in ledger.load() for ev in chunk.get("events", [])]
+    assert any(e.get("type") == "extract.error" and e.get("status") == "failed" for e in events)
 
 
 def test_extract_refine_subcommand_invokes_refine_function(tmp_path, monkeypatch, capsys):

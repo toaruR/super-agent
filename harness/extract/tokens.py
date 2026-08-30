@@ -1,11 +1,14 @@
 """design-extract パイプラインの Tokenize 段階（W3C Design Tokens 形式への変換）。
 
 - build_design_tokens(): harness.extract.analyze.analyze_components() の結果
-  （コンポーネント単位に浄化済みのcomputed style）を、W3C Design Tokens Community Group
-  (DTCG) 形式のJSONに変換する。各トークンは "$type"/"$value" を持つオブジェクトとして
-  表現し、color/typography/spacing/radius/shadow の5カテゴリに分類する。
-- 出力はカテゴリ→コンポーネント種別（button/card/nav/form等）→コンポーネントキーの順に
-  グルーピングされ、どのコンポーネントに由来するトークンかが常に追跡できる。
+  （コンポーネント単位に浄化済みのcomputed styleおよび包括的デザインシステム）を、
+  W3C Design Tokens Community Group (DTCG) 形式のJSONに変換する。
+  各トークンは "$type"/"$value" を持つオブジェクトとして表現し、
+  color/typography/spacing/radius/shadow の5カテゴリに分類する。
+- 包括的デザインシステム（DesignSystemAnalysis）が存在する場合は、
+  グローバルトークン、タイポグラフィスケール、スペーシングラダー、コンポーネント仕様、
+  デザイン原則も `design_system` フィールドとして構造化保持し、Refero Styles レベルの
+  リッチなデザイントークンセットとして出力する。
 - 著作権制約・防御的実装: CSSプロパティ名の許可リスト（_COLOR_PROPERTIES等）に
   含まれるプロパティのみをトークン化するため、テキスト内容やhref/src等の資産系情報が
   万一 ComponentStyle.styles に紛れ込んでいても、既知のスタイルプロパティ名でない限り
@@ -81,16 +84,14 @@ _SHADOW_PROPERTIES: Set[str] = {
 
 
 def _is_content_leak(value: str) -> bool:
-    """画像URL等、コンテンツ資産を保持しうる値かどうかを判定する（防御的な二重チェック）。
-
-    harness.extract.analyze で既に url(...) を含む値は除外されているはずだが、
-    本モジュール単体で呼び出された場合にも同じ保証を持たせるため、ここでも判定する。
-    """
     return "url(" in (value or "").lower()
 
 
-def _token(token_type: str, value: Any) -> Dict[str, Any]:
-    return {"$type": token_type, "$value": value}
+def _token(token_type: str, value: Any, description: str = "") -> Dict[str, Any]:
+    tok: Dict[str, Any] = {"$type": token_type, "$value": value}
+    if description:
+        tok["$description"] = description
+    return tok
 
 
 def _composite_key(viewport_width: int, component_key: str) -> str:
@@ -98,11 +99,6 @@ def _composite_key(viewport_width: int, component_key: str) -> str:
 
 
 def _seed_category(component_types: Set[str]) -> Dict[str, Dict[str, Any]]:
-    """カテゴリ辞書を、既知の全コンポーネント種別で空グループのまま初期化する。
-
-    該当プロパティが1つも見つからないコンポーネント種別（例: navにはradiusが無い）でも
-    グルーピング構造自体は欠落なく残す。
-    """
     return {component_type: {} for component_type in sorted(component_types)}
 
 
@@ -144,22 +140,17 @@ def _add_typography_token(
 def build_design_tokens(analysis: ComponentAnalysis) -> Dict[str, Any]:
     """T3(analyze)のコンポーネント抽出結果をW3C Design Tokens形式のJSONに変換する。
 
-    - 戻り値は color/typography/spacing/radius/shadow の5カテゴリを常に持つ
-      （該当データが無いコンポーネント種別・カテゴリも空グループとして保持し、
-      「欠落なくマッピングする」という要件を満たす）。
+    - 戻り値は color/typography/spacing/radius/shadow の5カテゴリを常に持つ（後方互換性）。
     - 各カテゴリ内は component_type（button/card/nav/form等）→
       "<viewport_width>:<component.key>" の順にグルーピングし、どのコンポーネント・
       どのブレークポイントに由来するトークンかを追跡できるようにする。
-    - 各トークンは "$type"/"$value" を持つオブジェクトとして表現する
-      （typographyのみDTCGの複合型に倣い、$value はサブプロパティの辞書とする）。
-    - CSSプロパティ名の許可リストに含まれないもの（コンテンツ情報が万一含まれていた
-      場合を含む）は一切書き出さない。
+    - 各トークンは "$type"/"$value" を持つオブジェクトとして表現する。
     """
     component_types: Set[str] = set(COMPONENT_TYPES)
     for bp in analysis.breakpoints:
         component_types.update(c.component_type for c in bp.components)
 
-    tokens: Dict[str, Dict[str, Dict[str, Any]]] = {
+    tokens: Dict[str, Any] = {
         COLOR: _seed_category(component_types),
         TYPOGRAPHY: _seed_category(component_types),
         SPACING: _seed_category(component_types),

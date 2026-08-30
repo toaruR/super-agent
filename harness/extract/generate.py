@@ -1,23 +1,20 @@
-"""design-extract パイプラインの Generate 段階（デザイントークンJSON→Markdownデザインプロンプト）。
+"""design-extract パイプラインの Generate 段階（デザイントークンJSON→MarkdownデザインプロンプトおよびRefero Styles準拠DESIGN.md）。
 
 - render_prompt(): harness.extract.tokens.build_design_tokens() が生成したW3C Design
-  Tokens形式のJSON（category -> component_type -> composite_key -> token）を中間表現として
-  受け取り、テンプレートエンジン（自然言語生成LLMではなく機械的な文字列組み立て）で
-  Markdown形式のデザインプロンプトを生成する。生成は文字列テンプレートの組み立てのみで
-  行い、LLM呼び出しは一切行わない。
-- 出力はトークンカテゴリ（color/typography/spacing/radius/shadow）ごとに見出しを分け、
-  さらにその中でコンポーネント種別（button/card/nav/form等）ごとに見出しを分けるため、
-  Claude/Codex/Figmaのいずれの利用先であっても、見出し構造から機械的にセクションを
-  たどりやすい。
-- 同一のトークンJSON入力に対しては、辞書のキー挿入順に依存せず常に同一のMarkdown文字列を
-  返す（カテゴリ・コンポーネント種別・トークンキーをすべて明示的にソートしてから組み立てる）。
-- トークンJSONに存在しないカテゴリ/コンポーネントがあっても例外を送出せず、
-  「抽出結果なし」を示す一文を出力するだけで処理を継続する（防御的実装）。
+  Tokens形式のJSONを受け取り、決定論的な Markdown 形式のデザインプロンプト（prompt.md）
+  を生成する。
+- render_design_md(): Refero Styles (https://styles.refero.design/) のサンプルと同等水準の
+  包括的なスタイルリファレンスドキュメント（DESIGN.md）を生成する。
+  (Brand, Tagline, Theme, Aesthetic, Color Tokens, Typography Tokens, Spacing & Shapes,
+  Components, Do's and Don'ts, Surfaces, Elevation, Imagery, Layout, Agent Prompt Guide,
+  Similar Brands, Quick Start CSS/Tailwind v4)
+- 同一のトークンJSON入力に対しては常に決定的な同一のMarkdown文字列を返す。
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from harness.extract.analyze import DesignSystemAnalysis, DesignSystemExtractor
 from harness.extract.tokens import TOKEN_CATEGORIES
 
 _NO_TOKENS_NOTE = "_No tokens extracted for this category._"
@@ -40,26 +37,17 @@ def _title_for_component(component_type: str) -> str:
 
 
 def _is_leaf_token(node: Any) -> bool:
-    """$type/$value のみを持つDTCGトークン(葉)かどうかを判定する。"""
     return isinstance(node, dict) and set(node.keys()) == {"$type", "$value"}
 
 
 def _format_value(value: Any) -> str:
-    """typographyのような複合型($valueがサブプロパティの辞書)も含め、値を1行の文字列にする。"""
     if isinstance(value, dict):
         parts = ", ".join(f"{key}: {value[key]}" for key in sorted(value.keys()))
-        return f"{{ {parts} }}"
+        return f"{{{parts}}}" if not parts else f"{{ {parts} }}"
     return str(value)
 
 
 def _render_component_token_lines(composite_tokens: Any) -> List[str]:
-    """1コンポーネント種別分のトークン(composite_key単位)を箇条書き行のリストにする。
-
-    composite_tokens は以下の2形状のいずれかを取りうる(harness.extract.tokens 参照):
-    - typographyのように composite_key -> {$type, $value} (葉トークンを直接持つ)
-    - それ以外のカテゴリのように composite_key -> {prop -> {$type, $value}}
-    未知の形状(想定外の値)は静かに無視し、破綻させない。
-    """
     if not isinstance(composite_tokens, dict):
         return []
 
@@ -80,21 +68,13 @@ def _render_component_token_lines(composite_tokens: Any) -> List[str]:
 
 
 def _ordered_categories(tokens: Dict[str, Any]) -> List[str]:
-    """既知のカテゴリ(TOKEN_CATEGORIES順)を優先し、未知のカテゴリはアルファベット順で末尾に追加する。"""
     known = list(TOKEN_CATEGORIES)
-    unknown = sorted(category for category in tokens.keys() if category not in known)
+    unknown = sorted(category for category in tokens.keys() if category not in known and category != "design_system")
     return known + unknown
 
 
 def render_prompt(tokens: Dict[str, Any], *, url: Optional[str] = None) -> str:
-    """デザイントークンJSONから決定的なMarkdown形式のデザインプロンプトを生成する。
-
-    - tokens は harness.extract.tokens.build_design_tokens() が返すW3C Design Tokens形式の
-      JSON(dict)を想定するが、一部カテゴリ/コンポーネントが欠落していても例外を送出しない。
-    - 自然言語生成LLMは一切呼び出さず、テンプレート文字列とソート済みキーの組み立てのみで
-      Markdownを構築するため、同一入力に対しては常に同一の文字列(バイト単位)を返す。
-    - url を渡すと、抽出元サイトの参照情報として先頭に付記する(省略可)。
-    """
+    """デザイントークンJSONから決定的なMarkdown形式のデザインプロンプトを生成する。"""
     tokens = tokens or {}
 
     lines: List[str] = ["# Design Prompt"]
@@ -130,3 +110,335 @@ def render_prompt(tokens: Dict[str, Any], *, url: Optional[str] = None) -> str:
             lines.append(_NO_TOKENS_NOTE)
 
     return "\n".join(lines) + "\n"
+
+
+def render_design_md(
+    tokens: Dict[str, Any],
+    *,
+    url: Optional[str] = None,
+    design_system: Optional[DesignSystemAnalysis] = None,
+) -> str:
+    """デザイントークンまたは DesignSystemAnalysis から Refero Styles 準拠の DESIGN.md を生成する。"""
+    ds = design_system
+
+    # design_system が渡されていない場合、tokens["design_system"] または自動抽出を試みる
+    if ds is None:
+        raw_ds = tokens.get("design_system") if isinstance(tokens, dict) else None
+        if isinstance(raw_ds, dict):
+            # 辞書から最低限の構成をレンダリング
+            brand_name = raw_ds.get("brand_name", "Product")
+            tagline = raw_ds.get("tagline", "midnight precision instrument")
+            theme = raw_ds.get("theme", "dark")
+            aesthetic = raw_ds.get("aesthetic_summary", "")
+
+            lines: List[str] = [
+                f"# {brand_name} — Style Reference",
+                f"> {tagline}",
+                "",
+                f"**Theme:** {theme}",
+                "",
+                aesthetic,
+                "",
+                "## Tokens — Colors",
+                "",
+                "| Name | Value | Token | Role |",
+                "|------|-------|-------|------|",
+            ]
+            for c in raw_ds.get("colors", []):
+                lines.append(f"| {c.get('name')} | `{c.get('hex')}` | `{c.get('token')}` | {c.get('role')} |")
+            lines.append("")
+
+            lines.append("## Tokens — Typography")
+            lines.append("")
+            for f in raw_ds.get("font_families", []):
+                lines.append(f"### {f.get('name')} — {f.get('usage_role')} · `{f.get('token')}`")
+                lines.append(f"- **Substitute:** {f.get('substitute')}")
+                lines.append(f"- **Weights:** {', '.join(f.get('weights', []))}")
+                lines.append(f"- **Sizes:** {', '.join(f.get('sizes', []))}")
+                lines.append(f"- **Line height:** {f.get('line_height_range')}")
+                lines.append(f"- **Letter spacing:** {f.get('letter_spacing_summary')}")
+                if f.get("opentype_features"):
+                    lines.append(f"- **OpenType features:** `{f.get('opentype_features')}`")
+                lines.append(f"- **Role:** {f.get('usage_role')}")
+                lines.append("")
+
+            lines.append("### Type Scale")
+            lines.append("")
+            lines.append("| Role | Size | Line Height | Letter Spacing | Token |")
+            lines.append("|------|------|-------------|----------------|-------|")
+            for s in raw_ds.get("type_scale", []):
+                lines.append(f"| {s.get('role')} | {s.get('size')} | {s.get('line_height')} | {s.get('letter_spacing')} | `{s.get('token')}` |")
+            lines.append("")
+
+            sp = raw_ds.get("spacing_shapes", {})
+            lines.append("## Tokens — Spacing & Shapes")
+            lines.append("")
+            lines.append(f"**Base unit:** {sp.get('base_unit', '4px')}")
+            lines.append("")
+            lines.append(f"**Density:** {sp.get('density', 'compact')}")
+            lines.append("")
+            lines.append("### Spacing Scale")
+            lines.append("")
+            lines.append("| Name | Value | Token |")
+            lines.append("|------|-------|-------|")
+            for item in sp.get("spacing_scale", []):
+                lines.append(f"| {item[0]} | {item[1]} | `{item[2]}` |")
+            lines.append("")
+            lines.append("### Border Radius")
+            lines.append("")
+            lines.append("| Element | Value |")
+            lines.append("|---------|-------|")
+            for item in sp.get("border_radius", []):
+                lines.append(f"| {item[0]} | {item[1]} |")
+            lines.append("")
+            lines.append("### Shadows")
+            lines.append("")
+            lines.append("| Name | Value | Token |")
+            lines.append("|------|-------|-------|")
+            for item in sp.get("shadows", []):
+                lines.append(f"| {item[0]} | `{item[1]}` | `{item[2]}` |")
+            lines.append("")
+            lines.append("### Layout")
+            lines.append("")
+            lines.append(f"- **Page max-width:** {sp.get('page_max_width', '1200px')}")
+            lines.append(f"- **Section gap:** {sp.get('section_gap', '96px')}")
+            lines.append(f"- **Card padding:** {sp.get('card_padding', '24px')}")
+            lines.append(f"- **Element gap:** {sp.get('element_gap', '8px')}")
+            lines.append("")
+
+            lines.append("## Components")
+            lines.append("")
+            for comp in raw_ds.get("components", []):
+                lines.append(f"### {comp.get('name')}")
+                lines.append(f"**Role:** {comp.get('role')}")
+                lines.append("")
+                lines.append(comp.get("spec_summary", ""))
+                lines.append("")
+
+            principles = raw_ds.get("principles", {})
+            lines.append("## Do's and Don'ts")
+            lines.append("")
+            lines.append("### Do")
+            for do in principles.get("dos", []):
+                lines.append(f"- {do}")
+            lines.append("")
+            lines.append("### Don't")
+            for dont in principles.get("donts", []):
+                lines.append(f"- {dont}")
+            lines.append("")
+
+            lines.append("## Surfaces")
+            lines.append("")
+            lines.append("| Level | Name | Value | Purpose |")
+            lines.append("|-------|------|-------|---------|")
+            for surf in raw_ds.get("surfaces", []):
+                lines.append(f"| {surf.get('level')} | {surf.get('name')} | `{surf.get('value')}` | {surf.get('purpose')} |")
+            lines.append("")
+
+            lines.append("## Elevation")
+            lines.append("")
+            lines.append(raw_ds.get("elevation_summary", ""))
+            lines.append("")
+
+            lines.append("## Imagery")
+            lines.append("")
+            lines.append(raw_ds.get("imagery_summary", ""))
+            lines.append("")
+
+            lines.append("## Layout")
+            lines.append("")
+            lines.append(raw_ds.get("layout_summary", ""))
+            lines.append("")
+
+            ap = raw_ds.get("agent_prompts", {})
+            lines.append("## Agent Prompt Guide")
+            lines.append("")
+            lines.append("**Quick Color Reference:**")
+            for k, v in ap.get("quick_colors", {}).items():
+                lines.append(f"- {k}: {v}")
+            lines.append("")
+            lines.append("**3-5 Example Component Prompts:**")
+            lines.append("")
+            for i, (p_title, p_body) in enumerate(ap.get("component_prompts", []), 1):
+                lines.append(f"{i}. **{p_title}:** {p_body}")
+                lines.append("")
+
+            lines.append("## Similar Brands")
+            lines.append("")
+            for b in raw_ds.get("similar_brands", []):
+                lines.append(f"- **{b.get('name')}** — {b.get('description')}")
+            lines.append("")
+
+            lines.append("## Quick Start")
+            lines.append("")
+            lines.append("### CSS Custom Properties")
+            lines.append("")
+            lines.append("```css")
+            lines.append(raw_ds.get("css_custom_properties", ""))
+            lines.append("```")
+            lines.append("")
+            lines.append("### Tailwind v4")
+            lines.append("")
+            lines.append("```css")
+            lines.append(raw_ds.get("tailwind_v4_theme", ""))
+            lines.append("```")
+            lines.append("")
+
+            return "\n".join(lines)
+
+    if ds is not None:
+        lines: List[str] = [
+            f"# {ds.brand_name} — Style Reference",
+            f"> {ds.tagline}",
+            "",
+            f"**Theme:** {ds.theme}",
+            "",
+            ds.aesthetic_summary,
+            "",
+            "## Tokens — Colors",
+            "",
+            "| Name | Value | Token | Role |",
+            "|------|-------|-------|------|",
+        ]
+        for c in ds.colors:
+            lines.append(f"| {c.name} | `{c.hex_value}` | `{c.token_name}` | {c.role} |")
+        lines.append("")
+
+        lines.append("## Tokens — Typography")
+        lines.append("")
+        for f in ds.font_families:
+            lines.append(f"### {f.name} — {f.usage_role} · `{f.token_name}`")
+            lines.append(f"- **Substitute:** {f.substitute}")
+            lines.append(f"- **Weights:** {', '.join(f.weights)}")
+            lines.append(f"- **Sizes:** {', '.join(f.sizes)}")
+            lines.append(f"- **Line height:** {f.line_height_range}")
+            lines.append(f"- **Letter spacing:** {f.letter_spacing_summary}")
+            if f.opentype_features:
+                lines.append(f"- **OpenType features:** `{f.opentype_features}`")
+            lines.append(f"- **Role:** {f.usage_role}")
+            lines.append("")
+
+        lines.append("### Type Scale")
+        lines.append("")
+        lines.append("| Role | Size | Line Height | Letter Spacing | Token |")
+        lines.append("|------|------|-------------|----------------|-------|")
+        for s in ds.type_scale:
+            lines.append(f"| {s.role} | {s.size} | {s.line_height} | {s.letter_spacing} | `{s.token_name}` |")
+        lines.append("")
+
+        sp = ds.spacing_shapes
+        lines.append("## Tokens — Spacing & Shapes")
+        lines.append("")
+        lines.append(f"**Base unit:** {sp.base_unit}")
+        lines.append("")
+        lines.append(f"**Density:** {sp.density}")
+        lines.append("")
+        lines.append("### Spacing Scale")
+        lines.append("")
+        lines.append("| Name | Value | Token |")
+        lines.append("|------|-------|-------|")
+        for item in sp.spacing_scale:
+            lines.append(f"| {item[0]} | {item[1]} | `{item[2]}` |")
+        lines.append("")
+        lines.append("### Border Radius")
+        lines.append("")
+        lines.append("| Element | Value |")
+        lines.append("|---------|-------|")
+        for item in sp.border_radius:
+            lines.append(f"| {item[0]} | {item[1]} |")
+        lines.append("")
+        lines.append("### Shadows")
+        lines.append("")
+        lines.append("| Name | Value | Token |")
+        lines.append("|------|-------|-------|")
+        for item in sp.shadows:
+            lines.append(f"| {item[0]} | `{item[1]}` | `{item[2]}` |")
+        lines.append("")
+        lines.append("### Layout")
+        lines.append("")
+        lines.append(f"- **Page max-width:** {sp.page_max_width}")
+        lines.append(f"- **Section gap:** {sp.section_gap}")
+        lines.append(f"- **Card padding:** {sp.card_padding}")
+        lines.append(f"- **Element gap:** {sp.element_gap}")
+        lines.append("")
+
+        lines.append("## Components")
+        lines.append("")
+        for comp in ds.components:
+            lines.append(f"### {comp.name}")
+            lines.append(f"**Role:** {comp.role}")
+            lines.append("")
+            lines.append(comp.spec_summary)
+            lines.append("")
+
+        lines.append("## Do's and Don'ts")
+        lines.append("")
+        lines.append("### Do")
+        for do in ds.principles.dos:
+            lines.append(f"- {do}")
+        lines.append("")
+        lines.append("### Don't")
+        for dont in ds.principles.donts:
+            lines.append(f"- {dont}")
+        lines.append("")
+
+        lines.append("## Surfaces")
+        lines.append("")
+        lines.append("| Level | Name | Value | Purpose |")
+        lines.append("|-------|------|-------|---------|")
+        for surf in ds.surfaces:
+            lines.append(f"| {surf.level} | {surf.name} | `{surf.value}` | {surf.purpose} |")
+        lines.append("")
+
+        lines.append("## Elevation")
+        lines.append("")
+        lines.append(ds.elevation_summary)
+        lines.append("")
+
+        lines.append("## Imagery")
+        lines.append("")
+        lines.append(ds.imagery_summary)
+        lines.append("")
+
+        lines.append("## Layout")
+        lines.append("")
+        lines.append(ds.layout_summary)
+        lines.append("")
+
+        lines.append("## Agent Prompt Guide")
+        lines.append("")
+        lines.append("**Quick Color Reference:**")
+        for k, v in ds.agent_prompts.quick_colors.items():
+            lines.append(f"- {k}: {v}")
+        lines.append("")
+        lines.append("**3-5 Example Component Prompts:**")
+        lines.append("")
+        for i, (p_title, p_body) in enumerate(ds.agent_prompts.component_prompts, 1):
+            lines.append(f"{i}. **{p_title}:** {p_body}")
+            lines.append("")
+
+        lines.append("## Similar Brands")
+        lines.append("")
+        for b in ds.similar_brands:
+            lines.append(f"- **{b.name}** — {b.description}")
+        lines.append("")
+
+        lines.append("## Quick Start")
+        lines.append("")
+        lines.append("### CSS Custom Properties")
+        lines.append("")
+        lines.append("```css")
+        lines.append(ds.css_custom_properties)
+        lines.append("```")
+        lines.append("")
+        lines.append("### Tailwind v4")
+        lines.append("")
+        lines.append("```css")
+        lines.append(ds.tailwind_v4_theme)
+        lines.append("```")
+        lines.append("")
+
+        return "\n".join(lines)
+
+    # どちらもない場合はレガシープロンプトを返す
+    return render_prompt(tokens, url=url)

@@ -132,3 +132,105 @@ def test_browser_driver_is_injectable_and_mockable() -> None:
         breakpoints=[768],
     )
     assert other_result.breakpoints[0].outer_html != result.breakpoints[0].outer_html
+
+
+def test_extract_breakpoints_from_css() -> None:
+    from harness.extract.fetch import extract_breakpoints_from_css
+
+    css = """
+    /* Standard media queries */
+    @media (min-width: 640px) { .container { max-width: 640px; } }
+    @media (max-width: 767.98px) { .mobile-only { display: block; } }
+    @media only screen and (min-width: 48rem) { .tablet { display: flex; } }
+    @media (min-width: 60em) { .desktop { font-size: 16px; } }
+    @media (min-width: 750pt) { .print { width: 1000px; } }
+
+    /* Media Queries Level 4 range syntax */
+    @media (width >= 1024px) { .wide { width: 100%; } }
+    @media (640px <= width <= 1280px) { .between { color: red; } }
+
+    /* CSS Custom properties */
+    :root {
+        --breakpoint-sm: 640px;
+        --breakpoint-xl: 1440px;
+        --screen-2xl: 1536px;
+    }
+
+    /* Invalid / out of range should be ignored */
+    @media (min-width: 50px) { .tiny { display: none; } }
+    @media (min-width: 5000px) { .huge { display: none; } }
+    """
+
+    bps = extract_breakpoints_from_css(css)
+    # 48rem = 768px, 60em = 960px, 750pt = 1000px
+    # 767.98px rounds to 768px
+    expected = [640, 768, 960, 1000, 1024, 1280, 1440, 1536]
+    assert bps == expected
+
+
+def test_determine_sampling_breakpoints() -> None:
+    from harness.extract.fetch import determine_sampling_breakpoints
+
+    default = [375, 768, 1280, 1920]
+
+    # Empty discovered breakpoints -> returns defaults
+    assert determine_sampling_breakpoints([], default) == default
+
+    # Discovered [640, 1024] -> includes 375 (mobile < 640) and 1280 (desktop > 1024)
+    sampled = determine_sampling_breakpoints([640, 1024], default)
+    assert sampled == [375, 640, 1024, 1280]
+
+    # Discovered [360, 768, 1440] -> already has <= 375 and >= 1280
+    sampled2 = determine_sampling_breakpoints([360, 768, 1440], default)
+    assert sampled2 == [360, 768, 1440]
+
+
+def test_fetch_rendered_page_auto_extracts_breakpoints() -> None:
+    class DriverWithCssBreakpoints:
+        def __init__(self) -> None:
+            self.calls: List[Tuple[str, int]] = []
+
+        def render(self, url: str, viewport_width: int) -> RenderResult:
+            self.calls.append((url, viewport_width))
+            html = """
+            <html>
+            <head>
+              <style>
+                @media (min-width: 640px) { .card { width: 50%; } }
+                @media (min-width: 1024px) { .card { width: 33%; } }
+              </style>
+            </head>
+            <body></body>
+            </html>
+            """
+            return RenderResult(
+                outer_html=html,
+                computed_styles={},
+                css_breakpoints=[640, 1024],
+            )
+
+    driver = DriverWithCssBreakpoints()
+    robots_checker = RobotsChecker(ALLOW_ALL_ROBOTS_TXT, user_agent="*")
+    logs = []
+    progress_updates = []
+
+    result = fetch_rendered_page(
+        "https://example.com/responsive",
+        driver,
+        robots_checker=robots_checker,
+        breakpoints=None,  # auto-extract
+        log_fn=lambda msg: logs.append(msg),
+        progress_cb=lambda s, d: progress_updates.append((s, d)),
+    )
+
+    assert result.css_breakpoints == [640, 1024]
+    # Sampled viewports: [375, 640, 1024, 1280] (or sorted list including probe and sampled)
+    assert 375 in [c.viewport_width for c in result.breakpoints]
+    assert 640 in [c.viewport_width for c in result.breakpoints]
+    assert 1024 in [c.viewport_width for c in result.breakpoints]
+    assert 1280 in [c.viewport_width for c in result.breakpoints]
+
+    # Verify logs and progress were emitted
+    assert any("auto-extracted CSS breakpoints" in log for log in logs)
+    assert len(progress_updates) > 0
+

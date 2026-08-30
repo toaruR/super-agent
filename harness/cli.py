@@ -39,6 +39,7 @@ from harness.roles.improver import mine as improver_mine, report as improver_rep
 from harness.roles.extract import run_pipeline as extract_run_pipeline
 from harness.roles.extract import run_refine as extract_run_refine
 from harness.roles.extract import run_store as extract_run_store
+from harness.core.progress import write_progress
 from harness.core.verifiers import VerifierRegistry
 from harness._version import __version__
 
@@ -873,8 +874,37 @@ def _default_extract_robots_checker(url: str, user_agent: str | None):
 
 def cmd_extract_run(args: argparse.Namespace) -> int:
     """`extract run <url>`: harness.roles.extract.run_pipeline() (fetch->analyze->
-    tokenize->generate->store) をそのまま呼び出す薄いラッパー。パイプライン自体の
-    ロジックはここでは一切再実装しない。"""
+    tokenize->generate->store) を呼び出し、進捗をledgerおよびdashboardに反映する。"""
+    site_key = args.site or slugify(args.url)
+    task_id = f"extract-{site_key}-{stable_tag(args.url)}"
+
+    seq = ensure_ledger()
+    seq.start()
+
+    seq.propose(
+        task_id,
+        "task.created",
+        goal=f"extract design tokens from {args.url}",
+        role="extract",
+        url=args.url,
+        site=args.site or "",
+        status="extracting",
+    )
+    auto_update_dashboard(seq=seq)
+
+    def log_fn(msg: str) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    def progress_cb(status: str, detail: str) -> None:
+        write_progress(
+            task_id,
+            seq.path,
+            status=status,
+            detail=detail,
+            vendor="extract",
+        )
+        auto_update_dashboard(seq=seq)
+
     driver = _default_extract_driver()
     robots_checker = _default_extract_robots_checker(args.url, args.user_agent)
     try:
@@ -886,19 +916,76 @@ def cmd_extract_run(args: argparse.Namespace) -> int:
             site=args.site,
             breakpoints=args.breakpoints,
             component_types=args.component_types,
+            log_fn=log_fn,
+            progress_cb=progress_cb,
         )
+        seq.propose(
+            task_id,
+            "extract.ok",
+            status="extracted",
+            url=result.url,
+            snapshot_dir=str(result.snapshot_dir),
+            tokens_path=str(result.tokens_path),
+            design_file=result.design_file,
+        )
+        write_progress(
+            task_id,
+            seq.path,
+            status="done",
+            detail=f"Extracted to {result.snapshot_dir}",
+            vendor="extract",
+        )
+    except Exception as e:
+        err_msg = str(e)
+        log_fn(f"[extract] Error during extraction: {err_msg}")
+        seq.propose(
+            task_id,
+            "extract.error",
+            status="failed",
+            error=err_msg,
+            url=args.url,
+        )
+        write_progress(
+            task_id,
+            seq.path,
+            status="error",
+            detail=err_msg[:200],
+            vendor="extract",
+        )
+        seq.stop()
+        auto_update_dashboard()
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": err_msg,
+                    "url": args.url,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1
     finally:
         close = getattr(driver, "close", None)
         if callable(close):
             close()
+        seq.stop()
+        auto_update_dashboard()
 
-    print(json.dumps({
-        "ok": True,
-        "url": result.url,
-        "design_file": result.design_file,
-        "snapshot_dir": str(result.snapshot_dir),
-        "tokens_path": str(result.tokens_path),
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "url": result.url,
+                "design_file": result.design_file,
+                "snapshot_dir": str(result.snapshot_dir),
+                "tokens_path": str(result.tokens_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

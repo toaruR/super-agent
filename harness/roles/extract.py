@@ -17,14 +17,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Union
 
 from harness.extract.analyze import ComponentAnalysis, analyze_components
 from harness.extract.fetch import BrowserDriver, PageFetchResult, fetch_rendered_page
-from harness.extract.generate import render_prompt
+from harness.extract.generate import render_design_md, render_prompt
 from harness.extract.refine import RefinementResult, apply_refinement
 from harness.extract.robots import RobotsChecker
-from harness.extract.storage import PROMPT_FILENAME, TOKENS_FILENAME, save_snapshot
+from harness.extract.storage import DESIGN_FILENAME, PROMPT_FILENAME, TOKENS_FILENAME, save_snapshot
 from harness.extract.tokens import build_design_tokens
 from harness.extract.verify import (
     ImageLike,
@@ -41,6 +41,7 @@ __all__ = [
     "run_analyze",
     "run_tokenize",
     "run_generate",
+    "run_generate_design_md",
     "run_store",
     "run_verify",
     "run_refine",
@@ -60,6 +61,11 @@ class PipelineResult:
     snapshot_dir: Path
     prompt_path: Path
     tokens_path: Path
+    design_md: str = ""
+
+    @property
+    def design_md_path(self) -> Path:
+        return self.snapshot_dir / DESIGN_FILENAME
 
     @property
     def design_file(self) -> str:
@@ -74,10 +80,18 @@ def run_fetch(
     robots_checker: RobotsChecker,
     breakpoints: Optional[Sequence[int]] = None,
     config: Optional[dict] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+    progress_cb: Optional[Callable[[str, str], None]] = None,
 ) -> PageFetchResult:
     """T2(fetch): レンダリング後DOM/computed styleを取得する。単独呼び出し可能。"""
     return fetch_rendered_page(
-        url, driver, robots_checker=robots_checker, breakpoints=breakpoints, config=config
+        url,
+        driver,
+        robots_checker=robots_checker,
+        breakpoints=breakpoints,
+        config=config,
+        log_fn=log_fn,
+        progress_cb=progress_cb,
     )
 
 
@@ -100,6 +114,16 @@ def run_tokenize(analysis: ComponentAnalysis) -> Dict[str, Any]:
 def run_generate(tokens: Dict[str, Any], *, url: Optional[str] = None) -> str:
     """T6(generate): トークンJSONからMarkdownデザインプロンプトを生成する。単独呼び出し可能。"""
     return render_prompt(tokens, url=url)
+
+
+def run_generate_design_md(
+    tokens: Dict[str, Any],
+    *,
+    url: Optional[str] = None,
+    design_system: Optional[Any] = None,
+) -> str:
+    """Refero Styles 準拠のスタイルリファレンスドキュメント（DESIGN.md）を生成する。単独呼び出し可能。"""
+    return render_design_md(tokens, url=url, design_system=design_system)
 
 
 def run_store(
@@ -165,6 +189,8 @@ def run_pipeline(
     screenshots: Optional[Dict[str, bytes]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     timestamp: Optional[str] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+    progress_cb: Optional[Callable[[str, str], None]] = None,
 ) -> PipelineResult:
     """fetch→analyze→tokenize→generate→store を順に一括実行する。
 
@@ -175,12 +201,44 @@ def run_pipeline(
     戻り値の PipelineResult.design_file (= 保存済み prompt.md の絶対パス) は、
     harness.roles.planner へ design_file 入力候補としてそのまま渡せる。
     """
+    if log_fn:
+        log_fn(f"[extract] Starting extraction for URL: {url}")
+    if progress_cb:
+        progress_cb("extracting", f"Starting extract for {url}")
+
     fetch_result = run_fetch(
-        url, driver, robots_checker=robots_checker, breakpoints=breakpoints, config=config
+        url,
+        driver,
+        robots_checker=robots_checker,
+        breakpoints=breakpoints,
+        config=config,
+        log_fn=log_fn,
+        progress_cb=progress_cb,
     )
+
+    if log_fn:
+        log_fn("[analyze] Analyzing component styles (button, card, nav, form...) and design system...")
+    if progress_cb:
+        progress_cb("extracting", "Analyzing component styles & design system...")
     analysis = run_analyze(fetch_result, component_types=component_types)
+
+    if log_fn:
+        log_fn("[tokenize] Tokenizing design tokens into W3C format...")
+    if progress_cb:
+        progress_cb("extracting", "Tokenizing into W3C design tokens...")
     tokens = run_tokenize(analysis)
+
+    if log_fn:
+        log_fn("[generate] Generating prompt.md and DESIGN.md...")
+    if progress_cb:
+        progress_cb("extracting", "Generating prompt.md and DESIGN.md...")
     prompt = run_generate(tokens, url=url)
+    design_md = run_generate_design_md(tokens, url=url, design_system=analysis.design_system)
+
+    if log_fn:
+        log_fn(f"[store] Saving snapshot to {base_dir} (site: {site or url})...")
+    if progress_cb:
+        progress_cb("extracting", f"Saving snapshot to {base_dir}...")
     snapshot_dir = run_store(
         base_dir,
         site or url,
@@ -191,6 +249,14 @@ def run_pipeline(
         timestamp=timestamp,
     )
 
+    # DESIGN.md に Refero Styles 形式を書き込む
+    (snapshot_dir / DESIGN_FILENAME).write_text(design_md, encoding="utf-8")
+
+    if log_fn:
+        log_fn(f"[extract] Successfully extracted and saved snapshot to {snapshot_dir}")
+    if progress_cb:
+        progress_cb("done", f"Extracted to {snapshot_dir}")
+
     return PipelineResult(
         url=url,
         fetch_result=fetch_result,
@@ -200,4 +266,5 @@ def run_pipeline(
         snapshot_dir=snapshot_dir,
         prompt_path=snapshot_dir / PROMPT_FILENAME,
         tokens_path=snapshot_dir / TOKENS_FILENAME,
+        design_md=design_md,
     )

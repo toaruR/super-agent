@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 TOKENS_FILENAME = "tokens.json"
 PROMPT_FILENAME = "prompt.md"
+DESIGN_FILENAME = "DESIGN.md"
 METADATA_FILENAME = "metadata.json"
 SCREENSHOTS_DIRNAME = "screenshots"
 
@@ -50,6 +51,10 @@ class Snapshot:
     prompt: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     screenshots: Dict[str, bytes] = field(default_factory=dict)
+
+    @property
+    def design_file(self) -> str:
+        return str(self.path / DESIGN_FILENAME if (self.path / DESIGN_FILENAME).exists() else self.path / PROMPT_FILENAME)
 
 
 def _slugify_site(site: str) -> str:
@@ -102,6 +107,7 @@ def save_snapshot(
             json.dumps(tokens, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
         )
         (tmp_dir / PROMPT_FILENAME).write_text(prompt, encoding="utf-8")
+        (tmp_dir / DESIGN_FILENAME).write_text(prompt, encoding="utf-8")
         (tmp_dir / METADATA_FILENAME).write_text(
             json.dumps(metadata or {}, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
         )

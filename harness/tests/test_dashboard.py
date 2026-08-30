@@ -820,3 +820,52 @@ def test_build_model_judgment_unavailable_reason() -> None:
     assert model["T1"]["reason"] == "reviewer produced no parseable output"
 
 
+def test_build_model_extract_events() -> None:
+    """Extract pipeline events properly resolve to 'extracting' and 'extracted' statuses."""
+    # 1. In-progress extraction
+    in_progress = [
+        {"task_id": "extract-site-1", "type": "task.created", "status": "extracting", "role": "extract", "ts": 100},
+    ]
+    m1 = build_model(in_progress, now=110)
+    assert m1["extract-site-1"]["status"] == "extracting"
+
+    # 2. Completed extraction
+    completed = [
+        {"task_id": "extract-site-1", "type": "task.created", "status": "extracting", "role": "extract", "ts": 100},
+        {"task_id": "extract-site-1", "type": "extract.ok", "status": "extracted", "ts": 150},
+    ]
+    m2 = build_model(completed, now=160)
+    assert m2["extract-site-1"]["status"] == "extracted"
+
+    # 3. Failed extraction
+    failed = [
+        {"task_id": "extract-site-2", "type": "task.created", "status": "extracting", "role": "extract", "ts": 100},
+        {"task_id": "extract-site-2", "type": "extract.error", "error": "Connection refused", "status": "failed", "ts": 120},
+    ]
+    m3 = build_model(failed, now=130)
+    assert m3["extract-site-2"]["status"] == "failed"
+    assert m3["extract-site-2"]["reason"] == "Connection refused"
+
+
+def test_render_extract_badges() -> None:
+    """Dashboard HTML and Markdown properly render 'extracting' and 'extracted' badges."""
+    events = [
+        {"task_id": "extract-site-1", "type": "extract.ok", "status": "extracted", "ts": 100},
+        {"task_id": "extract-site-2", "type": "task.created", "status": "extracting", "ts": 100},
+    ]
+    model = build_model(events, now=110)
+
+    # HTML rendering
+    html_out = render_html(model)
+    assert "Extracted" in html_out
+    assert "Extracting" in html_out
+    assert "badge-green" in html_out
+    assert "badge-purple" in html_out
+
+    # Markdown rendering
+    md_out = render_markdown(model)
+    assert "| extract-site-1 | extracted |" in md_out
+    assert "| extract-site-2 | extracting |" in md_out
+
+
+
