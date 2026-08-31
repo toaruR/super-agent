@@ -274,7 +274,11 @@ def run_pipeline(
     design_md = run_generate_design_md(tokens, url=url, design_system=analysis.design_system)
     tokens_css = render_tokens_css(tokens, design_system=analysis.design_system)
     components_css = render_components_css(design_system=analysis.design_system)
-    skeleton_html = render_skeleton_html(metadata or {}, design_system=analysis.design_system)
+    # fetch段階でページから実際に取得したmetadata(title/og:title等)を土台にし、
+    # 呼び出し元が明示的に渡したmetadataで上書きする。呼び出し元指定がなければ
+    # (実運用ではCLIから一切渡されないため)実測値のみが使われる。
+    merged_metadata: Dict[str, Any] = {**(fetch_result.metadata or {}), **(metadata or {})}
+    skeleton_html = render_skeleton_html(merged_metadata, design_system=analysis.design_system)
 
     if log_fn:
         log_fn(f"[store] Saving snapshot to {base_dir} (site: {site or url})...")
@@ -286,7 +290,7 @@ def run_pipeline(
         tokens,
         prompt,
         screenshots=screenshots,
-        metadata=metadata,
+        metadata=merged_metadata,
         timestamp=timestamp,
         tokens_css=tokens_css,
         components_css=components_css,

@@ -230,3 +230,229 @@ def test_excludes_text_and_image_content_from_extracted_patterns() -> None:
     # img要素自体はロゴ等の画像資産を保持するため、そもそもコンポーネントとして
     # 抽出結果に登場しないこと。
     assert all(c.tag != "img" for c in bp.components)
+
+
+# =====================================================================
+# サイト固有の特徴抽出（docs/plans/design-extract-site-specific-fidelity.md）
+# =====================================================================
+from harness.extract.analyze import (  # noqa: E402
+    DesignSystemExtractor,
+    _infer_base_unit,
+    _nearest_rank_percentile,
+)
+
+
+def _rich_styles(brand: str, btn_pad: str, btn_radius: str, card_pad: str, card_radius: str, gap: str) -> dict:
+    styles = {}
+    n = 0
+    for _ in range(6):
+        n += 1
+        styles[f"button.btn-primary:{n}"] = {
+            "background-color": brand,
+            "color": "#ffffff",
+            "padding": btn_pad,
+            "border-radius": btn_radius,
+            "font-size": "16px",
+            "font-weight": "600",
+            "line-height": "1.4",
+        }
+    for _ in range(3):
+        n += 1
+        styles[f"a.btn-outline:{n}"] = {
+            "background-color": "transparent",
+            "color": brand,
+            "border": f"1px solid {brand}",
+            "padding": btn_pad,
+            "border-radius": btn_radius,
+            "font-size": "16px",
+            "font-weight": "600",
+        }
+    for _ in range(3):
+        n += 1
+        styles[f"button.btn-text:{n}"] = {
+            "background-color": "transparent",
+            "color": "#666666",
+            "padding": btn_pad,
+            "font-size": "14px",
+            "font-weight": "500",
+        }
+    for _ in range(10):
+        n += 1
+        styles[f"div.card:{n}"] = {
+            "padding": card_pad,
+            "border-radius": card_radius,
+            "box-shadow": "0 1px 3px rgba(0,0,0,0.1)",
+            "gap": gap,
+        }
+    for hexv in ("#ffffff", "#f5f5f5", "#eeeeee", "#dddddd", "#999999", "#555555", "#222222", "#111111"):
+        n += 1
+        styles[f"div.neutral:{n}"] = {"color": hexv}
+    return styles
+
+
+def _rich_fetch_result(url: str, **kwargs) -> PageFetchResult:
+    return PageFetchResult(
+        url=url,
+        breakpoints=[
+            BreakpointCapture(viewport_width=1280, outer_html="<div></div>", computed_styles=_rich_styles(**kwargs))
+        ],
+        metadata={"title": "Test Page Title"},
+    )
+
+
+def test_nearest_rank_percentile_returns_only_observed_values() -> None:
+    values = [2.0, 4.0, 6.0, 8.0, 10.0]
+    # 分位点は実測値の中からのみ選ばれ、線形補間による「架空の中間値」は生成されない。
+    for p in (0.0, 0.25, 0.5, 0.85, 1.0):
+        assert _nearest_rank_percentile(values, p) in values
+    # 同一入力・同一pに対しては常に同じ値を返す(決定的)。
+    assert _nearest_rank_percentile(values, 0.5) == _nearest_rank_percentile(values, 0.5)
+
+
+def test_infer_base_unit_detects_8px_grid() -> None:
+    assert _infer_base_unit([8.0, 16.0, 24.0, 32.0, 40.0]) == 8
+
+
+def test_infer_base_unit_falls_back_to_4px_with_sparse_data() -> None:
+    assert _infer_base_unit([7.0]) == 4
+
+
+def test_extract_spacing_shapes_reflects_real_measurements() -> None:
+    site_a = DesignSystemExtractor(
+        _rich_fetch_result(
+            "https://site-a.example/",
+            brand="#ff5c35",
+            btn_pad="12px 24px",
+            btn_radius="6px",
+            card_pad="24px",
+            card_radius="12px",
+            gap="16px",
+        )
+    ).extract()
+    site_b = DesignSystemExtractor(
+        _rich_fetch_result(
+            "https://site-b.example/",
+            brand="#0066ff",
+            btn_pad="10px 20px",
+            btn_radius="24px",
+            card_pad="32px",
+            card_radius="4px",
+            gap="24px",
+        )
+    ).extract()
+
+    # 実測の角丸・余白が異なれば、抽出される spacing_shapes も異なる(単一の固定テンプレートに
+    # 収束しない)。
+    assert site_a.spacing_shapes.border_radius != site_b.spacing_shapes.border_radius
+    assert site_a.spacing_shapes.card_padding != site_b.spacing_shapes.card_padding
+
+    # site_b は 24px 単位のカード角丸(4px)を持つため、cards スロットにその値が反映される。
+    cards_radius = dict((n, v) for n, v, _ in site_b.spacing_shapes.border_radius)["cards"]
+    assert cards_radius in ("4px", "6px", "24px")  # 実測分位点由来の値であること
+
+
+def test_extract_spacing_shapes_falls_back_when_data_is_sparse() -> None:
+    fetch_result = PageFetchResult(
+        url="https://sparse.example/",
+        breakpoints=[BreakpointCapture(viewport_width=1280, outer_html="<div></div>", computed_styles={})],
+    )
+    ds = DesignSystemExtractor(fetch_result).extract()
+    # 実測データが皆無の場合は既存の固定既定値にフォールバックする。
+    assert ds.spacing_shapes.page_max_width == "1200px"
+    assert ds.spacing_shapes.section_gap == "80px"
+    assert ds.spacing_shapes.base_unit == "4px"
+
+
+def test_extract_colors_resamples_neutrals_when_data_is_rich() -> None:
+    ds = DesignSystemExtractor(
+        _rich_fetch_result(
+            "https://site-a.example/",
+            brand="#ff5c35",
+            btn_pad="12px 24px",
+            btn_radius="6px",
+            card_pad="24px",
+            card_radius="12px",
+            gap="16px",
+        )
+    ).extract()
+    neutrals = [c for c in ds.colors if c.category == "neutral"]
+    assert len(neutrals) == 10
+    # 実測ニュートラルからリサンプルされた値は、synthetic fixtureで与えた実測hexのいずれかである。
+    observed = {"#ffffff", "#f5f5f5", "#eeeeee", "#dddddd", "#999999", "#555555", "#222222", "#111111"}
+    assert any(c.hex_value in observed for c in neutrals)
+
+
+def test_extract_components_button_variant_clustering() -> None:
+    ds = DesignSystemExtractor(
+        _rich_fetch_result(
+            "https://site-a.example/",
+            brand="#ff5c35",
+            btn_pad="12px 24px",
+            btn_radius="6px",
+            card_pad="24px",
+            card_radius="12px",
+            gap="16px",
+        )
+    ).extract()
+    buttons = [c for c in ds.components if c.component_type == "button"]
+    # filled(6件)/outline(3件)/text(3件)が全て閾値(2件)を超えるため、
+    # Primary/Secondary/Ghostの3バリアントに収束する(上限3)。
+    assert len(buttons) == 3
+    assert {b.variant_key for b in buttons} == {"primary", "secondary", "ghost"}
+    primary = next(b for b in buttons if b.variant_key == "primary")
+    assert primary.properties["background"] == "#ff5c35"
+    assert primary.semantic_role == "primary-cta"
+
+
+def test_extract_components_omits_ghost_variant_when_data_is_scarce() -> None:
+    styles = {}
+    for i in range(6):
+        styles[f"button.btn:{i}"] = {
+            "background-color": "#00cc66",
+            "color": "#ffffff",
+            "padding": "14px 28px",
+            "border-radius": "4px",
+            "font-size": "18px",
+            "font-weight": "700",
+        }
+    fetch_result = PageFetchResult(
+        url="https://site-c.example/",
+        breakpoints=[BreakpointCapture(viewport_width=1280, outer_html="<div></div>", computed_styles=styles)],
+    )
+    ds = DesignSystemExtractor(fetch_result).extract()
+    buttons = [c for c in ds.components if c.component_type == "button"]
+    # outline/textの実測データが閾値未満のため、Ghostは生成されずPrimary/Secondaryのみになる。
+    assert {b.variant_key for b in buttons} == {"primary", "secondary"}
+
+
+def test_extract_components_card_surface_uses_correct_radius_not_padding() -> None:
+    ds = DesignSystemExtractor(
+        _rich_fetch_result(
+            "https://site-a.example/",
+            brand="#ff5c35",
+            btn_pad="12px 24px",
+            btn_radius="6px",
+            card_pad="32px",
+            card_radius="4px",
+            gap="16px",
+        )
+    ).extract()
+    card = next(c for c in ds.components if c.component_type == "card")
+    # 修正前は border-radius に card_padding(32px)が誤って使われるバグがあった。
+    assert card.properties["border_radius"] != card.properties["padding"]
+    assert card.properties["padding"] == ds.spacing_shapes.card_padding
+
+
+def test_design_system_extraction_is_deterministic() -> None:
+    fetch_result = _rich_fetch_result(
+        "https://site-a.example/",
+        brand="#ff5c35",
+        btn_pad="12px 24px",
+        btn_radius="6px",
+        card_pad="24px",
+        card_radius="12px",
+        gap="16px",
+    )
+    first = DesignSystemExtractor(fetch_result).extract()
+    second = DesignSystemExtractor(fetch_result).extract()
+    assert dataclasses.asdict(first) == dataclasses.asdict(second)

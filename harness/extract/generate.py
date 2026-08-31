@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from harness.extract.analyze import DesignSystemAnalysis, DesignSystemExtractor
@@ -516,14 +517,56 @@ def render_tokens_css(
     return "\n".join(lines) + "\n"
 
 
+def _prop(comp: Optional[Any], key: str, default: str) -> str:
+    """ComponentSpec.properties から構造化された値を取得する（正規表現パース不要）。"""
+    if comp is None:
+        return default
+    val = (getattr(comp, "properties", None) or {}).get(key)
+    return val if val else default
+
+
+def _find_component(
+    components: List[Any],
+    component_type: str,
+    variant_key: Optional[str] = None,
+    name_hint: Optional[str] = None,
+    strict: bool = False,
+) -> Optional[Any]:
+    """`component_type`/`variant_key`/`name_hint` に一致するコンポーネントを探す。
+
+    `strict=True` の場合、variant_key/name_hint に一致するものが無ければ
+    (同一 component_type の別バリアントへの誤フォールバックを避けるため) None を返す。
+    button のように複数バリアントが並存しうる component_type ではこれを使う。
+    card/nav/input/badge のようにバリアント区別のない単一インスタンス型では
+    strict=False のまま「同type内の先頭」へのフォールバックを許容する。
+    """
+    candidates = [c for c in components if getattr(c, "component_type", None) == component_type]
+    if variant_key is not None:
+        for c in candidates:
+            if getattr(c, "variant_key", None) == variant_key:
+                return c
+    if name_hint is not None:
+        for c in candidates:
+            if name_hint in getattr(c, "name", ""):
+                return c
+    if strict:
+        return None
+    return candidates[0] if candidates else None
+
+
 def render_components_css(
     design_system: Optional[DesignSystemAnalysis] = None,
 ) -> str:
-    """主要コンポーネント（.btn-primary, .btn-secondary, .card-surface, .nav-container, .input-field, .badge 等）の具現化CSSルールを生成する。"""
+    """主要コンポーネント（.btn-primary, .btn-secondary, .card-surface, .nav-container, .input-field, .badge 等）の具現化CSSルールを生成する。
+
+    `design_system.components`（`ComponentSpec.properties`）から実測由来の値を構造化フィールド
+    として取得し、対象サイトごとに変動する。データが乏しい場合のみ既存のハードコード値へ
+    フォールバックするため、モデル/シード差異による出力の揺らぎは発生しない。
+    """
     theme = getattr(design_system, "theme", "light") if design_system else "light"
     is_dark = (theme == "dark")
 
-    brand_hex = "#ff5c35" if not is_dark else "#e4f222"
+    brand_hex = "#ff4800" if not is_dark else "#e4f222"
     on_primary_hex = "#ffffff" if not is_dark else "#08090a"
 
     if design_system is not None and getattr(design_system, "colors", None):
@@ -540,6 +583,87 @@ def render_components_css(
     brand_color = f"var(--color-primary, {brand_hex})"
     on_primary_color = f"var(--color-on-primary, {on_primary_hex})"
 
+    components: List[Any] = list(getattr(design_system, "components", None) or []) if design_system is not None else []
+    primary_comp = _find_component(components, "button", variant_key="primary", name_hint="Primary", strict=True)
+    secondary_comp = _find_component(components, "button", variant_key="secondary", name_hint="Secondary", strict=True)
+    ghost_comp = _find_component(components, "button", variant_key="ghost", name_hint="Ghost", strict=True)
+    card_comp = _find_component(components, "card")
+    nav_comp = _find_component(components, "nav")
+    input_comp = _find_component(components, "input")
+    badge_comp = _find_component(components, "badge")
+
+    # ボタン（Primary）: 背景/文字色はセマンティックトークンに委ね、形状のみ実測値を反映する。
+    btn_padding = _prop(primary_comp, "padding", "12px 24px")
+    btn_radius = f"var(--radius-buttons, {_prop(primary_comp, 'border_radius', 'var(--radius-md, 6px)')})"
+    btn_fs = f"var(--text-body-sm, {_prop(primary_comp, 'font_size', '15px')})"
+    btn_fw = _prop(primary_comp, "font_weight", "500")
+    btn_lh = _prop(primary_comp, "line_height", "1.5")
+
+    # ボタン（Secondary）: 実測の outline バケットがあればその配色を、無ければ既定ヒューリスティックを使う。
+    sec_bg_default = "transparent" if is_dark else "var(--surface-canvas, #ffffff)"
+    sec_text_default = "var(--color-text-body, #d0d6e0)" if is_dark else brand_color
+    sec_border_default = "1px solid var(--color-border, #23252a)" if is_dark else f"1px solid {brand_color}"
+    sec_bg = _prop(secondary_comp, "background", sec_bg_default)
+    sec_text = _prop(secondary_comp, "text", sec_text_default)
+    sec_border = _prop(secondary_comp, "border", sec_border_default)
+
+    # ボタン（Ghost）: 実測の text バケットが一定数あるサイトでのみ生成される追加バリアント。
+    has_ghost = ghost_comp is not None
+    ghost_text = _prop(ghost_comp, "text", "var(--color-text-muted, #8a8f98)" if is_dark else "var(--color-secondary, #6b7280)")
+
+    # 背景/文字色は「実測値」を、必ず対応する意味論的CSS変数(var())のフォールバックとして
+    # 埋め込む（reproduce-ui スキルの「常に var() を使う、色を直書きしない」規約に、
+    # コンポーネント固有の実測値と tokens.css 側のトークンカスケードを両立させるため）。
+    # border など「幅+スタイル+色」の複合値は _prop() の実測値をそのまま使う
+    # (compound文字列を var() でラップすると値の途中に構造が入り込み壊れるため)。
+    card_padding = f"var(--card-padding, {_prop(card_comp, 'padding', '24px')})"
+    card_radius = f"var(--radius-cards, {_prop(card_comp, 'border_radius', 'var(--radius-xl, 12px)')})"
+    card_shadow_default = "0 2px 4px rgba(0, 0, 0, 0.04)" if not is_dark else "0 2px 4px rgba(0, 0, 0, 0.4)"
+    card_shadow = f"var(--shadow-sm, {_prop(card_comp, 'box_shadow', card_shadow_default)})"
+    card_bg = f"var(--surface-surface, {_prop(card_comp, 'background', '#0f1011' if is_dark else '#ffffff')})"
+    card_border = _prop(card_comp, "border", "1px solid var(--color-border, #23252a)" if is_dark else "1px solid var(--color-border, #f0f0f0)")
+
+    nav_bg = f"var(--surface-canvas, {_prop(nav_comp, 'background', '#08090a' if is_dark else '#ffffff')})"
+    nav_border = _prop(nav_comp, "border_bottom", "1px solid var(--color-border, #23252a)" if is_dark else "1px solid var(--color-border, #f0f0f0)")
+    nav_max_width = f"var(--page-max-width, {_prop(nav_comp, 'max_width', '1200px')})"
+
+    input_bg = f"var(--surface-canvas, {_prop(input_comp, 'background', '#ffffff')})" if not is_dark else _prop(input_comp, "background", "rgba(255, 255, 255, 0.02)")
+    input_border = _prop(input_comp, "border", "1px solid var(--color-border, rgba(255, 255, 255, 0.08))" if is_dark else "1px solid var(--color-border-strong, #d1d5db)")
+    input_radius = f"var(--radius-inputs, {_prop(input_comp, 'border_radius', '6px')})"
+    input_text = f"var(--color-text-body, {_prop(input_comp, 'text', '#d0d6e0')})" if is_dark else f"var(--color-body, {_prop(input_comp, 'text', '#1f1f1f')})"
+
+    badge_bg = _prop(badge_comp, "background", "rgba(255, 255, 255, 0.05)") if is_dark else f"var(--surface-subtle, {_prop(badge_comp, 'background', '#f3f4f6')})"
+    badge_text = f"var(--color-text-muted, {_prop(badge_comp, 'text', '#8a8f98')})" if is_dark else _prop(badge_comp, "text", brand_color)
+    badge_radius = f"var(--radius-badges, {_prop(badge_comp, 'border_radius', '9999px' if not is_dark else '4px')})"
+
+    ghost_block: List[str] = []
+    if has_ghost:
+        ghost_pad = _prop(ghost_comp, "padding", btn_padding)
+        ghost_fs = f"var(--text-body-sm, {_prop(ghost_comp, 'font_size', '15px')})"
+        ghost_fw = _prop(ghost_comp, "font_weight", "500")
+        ghost_hover_bg = "rgba(255, 255, 255, 0.05)" if is_dark else "var(--surface-subtle, #f3f4f6)"
+        ghost_block = [
+            "",
+            ".btn-ghost {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            f"  padding: {ghost_pad};",
+            "  background-color: transparent;",
+            f"  color: {ghost_text};",
+            "  border: 1px solid transparent;",
+            f"  border-radius: {btn_radius};",
+            "  font-family: var(--font-primary, sans-serif);",
+            f"  font-size: {ghost_fs};",
+            f"  font-weight: {ghost_fw};",
+            "  cursor: pointer;",
+            "  transition: background-color 0.15s ease, color 0.15s ease;",
+            "}",
+            ".btn-ghost:hover {",
+            f"  background-color: {ghost_hover_bg};",
+            "}",
+        ]
+
     if is_dark:
         css_blocks = [
             "/* Main Components CSS (Dark Theme) */",
@@ -549,107 +673,14 @@ def render_components_css(
             "  display: inline-flex;",
             "  align-items: center;",
             "  justify-content: center;",
-            "  padding: 10px 16px;",
+            f"  padding: {btn_padding};",
             f"  background-color: {brand_color};",
             f"  color: {on_primary_color};",
-            "  border-radius: var(--radius-md, 6px);",
-            "  font-family: var(--font-primary, 'Inter Variable', sans-serif);",
-            "  font-size: var(--text-body-sm, 14px);",
-            "  font-weight: 510;",
-            "  border: none;",
-            "  cursor: pointer;",
-            "  transition: background-color 0.15s ease, transform 0.15s ease;",
-            "}",
-            ".btn-primary:hover {",
-            "  opacity: 0.9;",
-            "}",
-            "",
-            ".btn-secondary {",
-            "  display: inline-flex;",
-            "  align-items: center;",
-            "  justify-content: center;",
-            "  padding: 8px 14px;",
-            "  background-color: transparent;",
-            "  color: var(--color-text-body, #d0d6e0);",
-            "  border: 1px solid var(--color-border, #23252a);",
-            "  border-radius: var(--radius-md, 6px);",
-            "  font-family: var(--font-primary, 'Inter Variable', sans-serif);",
-            "  font-size: var(--text-body-sm, 14px);",
-            "  font-weight: 400;",
-            "  cursor: pointer;",
-            "  transition: background-color 0.15s ease, border-color 0.15s ease;",
-            "}",
-            ".btn-secondary:hover {",
-            "  background-color: rgba(255, 255, 255, 0.05);",
-            "  border-color: var(--color-text-muted, #8a8f98);",
-            "}",
-            "",
-            "/* Card Components */",
-            ".card-surface {",
-            "  background-color: var(--surface-carbon, #0f1011);",
-            "  border: 1px solid var(--color-border, #23252a);",
-            "  border-radius: var(--radius-xl, 12px);",
-            "  padding: var(--card-padding, 24px);",
-            "  box-shadow: var(--shadow-sm, 0 2px 4px rgba(0, 0, 0, 0.4));",
-            "}",
-            "",
-            "/* Navigation Components */",
-            ".nav-container {",
-            "  display: flex;",
-            "  align-items: center;",
-            "  justify-content: space-between;",
-            "  padding: 16px var(--spacing-24, 24px);",
-            "  background-color: var(--surface-void, #08090a);",
-            "  border-bottom: 1px solid var(--color-border, #23252a);",
-            "  max-width: var(--page-max-width, 1200px);",
-            "  margin: 0 auto;",
-            "}",
-            "",
-            "/* Form Input Components */",
-            ".input-field {",
-            "  width: 100%;",
-            "  padding: 10px 14px;",
-            "  background-color: rgba(255, 255, 255, 0.02);",
-            "  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));",
-            "  border-radius: var(--radius-inputs, 6px);",
-            "  color: var(--color-text-body, #d0d6e0);",
-            "  font-family: var(--font-primary, 'Inter Variable', sans-serif);",
-            "  font-size: 14px;",
-            "  outline: none;",
-            "  transition: border-color 0.15s ease;",
-            "}",
-            ".input-field:focus {",
-            f"  border-color: {brand_color};",
-            "}",
-            "",
-            "/* Badge Components */",
-            ".badge {",
-            "  display: inline-flex;",
-            "  align-items: center;",
-            "  padding: 2px 8px;",
-            "  background-color: rgba(255, 255, 255, 0.05);",
-            "  color: var(--color-text-muted, #8a8f98);",
-            "  border-radius: var(--radius-badges, 4px);",
-            "  font-size: 12px;",
-            "  font-weight: 400;",
-            "}",
-        ]
-    else:
-        css_blocks = [
-            "/* Main Components CSS (Light Theme) */",
-            "",
-            "/* Button Components */",
-            ".btn-primary {",
-            "  display: inline-flex;",
-            "  align-items: center;",
-            "  justify-content: center;",
-            "  padding: 10px 18px;",
-            f"  background-color: {brand_color};",
-            f"  color: {on_primary_color};",
-            "  border-radius: var(--radius-md, 6px);",
-            "  font-family: var(--font-primary, 'Inter Variable', sans-serif);",
-            "  font-size: var(--text-body-sm, 14px);",
-            "  font-weight: 510;",
+            f"  border-radius: {btn_radius};",
+            "  font-family: var(--font-primary, sans-serif);",
+            f"  font-size: {btn_fs};",
+            f"  font-weight: {btn_fw};",
+            f"  line-height: {btn_lh};",
             "  border: 1px solid transparent;",
             "  cursor: pointer;",
             "  transition: background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;",
@@ -663,30 +694,31 @@ def render_components_css(
             "  display: inline-flex;",
             "  align-items: center;",
             "  justify-content: center;",
-            "  padding: 9px 16px;",
-            "  background-color: var(--surface-canvas, #ffffff);",
-            "  color: var(--color-body, #1f1f1f);",
-            "  border: 1px solid var(--color-border-strong, #d1d5db);",
-            "  border-radius: var(--radius-md, 6px);",
-            "  font-family: var(--font-primary, 'Inter Variable', sans-serif);",
-            "  font-size: var(--text-body-sm, 14px);",
-            "  font-weight: 500;",
+            f"  padding: {btn_padding};",
+            f"  background-color: {sec_bg};",
+            f"  color: {sec_text};",
+            f"  border: {sec_border};",
+            f"  border-radius: {btn_radius};",
+            "  font-family: var(--font-primary, sans-serif);",
+            f"  font-size: {btn_fs};",
+            f"  font-weight: {btn_fw};",
             "  cursor: pointer;",
             "  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;",
             "}",
             ".btn-secondary:hover {",
-            "  background-color: var(--surface-subtle, #f3f4f6);",
-            "  border-color: var(--color-secondary, #9ca3af);",
+            "  background-color: rgba(255, 255, 255, 0.05);",
+            "  border-color: var(--color-text-muted, #8a8f98);",
             "  transform: translateY(-1px);",
             "}",
+            *ghost_block,
             "",
             "/* Card Components */",
             ".card-surface {",
-            "  background-color: var(--surface-surface, #ffffff);",
-            "  border: 1px solid var(--color-border, #f0f0f0);",
-            "  border-radius: var(--radius-xl, 12px);",
-            "  padding: var(--card-padding, 24px);",
-            "  box-shadow: var(--shadow-sm, 0 2px 4px rgba(0, 0, 0, 0.04));",
+            f"  background-color: {card_bg};",
+            f"  border: {card_border};",
+            f"  border-radius: {card_radius};",
+            f"  padding: {card_padding};",
+            f"  box-shadow: {card_shadow};",
             "}",
             "",
             "/* Navigation Components */",
@@ -695,21 +727,120 @@ def render_components_css(
             "  align-items: center;",
             "  justify-content: space-between;",
             "  padding: 16px var(--spacing-24, 24px);",
-            "  background-color: var(--surface-canvas, #ffffff);",
-            "  border-bottom: 1px solid var(--color-border, #f0f0f0);",
-            "  max-width: var(--page-max-width, 1200px);",
+            f"  background-color: {nav_bg};",
+            f"  border-bottom: {nav_border};",
+            f"  max-width: {nav_max_width};",
             "  margin: 0 auto;",
             "}",
             "",
             "/* Form Input Components */",
             ".input-field {",
             "  width: 100%;",
-            "  padding: 10px 14px;",
-            "  background-color: var(--surface-canvas, #ffffff);",
-            "  border: 1px solid var(--color-border-strong, #d1d5db);",
-            "  border-radius: var(--radius-inputs, 6px);",
-            "  color: var(--color-body, #1f1f1f);",
-            "  font-family: var(--font-primary, 'Inter Variable', sans-serif);",
+            "  padding: 12px 14px;",
+            f"  background-color: {input_bg};",
+            f"  border: {input_border};",
+            f"  border-radius: {input_radius};",
+            f"  color: {input_text};",
+            "  font-family: var(--font-primary, sans-serif);",
+            "  font-size: 14px;",
+            "  outline: none;",
+            "  transition: border-color 0.15s ease, box-shadow 0.15s ease;",
+            "}",
+            ".input-field:focus {",
+            f"  border-color: {brand_color};",
+            "  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05);",
+            "}",
+            "",
+            "/* Badge Components */",
+            ".badge {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  padding: 4px 10px;",
+            f"  background-color: {badge_bg};",
+            f"  color: {badge_text};",
+            f"  border-radius: {badge_radius};",
+            "  font-size: 12px;",
+            "  font-weight: 500;",
+            "}",
+        ]
+    else:
+        css_blocks = [
+            "/* Main Components CSS (Light Theme) */",
+            "",
+            "/* Button Components */",
+            ".btn-primary {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            f"  padding: {btn_padding};",
+            f"  background-color: {brand_color};",
+            f"  color: {on_primary_color};",
+            f"  border-radius: {btn_radius};",
+            "  font-family: var(--font-primary, sans-serif);",
+            f"  font-size: {btn_fs};",
+            f"  font-weight: {btn_fw};",
+            f"  line-height: {btn_lh};",
+            "  border: 1px solid transparent;",
+            "  cursor: pointer;",
+            "  transition: background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;",
+            "}",
+            ".btn-primary:hover {",
+            "  opacity: 0.92;",
+            "  transform: translateY(-1px);",
+            "  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);",
+            "}",
+            "",
+            ".btn-secondary {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            f"  padding: {btn_padding};",
+            f"  background-color: {sec_bg};",
+            f"  color: {sec_text};",
+            f"  border: {sec_border};",
+            f"  border-radius: {btn_radius};",
+            "  font-family: var(--font-primary, sans-serif);",
+            f"  font-size: {btn_fs};",
+            f"  font-weight: {btn_fw};",
+            "  cursor: pointer;",
+            "  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;",
+            "}",
+            ".btn-secondary:hover {",
+            "  background-color: var(--surface-subtle, #f3f4f6);",
+            "  transform: translateY(-1px);",
+            "}",
+            *ghost_block,
+            "",
+            "/* Card Components */",
+            ".card-surface {",
+            f"  background-color: {card_bg};",
+            f"  border: {card_border};",
+            f"  border-radius: {card_radius};",
+            f"  padding: {card_padding};",
+            f"  box-shadow: {card_shadow};",
+            "}",
+            "",
+            "/* Navigation Components */",
+            ".nav-container {",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: space-between;",
+            "  padding: 16px var(--spacing-24, 24px);",
+            f"  background-color: {nav_bg};",
+            f"  border-bottom: {nav_border};",
+            f"  max-width: {nav_max_width};",
+            "  margin: 0 auto;",
+            "}",
+            "",
+            "/* Form Input Components */",
+            ".input-field {",
+            "  width: 100%;",
+            "  padding: 12px 14px;",
+            f"  background-color: {input_bg};",
+            f"  border: {input_border};",
+            f"  border-radius: {input_radius};",
+            f"  color: {input_text};",
+            "  font-family: var(--font-primary, sans-serif);",
             "  font-size: 14px;",
             "  outline: none;",
             "  transition: border-color 0.15s ease, box-shadow 0.15s ease;",
@@ -723,16 +854,50 @@ def render_components_css(
             ".badge {",
             "  display: inline-flex;",
             "  align-items: center;",
-            "  padding: 2px 8px;",
-            "  background-color: var(--surface-subtle, #f3f4f6);",
-            "  color: var(--color-body, #1f1f1f);",
-            "  border-radius: var(--radius-badges, 4px);",
+            "  padding: 4px 10px;",
+            f"  background-color: {badge_bg};",
+            f"  color: {badge_text};",
+            f"  border-radius: {badge_radius};",
             "  font-size: 12px;",
-            "  font-weight: 500;",
+            "  font-weight: 600;",
             "}",
         ]
 
     return "\n".join(css_blocks) + "\n"
+
+
+_BUTTON_VARIANT_CLASS: Dict[str, str] = {"primary": "btn-primary", "secondary": "btn-secondary", "ghost": "btn-ghost"}
+
+
+def _render_component_catalog(components: List[Any]) -> List[str]:
+    """検出済みコンポーネント/バリアントを、名前・用途をHTMLコメントで注記した
+    「パターンライブラリ」形式のカタログとして描画する（同ページ編集・類似ページ生成の両方で
+    再利用できるよう、各バリアントの意味論的な役割を明示する）。
+    """
+    buttons = [c for c in components if getattr(c, "component_type", None) == "button"]
+    badge = next((c for c in components if getattr(c, "component_type", None) == "badge"), None)
+    input_comp = next((c for c in components if getattr(c, "component_type", None) == "input"), None)
+
+    lines = [
+        '    <section class="card-surface">',
+        '      <h2>Component Showcase</h2>',
+        '      <p style="margin: 16px 0;">This skeleton template uses tokens.css and components.css to reproduce the UI layout deterministically.</p>',
+        '      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px;">',
+    ]
+    if badge is not None:
+        lines.append(f'        <!-- Variant: {badge.name} ({badge.semantic_role or "badge"}) -->')
+        lines.append('        <span class="badge">Active</span>')
+    if input_comp is not None:
+        lines.append(f'        <!-- Variant: {input_comp.name} ({input_comp.semantic_role or "input"}) -->')
+        lines.append('        <input type="text" class="input-field" placeholder="Search components..." style="max-width: 300px;">')
+    for comp in buttons:
+        css_class = _BUTTON_VARIANT_CLASS.get(getattr(comp, "variant_key", "default"), "btn-primary")
+        label = comp.name.split("(")[0].strip() if comp.name else css_class
+        lines.append(f'        <!-- Variant: {comp.name} ({comp.semantic_role or comp.variant_key}) -->')
+        lines.append(f'        <button class="{css_class}">{label}</button>')
+    lines.append("      </div>")
+    lines.append("    </section>")
+    return lines
 
 
 def render_skeleton_html(
@@ -756,9 +921,32 @@ def render_skeleton_html(
     body_bg = "var(--surface-void, #08090a)" if is_dark else "var(--surface-canvas, #ffffff)"
     body_color = "var(--color-text-body, #d0d6e0)" if is_dark else "var(--color-body, #1f1f1f)"
 
+    primary_font = "var(--font-primary, sans-serif)"
+    if design_system is not None and getattr(design_system, "font_families", None):
+        prim_spec = next((f for f in design_system.font_families if f.role == "Primary"), None)
+        if prim_spec:
+            primary_font = f"var(--font-primary, {prim_spec.substitute})"
+
+    brand_label = title.split("—")[0].strip() if "—" in title else title
+    if design_system is not None and getattr(design_system, "brand_name", None):
+        brand_label = design_system.brand_name
+
+    components: List[Any] = list(getattr(design_system, "components", None) or []) if design_system is not None else []
+    showcase_lines = _render_component_catalog(components) if components else [
+        '    <section class="card-surface">',
+        '      <h2>Component Showcase</h2>',
+        '      <p style="margin: 16px 0;">This skeleton template uses tokens.css and components.css to reproduce the UI layout deterministically.</p>',
+        '      <div style="display: flex; gap: 12px; align-items: center; margin-top: 16px;">',
+        '        <span class="badge">Active</span>',
+        '        <input type="text" class="input-field" placeholder="Search components..." style="max-width: 300px;">',
+        '        <button class="btn-primary">Action</button>',
+        "      </div>",
+        "    </section>",
+    ]
+
     html_lines = [
         "<!DOCTYPE html>",
-        '<html lang="en">',
+        '<html lang="ja">',
         "<head>",
         '  <meta charset="UTF-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1.0">',
@@ -779,7 +967,7 @@ def render_skeleton_html(
         "      min-height: 100vh;",
         "      line-height: 1.5;",
         "      -webkit-font-smoothing: antialiased;",
-        "      font-family: var(--font-primary, 'Inter', sans-serif);",
+        f"      font-family: {primary_font};",
         f"      background-color: {body_bg};",
         f"      color: {body_color};",
         "    }",
@@ -788,7 +976,7 @@ def render_skeleton_html(
         "<body>",
         '  <header class="nav-container">',
         '    <div class="brand-logo">',
-        f'      <span>{title.split("—")[0].strip() if "—" in title else title}</span>',
+        f'      <span>{brand_label}</span>',
         "    </div>",
         "    <nav>",
         '      <button class="btn-secondary">Overview</button>',
@@ -796,15 +984,7 @@ def render_skeleton_html(
         "    </nav>",
         "  </header>",
         '  <main style="max-width: var(--page-max-width, 1200px); margin: 0 auto; padding: 32px 24px;">',
-        '    <section class="card-surface">',
-        '      <h2>Component Showcase</h2>',
-        '      <p style="margin: 16px 0;">This skeleton template uses tokens.css and components.css to reproduce the UI layout deterministically.</p>',
-        '      <div style="display: flex; gap: 12px; align-items: center; margin-top: 16px;">',
-        '        <span class="badge">Active</span>',
-        '        <input type="text" class="input-field" placeholder="Search components..." style="max-width: 300px;">',
-        '        <button class="btn-primary">Action</button>',
-        "      </div>",
-        "    </section>",
+        *showcase_lines,
         "  </main>",
         "</body>",
         "</html>",

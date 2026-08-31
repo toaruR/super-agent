@@ -195,4 +195,72 @@ def test_theme_aware_components_css_dark() -> None:
     css = render_components_css(ds)
     assert "/* Main Components CSS (Dark Theme) */" in css
     assert "var(--color-primary, #e4f222)" in css
-    assert "var(--surface-carbon, #0f1011)" in css
+    assert "var(--surface-surface, #0f1011)" in css
+
+
+def test_dynamic_component_and_font_extraction() -> None:
+    """対象サイトの実際の font-family, ボタン padding, border-radius が動的に抽出され tokens.css / components.css に反映されること。"""
+    outer_html = """
+    <html>
+      <body>
+        <button class="btn" id="b1">Demo</button>
+        <div class="card" id="c1">Card</div>
+      </body>
+    </html>
+    """
+    computed_styles = {
+        "html:0": {"background-color": "#ffffff"},
+        "body:1": {
+            "background-color": "#ffffff",
+            "font-family": '"HubSpot Sans", sans-serif',
+            "color": "#1f1f1f",
+        },
+        "button:3": {
+            "background-color": "rgb(255, 72, 0)",
+            "color": "#ffffff",
+            "border-radius": "8px",
+            "padding": "16px 40px",
+            "font-family": '"HubSpot Sans", sans-serif',
+            "font-size": "18px",
+            "font-weight": "500",
+            "line-height": "32px",
+        },
+        "div:4": {
+            "background-color": "#ffffff",
+            "border-radius": "8px",
+            "padding": "24px",
+            "font-family": '"HubSpot Sans", sans-serif',
+        },
+    }
+
+    fetch_result = PageFetchResult(
+        url="https://www.hubspot.com/",
+        breakpoints=[
+            BreakpointCapture(
+                viewport_width=1280,
+                outer_html=outer_html,
+                computed_styles=computed_styles,
+            )
+        ],
+        metadata={"title": "HubSpot"},
+    )
+
+    extractor = DesignSystemExtractor(fetch_result)
+    ds = extractor.extract()
+
+    # 抽出されたフォント: HubSpot Sans
+    primary_font = next((f for f in ds.font_families if f.role == "Primary"), None)
+    assert primary_font is not None
+    assert primary_font.name == "HubSpot Sans"
+    assert '"HubSpot Sans", sans-serif' in primary_font.substitute
+
+    # 抽出された CSS カスタムプロパティ (tokens.css)
+    tokens_css = render_tokens_css({}, design_system=ds)
+    assert "--font-primary: \"HubSpot Sans\", sans-serif;" in tokens_css
+    assert "--radius-buttons: 8px;" in tokens_css
+
+    # 抽出された components.css
+    comp_css = render_components_css(ds)
+    assert "padding: 16px 40px;" in comp_css
+    assert "var(--radius-buttons, 8px)" in comp_css
+    assert "line-height: 32px;" in comp_css

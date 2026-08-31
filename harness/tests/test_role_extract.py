@@ -198,6 +198,57 @@ def test_pipeline_generates_and_stores_css_and_html_assets(tmp_path) -> None:
     assert result.skeleton_html_path.read_text(encoding="utf-8") == result.skeleton_html
 
 
+class TitledBrowserDriver:
+    """fetch段階が実ページから取得するメタデータ(title等)を模したフェイクドライバ。"""
+
+    def render(self, url: str, viewport_width: int):
+        return RenderResult(
+            outer_html="<button class='btn'>x</button><nav class='navbar'>x</nav>",
+            computed_styles={
+                "button:0": {"color": "#111111", "border-radius": "4px"},
+                "nav:1": {"color": "#222222"},
+            },
+            metadata={"title": "Real Fetched Page Title", "ogTitle": "OG Title"},
+        )
+
+
+def test_pipeline_uses_fetched_metadata_for_skeleton_title_and_snapshot(tmp_path) -> None:
+    # run_pipeline() は metadata引数を明示的に渡さなくても、fetch段階で実際に取得した
+    # ページの title 等を skeleton.html / metadata.json に反映しなければならない
+    # (metadata引数は常にCLIから渡されないため、fetch結果を無視すると常に空になる)。
+    result = extract_role.run_pipeline(
+        "https://example.com/",
+        TitledBrowserDriver(),
+        robots_checker=_robots_checker(),
+        base_dir=tmp_path,
+        breakpoints=[375, 1280],
+        timestamp="20260101T000000Z",
+    )
+
+    assert result.fetch_result.metadata.get("title") == "Real Fetched Page Title"
+    assert "<title>Real Fetched Page Title</title>" in result.skeleton_html
+
+    import json
+    metadata_path = result.snapshot_dir / "metadata.json"
+    saved_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert saved_metadata.get("title") == "Real Fetched Page Title"
+
+
+def test_pipeline_explicit_metadata_overrides_fetched_metadata(tmp_path) -> None:
+    # 呼び出し元が明示的に metadata を渡した場合は、fetch段階の実測値より優先される。
+    result = extract_role.run_pipeline(
+        "https://example.com/",
+        TitledBrowserDriver(),
+        robots_checker=_robots_checker(),
+        base_dir=tmp_path,
+        breakpoints=[375, 1280],
+        timestamp="20260101T000000Z",
+        metadata={"title": "Explicit Override Title"},
+    )
+
+    assert "<title>Explicit Override Title</title>" in result.skeleton_html
+
+
 def test_reproduce_ui_skill_files_exist() -> None:
     from pathlib import Path
     agents_skill = Path(".agents/skills/reproduce-ui/SKILL.md")

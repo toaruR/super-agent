@@ -232,3 +232,154 @@ def test_render_skeleton_html() -> None:
     assert "/* CSS Reset */" in html
     assert "btn-primary" in html
 
+
+def _make_design_system(components):
+    from harness.extract.analyze import AgentPromptGuideSpec, DesignPrinciples, DesignSystemAnalysis, SpacingShapeSpec
+
+    return DesignSystemAnalysis(
+        brand_name="TestBrand",
+        tagline="Test Tagline",
+        theme="light",
+        aesthetic_summary="Test aesthetic",
+        colors=[],
+        font_families=[],
+        type_scale=[],
+        spacing_shapes=SpacingShapeSpec("4px", "compact", [], [], []),
+        components=components,
+        principles=DesignPrinciples([], []),
+        surfaces=[],
+        elevation_summary="",
+        imagery_summary="",
+        layout_summary="",
+        agent_prompts=AgentPromptGuideSpec({}, []),
+        similar_brands=[],
+        css_custom_properties="",
+        tailwind_v4_theme="",
+    )
+
+
+def _make_component_spec(**kwargs):
+    from harness.extract.analyze import ComponentSpec
+
+    defaults = dict(name="Component", role="role", spec_summary="summary")
+    defaults.update(kwargs)
+    return ComponentSpec(**defaults)
+
+
+def test_render_components_css_reflects_secondary_variant_properties() -> None:
+    secondary = _make_component_spec(
+        name="Secondary Action Button",
+        role="Medium-emphasis action",
+        spec_summary="",
+        component_type="button",
+        variant_key="secondary",
+        semantic_role="secondary-cta",
+        properties={"background": "#123456", "text": "#abcdef", "border": "2px solid #123456"},
+    )
+    ds = _make_design_system([secondary])
+
+    css = render_components_css(design_system=ds)
+
+    assert "#123456" in css
+    assert "#abcdef" in css
+    assert "2px solid #123456" in css
+    # 実測値がない場合のデフォルト値(brand_colorのvar())は使われない
+    assert "background-color: #123456;" in css
+
+
+def test_render_components_css_emits_btn_ghost_only_when_present() -> None:
+    ds_without_ghost = _make_design_system([
+        _make_component_spec(
+            name="Primary Action Button",
+            role="High-emphasis CTA",
+            spec_summary="",
+            component_type="button",
+            variant_key="primary",
+        ),
+    ])
+    css_without_ghost = render_components_css(design_system=ds_without_ghost)
+    assert ".btn-ghost" not in css_without_ghost
+
+    ghost = _make_component_spec(
+        name="Ghost Action Button",
+        role="Low-emphasis action",
+        spec_summary="",
+        component_type="button",
+        variant_key="ghost",
+        semantic_role="tertiary-action",
+        properties={"text": "#333333"},
+    )
+    ds_with_ghost = _make_design_system([ghost])
+    css_with_ghost = render_components_css(design_system=ds_with_ghost)
+    assert ".btn-ghost {" in css_with_ghost
+    assert "#333333" in css_with_ghost
+
+
+def test_render_components_css_is_deterministic() -> None:
+    ds = _make_design_system([
+        _make_component_spec(
+            name="Secondary Action Button",
+            role="Medium-emphasis action",
+            spec_summary="",
+            component_type="button",
+            variant_key="secondary",
+            properties={"background": "#123456", "text": "#abcdef"},
+        ),
+    ])
+    first = render_components_css(design_system=ds)
+    second = render_components_css(design_system=ds)
+    assert first == second
+
+
+def test_render_skeleton_html_catalog_reflects_detected_variants() -> None:
+    primary = _make_component_spec(
+        name="Primary Action Button",
+        role="High-emphasis CTA",
+        spec_summary="",
+        component_type="button",
+        variant_key="primary",
+        semantic_role="primary-cta",
+    )
+    secondary = _make_component_spec(
+        name="Secondary Action Button",
+        role="Medium-emphasis action",
+        spec_summary="",
+        component_type="button",
+        variant_key="secondary",
+        semantic_role="secondary-cta",
+    )
+    ds = _make_design_system([primary, secondary])
+
+    html = render_skeleton_html({"title": "Test Page Title"}, design_system=ds)
+
+    assert "<!-- Variant: Primary Action Button (primary-cta) -->" in html
+    assert "<!-- Variant: Secondary Action Button (secondary-cta) -->" in html
+    assert "btn-ghost" not in html
+
+
+def test_render_skeleton_html_falls_back_without_design_system_components() -> None:
+    # design_system がNone、またはcomponentsが空の場合は元の固定literal markupにフォールバックする。
+    html_no_ds = render_skeleton_html({"title": "Test Page Title"})
+    ds_empty = _make_design_system([])
+    html_empty_components = render_skeleton_html({"title": "Test Page Title"}, design_system=ds_empty)
+
+    for html in (html_no_ds, html_empty_components):
+        assert "<!-- Variant:" not in html
+        assert '<button class="btn-primary">Action</button>' in html
+
+
+def test_render_skeleton_html_is_deterministic() -> None:
+    ghost = _make_component_spec(
+        name="Ghost Action Button",
+        role="Low-emphasis action",
+        spec_summary="",
+        component_type="button",
+        variant_key="ghost",
+        semantic_role="tertiary-action",
+    )
+    ds = _make_design_system([ghost])
+
+    first = render_skeleton_html({"title": "Test Page Title"}, design_system=ds)
+    second = render_skeleton_html({"title": "Test Page Title"}, design_system=ds)
+    assert first == second
+

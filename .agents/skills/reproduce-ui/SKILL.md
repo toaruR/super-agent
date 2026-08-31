@@ -61,3 +61,5 @@ description: UI reproduction skill using snapshot assets (skeleton.html, tokens.
 - [ ] **5. セマンティックHTML構造**: `<div>` の濫用を避け、`<header>`, `<main>`, `<section>`, `<nav>`, `<footer>` などの適切な HTML5 タグが使用されているか？
 - [ ] **6. レスポンシブ対応**: ビューポートサイズの変化に対応した柔軟なレイアウト（Flexbox / CSS Grid / 相対単位）になっているか？
 - [ ] **7. 意図した要素リストの網羅**: ユーザーが指定したすべての要件・要素リストが漏れなく配置されているか？
+- [ ] **8. variantカタログの再利用**: 新規コンポーネントを追加する際、`components.css` に定義済みの variant（`skeleton.html` の `<!-- Variant: ... -->` コメントや `.btn-primary`/`.btn-secondary`/`.btn-ghost` 等、存在するもの）のいずれかを選択しているか、それらの `var()` の組み合わせのみで構成しているか？ `tokens.css`/`components.css` に存在しない値（px, hex, 独自の色相等）を新規に創作していないか？
+- [ ] **9. 意味役割に基づく再利用**: 既存ページを編集する際、変更対象と同じ意味役割（semantic role。`skeleton.html` の `<!-- Variant: 名前 (role) -->` コメントや `DESIGN.md` のコンポーネント説明に記載）を持つ既存variantを優先して再利用し、無関係な新規スタイルを持ち込んでいないか？
