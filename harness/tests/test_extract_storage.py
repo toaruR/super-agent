@@ -12,6 +12,9 @@ import json
 import pytest
 
 from harness.extract.storage import (
+    COMPONENTS_CSS_FILENAME,
+    SKELETON_HTML_FILENAME,
+    TOKENS_CSS_FILENAME,
     SnapshotExistsError,
     SnapshotNotFoundError,
     list_snapshot_timestamps,
@@ -131,3 +134,46 @@ def test_load_snapshot_missing_raises(tmp_path) -> None:
     save_snapshot(base_dir, SITE, TOKENS, PROMPT, timestamp="20260101T000000Z")
     with pytest.raises(SnapshotNotFoundError):
         load_snapshot(base_dir, "https://never-extracted.example/")
+
+
+def test_storage_constants_defined() -> None:
+    assert TOKENS_CSS_FILENAME == "tokens.css"
+    assert COMPONENTS_CSS_FILENAME == "components.css"
+    assert SKELETON_HTML_FILENAME == "skeleton.html"
+
+
+def test_saves_css_and_skeleton_html_assets(tmp_path) -> None:
+    base_dir = tmp_path / "design-extracts"
+    timestamp = "20260101T000000Z"
+    tokens_css_content = ":root { --color-primary: #1a1aff; }"
+    components_css_content = ".btn-primary { background: var(--color-primary); }"
+    skeleton_html_content = "<!DOCTYPE html><html><head><title>Skeleton</title></head><body></body></html>"
+
+    snapshot_dir = save_snapshot(
+        base_dir,
+        SITE,
+        TOKENS,
+        PROMPT,
+        timestamp=timestamp,
+        tokens_css=tokens_css_content,
+        components_css=components_css_content,
+        skeleton_html=skeleton_html_content,
+    )
+
+    tokens_css_path = snapshot_dir / TOKENS_CSS_FILENAME
+    components_css_path = snapshot_dir / COMPONENTS_CSS_FILENAME
+    skeleton_html_path = snapshot_dir / SKELETON_HTML_FILENAME
+
+    assert tokens_css_path.is_file()
+    assert components_css_path.is_file()
+    assert skeleton_html_path.is_file()
+
+    assert tokens_css_path.read_text(encoding="utf-8") == tokens_css_content
+    assert components_css_path.read_text(encoding="utf-8") == components_css_content
+    assert skeleton_html_path.read_text(encoding="utf-8") == skeleton_html_content
+
+    loaded = load_snapshot(base_dir, SITE, timestamp=timestamp)
+    assert loaded.tokens_css == tokens_css_content
+    assert loaded.components_css == components_css_content
+    assert loaded.skeleton_html == skeleton_html_content
+

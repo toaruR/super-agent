@@ -28,6 +28,9 @@ PROMPT_FILENAME = "prompt.md"
 DESIGN_FILENAME = "DESIGN.md"
 METADATA_FILENAME = "metadata.json"
 SCREENSHOTS_DIRNAME = "screenshots"
+TOKENS_CSS_FILENAME = "tokens.css"
+COMPONENTS_CSS_FILENAME = "components.css"
+SKELETON_HTML_FILENAME = "skeleton.html"
 
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 
@@ -51,6 +54,9 @@ class Snapshot:
     prompt: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     screenshots: Dict[str, bytes] = field(default_factory=dict)
+    tokens_css: Optional[str] = None
+    components_css: Optional[str] = None
+    skeleton_html: Optional[str] = None
 
     @property
     def design_file(self) -> str:
@@ -82,6 +88,9 @@ def save_snapshot(
     screenshots: Optional[Dict[str, bytes]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     timestamp: Optional[str] = None,
+    tokens_css: Optional[str] = None,
+    components_css: Optional[str] = None,
+    skeleton_html: Optional[str] = None,
 ) -> Path:
     """抽出結果を `<base_dir>/<site>/<timestamp>/` にスナップショットとして保存する。
 
@@ -116,6 +125,13 @@ def save_snapshot(
             shots_dir.mkdir()
             for name, data in screenshots.items():
                 (shots_dir / name).write_bytes(data)
+
+        if tokens_css is not None:
+            (tmp_dir / TOKENS_CSS_FILENAME).write_text(tokens_css, encoding="utf-8")
+        if components_css is not None:
+            (tmp_dir / COMPONENTS_CSS_FILENAME).write_text(components_css, encoding="utf-8")
+        if skeleton_html is not None:
+            (tmp_dir / SKELETON_HTML_FILENAME).write_text(skeleton_html, encoding="utf-8")
 
         if target_dir.exists():
             # save_snapshot() の呼び出し中に別プロセス/スレッドが同じ (site, timestamp)
@@ -172,6 +188,15 @@ def load_snapshot(
             if shot_path.is_file():
                 screenshots[shot_path.name] = shot_path.read_bytes()
 
+    tokens_css_path = snapshot_dir / TOKENS_CSS_FILENAME
+    tokens_css = tokens_css_path.read_text(encoding="utf-8") if tokens_css_path.exists() else None
+
+    components_css_path = snapshot_dir / COMPONENTS_CSS_FILENAME
+    components_css = components_css_path.read_text(encoding="utf-8") if components_css_path.exists() else None
+
+    skeleton_html_path = snapshot_dir / SKELETON_HTML_FILENAME
+    skeleton_html = skeleton_html_path.read_text(encoding="utf-8") if skeleton_html_path.exists() else None
+
     return Snapshot(
         path=snapshot_dir,
         site=site,
@@ -180,4 +205,7 @@ def load_snapshot(
         prompt=prompt,
         metadata=metadata,
         screenshots=screenshots,
+        tokens_css=tokens_css,
+        components_css=components_css,
+        skeleton_html=skeleton_html,
     )
