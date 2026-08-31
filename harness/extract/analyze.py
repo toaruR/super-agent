@@ -384,10 +384,10 @@ class DesignSystemExtractor:
         font_families = self._extract_font_families()
         type_scale = self._extract_type_scale(font_families)
         spacing_shapes = self._extract_spacing_shapes()
-        components = self._extract_components(colors, spacing_shapes)
+        components = self._extract_components(colors, spacing_shapes, theme)
         surfaces = self._extract_surfaces(colors, theme)
         principles = self._derive_principles(theme, colors, font_families, spacing_shapes)
-        agent_prompts = self._generate_agent_prompts(colors, font_families, spacing_shapes, components)
+        agent_prompts = self._generate_agent_prompts(theme, colors, font_families, spacing_shapes, components)
         similar_brands = self._recommend_similar_brands(theme, brand_name)
 
         tagline = self._generate_tagline(theme, colors, font_families)
@@ -437,30 +437,58 @@ class DesignSystemExtractor:
 
     def _detect_theme(self) -> Tuple[str, List[float]]:
         bgs = []
+        body_lum: Optional[float] = None
+
         for key, style in self.styles_pool.items():
             bg = style.get("background-color")
             parsed = _parse_color(bg or "")
             if parsed and parsed[3] > 0.5:
                 lum = _relative_luminance(parsed[0], parsed[1], parsed[2])
                 bgs.append(lum)
+                if (key.startswith("body:") or key.startswith("html:")) and body_lum is None:
+                    body_lum = lum
 
-        # body / html の背景色を優先
-        body_bg = self.styles_pool.get("body:0", {}).get("background-color") or self.styles_pool.get("html:0", {}).get("background-color")
-        body_parsed = _parse_color(body_bg or "")
-        if body_parsed and body_parsed[3] > 0.5:
-            body_lum = _relative_luminance(body_parsed[0], body_parsed[1], body_parsed[2])
+        if body_lum is not None:
             return ("dark" if body_lum < 0.35 else "light", bgs)
 
         avg_lum = sum(bgs) / len(bgs) if bgs else 0.0
         return ("dark" if avg_lum < 0.4 else "light", bgs)
 
     def _extract_colors(self, theme: str) -> List[ColorToken]:
+        color_scores: Dict[str, float] = {}
         color_counts: Dict[str, int] = {}
         color_usage: Dict[str, Set[str]] = {}
         raw_colors: Dict[str, Tuple[int, int, int]] = {}
 
+        # DOM 要素の分類情報（button等）を取得
+        element_types: Dict[str, str] = {}
+        element_attrs_map: Dict[str, Dict[str, str]] = {}
+        if self.primary_bp and hasattr(self.primary_bp, "outer_html") and self.primary_bp.outer_html:
+            for index, tag, attrs in _extract_elements(self.primary_bp.outer_html):
+                key = f"{tag}:{index}"
+                element_attrs_map[key] = attrs
+                ctype = _classify_component(tag, attrs)
+                if ctype:
+                    element_types[key] = ctype
+
         for key, style in self.styles_pool.items():
             tag = key.split(":")[0]
+            comp_type = element_types.get(key, "")
+            attrs = element_attrs_map.get(key, {})
+            classes = attrs.get("class", "").lower().split()
+            role = attrs.get("role", "").lower()
+            input_type = attrs.get("type", "").lower()
+
+            # 要素がボタンや主要インタラクティブ要素かどうかを判定
+            is_button = (
+                comp_type == "button"
+                or tag == "button"
+                or role == "button"
+                or (tag == "input" and input_type in ("button", "submit", "reset"))
+                or any("btn" in c or "button" in c or "cta" in c for c in classes)
+                or (tag == "a" and bool(style.get("border-radius") and style.get("padding")))
+            )
+
             for prop in ("background-color", "color", "border-color", "border-top-color", "fill"):
                 val = style.get(prop)
                 parsed = _parse_color(val or "")
@@ -470,55 +498,121 @@ class DesignSystemExtractor:
                     color_usage.setdefault(hex_val, set()).add(f"{tag}:{prop}")
                     raw_colors[hex_val] = (parsed[0], parsed[1], parsed[2])
 
+                    # スコアリング（ボタン背景色・枠線・文字色には高加重を与える）
+                    weight = 1.0
+                    if is_button and prop == "background-color":
+                        weight = 50.0
+                    elif is_button and prop in ("color", "border-color"):
+                        weight = 25.0
+                    elif prop == "background-color":
+                        weight = 2.0
+
+                    # 彩度と明度によるコントラスト・視認性ボーナス
+                    h, l, s = colorsys.rgb_to_hls(parsed[0] / 255.0, parsed[1] / 255.0, parsed[2] / 255.0)
+                    if s > 0.25 and 0.15 < l < 0.85:
+                        weight *= 2.0
+
+                    color_scores[hex_val] = color_scores.get(hex_val, 0.0) + weight
+
         is_dark = (theme == "dark")
         tokens: List[ColorToken] = []
 
         # 彩度と明度で分類
-        chromatic: List[Tuple[str, float, float, float, int]] = []
+        chromatic: List[Tuple[str, float, float, float, float]] = []  # (hex, h, l, s, score)
         neutral: List[Tuple[str, float, float, float, int]] = []
 
         for hex_val, (r, g, b) in raw_colors.items():
             lum = _relative_luminance(r, g, b)
             h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-            count = color_counts[hex_val]
+            score = color_scores.get(hex_val, 0.0)
+            count = color_counts.get(hex_val, 0)
             if s > 0.18 and 0.05 < l < 0.95:
-                chromatic.append((hex_val, h, l, s, count))
+                chromatic.append((hex_val, h, l, s, score))
             else:
                 neutral.append((hex_val, h, l, s, count))
 
         # ニュートラルカラーを明度順にソート
         neutral.sort(key=lambda item: item[2])  # l (lightness) 昇順
 
-        # ブランドカラー (最も使われている有彩色、または特徴的な有彩色)
+        # トークン名の一意性を保証するためのセット
+        seen_token_names: Set[str] = set()
+
+        # ブランドカラー (ボタン等での使用スコアが最も高い有彩色)
         brand_hex = None
+        brand_color_token = None
         if chromatic:
             chromatic.sort(key=lambda item: item[4], reverse=True)
             brand_hex = chromatic[0][0]
             br, bg, bb = raw_colors[brand_hex]
             bh, bl, bs = colorsys.rgb_to_hls(br / 255.0, bg / 255.0, bb / 255.0)
             brand_name = _color_name_for_hue(bh, bs, bl, is_dark)
+            tok_name = f"--color-{brand_name.lower().replace(' ', '-')}"
+            seen_token_names.add(tok_name)
+
+            brand_color_token = ColorToken(
+                name=brand_name,
+                hex_value=brand_hex,
+                token_name=tok_name,
+                category="brand",
+                role="Primary action buttons, active nav indicators — electric accent that breaks the monochrome system",
+                rgb=(br, bg, bb),
+                luminance=_relative_luminance(br, bg, bb),
+            )
+            tokens.append(brand_color_token)
+
+        # セマンティックトークン (--color-primary, --color-on-primary, --color-primary-hover 等)
+        if brand_color_token:
+            p_lum = brand_color_token.luminance
+            on_primary_hex = "#ffffff" if p_lum < 0.45 else "#111827"
             tokens.append(
                 ColorToken(
-                    name=brand_name,
-                    hex_value=brand_hex,
-                    token_name=f"--color-{brand_name.lower().replace(' ', '-')}",
+                    name="Primary",
+                    hex_value=brand_color_token.hex_value,
+                    token_name="--color-primary",
                     category="brand",
-                    role="Primary action buttons, active nav indicators — electric accent that breaks the monochrome system",
-                    rgb=(br, bg, bb),
-                    luminance=_relative_luminance(br, bg, bb),
+                    role="Semantic primary brand color for high-emphasis CTAs",
+                    rgb=brand_color_token.rgb,
+                    luminance=p_lum,
+                )
+            )
+            tokens.append(
+                ColorToken(
+                    name="On Primary",
+                    hex_value=on_primary_hex,
+                    token_name="--color-on-primary",
+                    category="brand",
+                    role="High-contrast text color on top of primary brand color",
+                    rgb=(255, 255, 255) if on_primary_hex == "#ffffff" else (17, 24, 39),
+                    luminance=1.0 if on_primary_hex == "#ffffff" else 0.01,
                 )
             )
 
-        # アクセントカラー
+        # アクセントカラー (重複トークン名の衝突を回避)
         accent_items = [c for c in chromatic if c[0] != brand_hex][:5]
-        for hex_val, h, l, s, count in accent_items:
+        for hex_val, h, l, s, score in accent_items:
             r, g, b = raw_colors[hex_val]
-            name = _color_name_for_hue(h, s, l, is_dark)
+            base_name = _color_name_for_hue(h, s, l, is_dark)
+            name = base_name
+            tok_name = f"--color-{name.lower().replace(' ', '-')}"
+
+            # トークン名が重複する場合は明度等に応じた修飾子を付与
+            if tok_name in seen_token_names:
+                suffix = "Light" if l > 0.6 else ("Dark" if l < 0.3 else "Muted")
+                name = f"{base_name} {suffix}"
+                tok_name = f"--color-{name.lower().replace(' ', '-')}"
+                if tok_name in seen_token_names:
+                    idx = 2
+                    while f"{tok_name}-{idx}" in seen_token_names:
+                        idx += 1
+                    tok_name = f"{tok_name}-{idx}"
+                    name = f"{name} {idx}"
+
+            seen_token_names.add(tok_name)
             tokens.append(
                 ColorToken(
                     name=name,
                     hex_value=hex_val,
-                    token_name=f"--color-{name.lower().replace(' ', '-')}",
+                    token_name=tok_name,
                     category="accent",
                     role=f"{name} accent for badges, tags, category indicators, and decorative UI edges",
                     rgb=(r, g, b),
@@ -543,7 +637,6 @@ class DesignSystemExtractor:
             ]
             for name, def_hex, role in default_dark_neutrals:
                 r, g, b = int(def_hex[1:3], 16), int(def_hex[3:5], 16), int(def_hex[5:7], 16)
-                # 抽出プールから最も近い色があれば採用
                 closest_hex = def_hex
                 min_diff = 999.0
                 for n_hex, nh, nl, ns, cnt in neutral:
@@ -553,11 +646,12 @@ class DesignSystemExtractor:
                         min_diff = diff
                         closest_hex = n_hex
                 cr, cg, cb = raw_colors.get(closest_hex, (r, g, b))
+                tok_name = f"--color-{name.lower().replace(' ', '-')}"
                 tokens.append(
                     ColorToken(
                         name=name,
                         hex_value=closest_hex,
-                        token_name=f"--color-{name.lower().replace(' ', '-')}",
+                        token_name=tok_name,
                         category="neutral",
                         role=role,
                         rgb=(cr, cg, cb),
@@ -588,11 +682,12 @@ class DesignSystemExtractor:
                         min_diff = diff
                         closest_hex = n_hex
                 cr, cg, cb = raw_colors.get(closest_hex, (r, g, b))
+                tok_name = f"--color-{name.lower().replace(' ', '-')}"
                 tokens.append(
                     ColorToken(
                         name=name,
                         hex_value=closest_hex,
-                        token_name=f"--color-{name.lower().replace(' ', '-')}",
+                        token_name=tok_name,
                         category="neutral",
                         role=role,
                         rgb=(cr, cg, cb),
@@ -703,82 +798,96 @@ class DesignSystemExtractor:
             element_gap="8px",
         )
 
-    def _extract_components(self, colors: List[ColorToken], spacing: SpacingShapeSpec) -> List[ComponentSpec]:
-        brand_color = next((c for c in colors if c.category == "brand"), None)
-        brand_hex = brand_color.hex_value if brand_color else "#e4f222"
+    def _extract_components(self, colors: List[ColorToken], spacing: SpacingShapeSpec, theme: str) -> List[ComponentSpec]:
+        brand_color = next((c for c in colors if c.category == "brand" and c.token_name == "--color-primary"), None)
+        if not brand_color:
+            brand_color = next((c for c in colors if c.category == "brand"), None)
+        brand_hex = brand_color.hex_value if brand_color else ("#ff5c35" if theme == "light" else "#e4f222")
         brand_name = brand_color.name if brand_color else "Brand"
+
+        on_primary = next((c for c in colors if c.token_name == "--color-on-primary"), None)
+        on_primary_hex = on_primary.hex_value if on_primary else ("#ffffff" if theme == "light" else "#08090a")
+
+        is_dark = (theme == "dark")
+        text_body_hex = "#d0d6e0" if is_dark else "#374151"
+        text_muted_hex = "#8a8f98" if is_dark else "#6b7280"
+        border_hex = "#23252a" if is_dark else "#e5e7eb"
+        card_bg = "#0f1011" if is_dark else "#ffffff"
+        nav_bg = "#08090a" if is_dark else "#ffffff"
+        input_bg = "rgba(255,255,255,0.02)" if is_dark else "#ffffff"
+        input_border = "rgba(255,255,255,0.08)" if is_dark else "#d1d5db"
 
         return [
             ComponentSpec(
                 name=f"Primary Action Button ({brand_name})",
                 role="High-emphasis CTA — the one chromatic button in the system",
-                spec_summary=f"Background {brand_hex}, text #08090a, border-radius 6px, padding 10px 16px, Inter 14px / weight 510, letter-spacing -0.011em. Sits as the sole filled chromatic element — every other button on the site is neutral.",
+                spec_summary=f"Background {brand_hex}, text {on_primary_hex}, border-radius 6px, padding 10px 16px, Inter 14px / weight 510, letter-spacing -0.011em. Sits as the primary call-to-action element across the application.",
                 component_type="button",
             ),
             ComponentSpec(
                 name="Nav Text Button",
                 role="Top navigation items",
-                spec_summary="Transparent background, text #d0d6e0, padding 8px 12px, Inter 13px / weight 400. No border, no fill — pure typographic nav with underline on hover.",
+                spec_summary=f"Transparent background, text {text_body_hex}, padding 8px 12px, Inter 13px / weight 400. No border, no fill — pure typographic nav with hover state.",
                 component_type="button",
             ),
             ComponentSpec(
                 name="Pill Button",
                 role="Tag chips, status pills, compact action triggers",
-                spec_summary="Background rgba(255,255,255,0.05), text #d0d6e0, border-radius 9999px, padding 4px 12px, Inter 12–13px / weight 400.",
+                spec_summary=f"Background {'rgba(255,255,255,0.05)' if is_dark else '#f3f4f6'}, text {text_body_hex}, border-radius 9999px, padding 4px 12px, Inter 12–13px / weight 400.",
                 component_type="button",
             ),
             ComponentSpec(
                 name="Ghost / Outline Button",
                 role="Secondary actions, less prominent CTAs",
-                spec_summary="Transparent background, border 1px #23252a, text #d0d6e0, border-radius 6px, padding 8px 12px, Inter 13px / weight 400.",
+                spec_summary=f"Transparent background, border 1px {border_hex}, text {text_body_hex}, border-radius 6px, padding 8px 12px, Inter 13px / weight 400.",
                 component_type="button",
             ),
             ComponentSpec(
                 name="Sign-up Button (Rounded Pill, Neutral)",
                 role="High-emphasis nav CTA",
-                spec_summary="Background #ffffff, text #08090a, border-radius 9999px, padding 8px 16px, Inter 13px / weight 510. White pill against the dark nav bar — the second highest-contrast element after the primary CTA.",
+                spec_summary=f"Background {'#ffffff' if is_dark else '#111827'}, text {'#08090a' if is_dark else '#ffffff'}, border-radius 9999px, padding 8px 16px, Inter 13px / weight 510. High-contrast pill against the nav bar.",
                 component_type="button",
             ),
             ComponentSpec(
-                name="Card (Product Screenshot Frame)",
-                role="Large showcase surface for product UI screenshots",
-                spec_summary="Background #0f1011, border-radius 12px, inset shadow rgb(35,37,42) 0 0 0 1px, padding 24px. Hairline inner border defines the card edge — no outer shadow, no glow.",
+                name="Card (Product Surface Frame)",
+                role="Large showcase surface for product content and UI",
+                spec_summary=f"Background {card_bg}, border-radius 12px, border 1px {border_hex}, padding 24px. Clear surface boundary with balanced padding.",
                 component_type="card",
             ),
             ComponentSpec(
                 name="Card (Subtle)",
                 role="Small content cards, nested panels",
-                spec_summary="Background rgba(255,255,255,0.02), border-radius 6px, shadow rgba(0,0,0,0.4) 0 2px 4px, padding 8px. Almost invisible — the card barely separates from the canvas.",
+                spec_summary=f"Background {'rgba(255,255,255,0.02)' if is_dark else '#f9fafb'}, border-radius 6px, border 1px {border_hex}, padding 16px. Clean secondary content container.",
                 component_type="card",
             ),
             ComponentSpec(
                 name="Text Input",
                 role="Form fields, search inputs",
-                spec_summary="Background rgba(255,255,255,0.02), border 1px rgba(255,255,255,0.08), text #d0d6e0, border-radius 6px, padding 12px 14px, Inter 14px / weight 400. Focus ring: border brightens to #d0d6e0.",
+                spec_summary=f"Background {input_bg}, border 1px {input_border}, text {text_body_hex}, border-radius 6px, padding 10px 14px, Inter 14px / weight 400. Focus ring: border brightens to {brand_hex}.",
                 component_type="input",
             ),
             ComponentSpec(
                 name="Badge / Status Tag",
                 role="Issue status, category labels, inline metadata",
-                spec_summary="Background rgba(255,255,255,0.05), text #8a8f98, border-radius 4px, padding 0px 6px, Inter 12px / weight 400. Color-coded variants use accent fills.",
+                spec_summary=f"Background {'rgba(255,255,255,0.05)' if is_dark else '#f3f4f6'}, text {text_muted_hex}, border-radius 4px, padding 2px 8px, Inter 12px / weight 400.",
                 component_type="badge",
             ),
             ComponentSpec(
                 name="Logo Mark",
                 role="Brand identification in nav",
-                spec_summary="Wordmark + geometric glyph, Inter 16px / weight 510, color #ffffff. Glyph rendered as inline SVG.",
+                spec_summary=f"Wordmark + mark, Inter 16px / weight 510, color {'#ffffff' if is_dark else '#111827'}.",
                 component_type="nav",
             ),
             ComponentSpec(
                 name="Logo Bar (Customer Strip)",
                 role="Social proof — customer logos in a horizontal row",
-                spec_summary="Neutral grey logos at #8a8f98–#d0d6e0, evenly spaced with 48–64px gaps, no card backgrounds.",
+                spec_summary=f"Neutral grey logos at {text_muted_hex}, evenly spaced with 48–64px gaps, no card backgrounds.",
                 component_type="card",
             ),
             ComponentSpec(
-                name="Hero Gradient Floor",
-                role="Atmospheric base under the product screenshot",
-                spec_summary="Linear gradient from rgb(8,9,10) at 10% to rgb(208,214,224) at 100% — a subtle light wash that grounds the floating product UI against the void.",
+                name="Hero Headline Block",
+                role="Main hero container with high visual impact",
+                spec_summary=f"Canvas container with display typography, lead description in {text_muted_hex}, and prominent CTA actions.",
                 component_type="card",
             ),
         ]
@@ -793,87 +902,124 @@ class DesignSystemExtractor:
             ]
         return [
             SurfaceSpec(level=0, name="Canvas", value="#ffffff", purpose="Page canvas — the default full-bleed background"),
-            SurfaceSpec(level=1, name="Surface", value="#f9fafb", purpose="Card surfaces, content panels, nav containers"),
-            SurfaceSpec(level=2, name="Elevated", value="#f3f4f6", purpose="Elevated panels, modal backgrounds, hover containers"),
-            SurfaceSpec(level=3, name="Active", value="#e5e7eb", purpose="Interactive active surface tint, ghost button fills"),
+            SurfaceSpec(level=1, name="Surface", value="#ffffff", purpose="Card surfaces, content panels, elevated containers"),
+            SurfaceSpec(level=2, name="Subtle", value="#f9fafb", purpose="Secondary panel backgrounds, light containers"),
+            SurfaceSpec(level=3, name="Elevated", value="#f3f4f6", purpose="Elevated panels, modal backgrounds, hover containers"),
         ]
 
     def _derive_principles(self, theme: str, colors: List[ColorToken], font_fams: List[FontFamilySpec], spacing: SpacingShapeSpec) -> DesignPrinciples:
-        brand_color = next((c for c in colors if c.category == "brand"), None)
-        brand_hex = brand_color.hex_value if brand_color else "#e4f222"
+        brand_color = next((c for c in colors if c.category == "brand" and c.token_name == "--color-primary"), None)
+        if not brand_color:
+            brand_color = next((c for c in colors if c.category == "brand"), None)
+        brand_hex = brand_color.hex_value if brand_color else ("#ff5c35" if theme == "light" else "#e4f222")
+
+        is_dark = (theme == "dark")
+        border_hint = "#23252a or #383b3f" if is_dark else "#e5e7eb or #f0f0f0"
 
         dos = [
-            "Use Inter Variable with font-feature-settings 'cv01' on, 'ss03' on, 'zero' on — these alternate glyphs define typographic identity",
-            f"Use {brand_hex} exclusively for the single primary action per view — never for decoration, never for secondary buttons",
-            "Set body text at 16px Inter weight 400 with line-height 1.5 — larger reading sizes (17px+ at weight 590) are reserved for body emphasis blocks",
-            "Use letter-spacing -0.022em at 48px and above — tight tracking is non-negotiable for display type",
-            "Set card radius to 12px, button radius to 6px, pill radius to 9999px — three radii is the entire radius vocabulary",
-            "Use 0.5px hairline borders (#23252a or #383b3f) instead of shadows for surface separation — elevation comes from borders and subtle inner shadows",
-            "Keep section gaps at 96px and element gaps at 8px — the 8/12/24/96 spacing ladder is the rhythm",
+            "Use primary UI font with proper optical tracking and weights (400–600) — defines typographic identity",
+            f"Use {brand_hex} exclusively for the primary call-to-action per view — preserve visual hierarchy",
+            "Set body text with comfortable line-height (1.5–1.6) for high legibility",
+            "Use tight letter-spacing (-0.02em) on display headings at 48px and above",
+            "Maintain consistent border radii (6px for buttons/inputs, 12px for cards, 9999px for pills)",
+            f"Use clean borders ({border_hint}) and subtle elevation for clear surface separation",
+            "Keep rhythmic spacing gaps (8/16/24/32/48/96px) across all sections",
         ]
         donts = [
-            "Do not use bold weights (700+) — type scale caps at weight 590, the system deliberately avoids heavy display weights",
-            "Do not use decorative gradients on buttons, cards, or text — gradients are reserved for the hero atmospheric floor only",
-            "Do not introduce additional chromatic accent colors as actions — the primary action button is the only chromatic UI element",
-            "Do not use large radii (16px+) on cards or panels — 12px is the max card radius in this system",
-            "Do not use shadows to separate cards from the canvas — use hairline borders (#23252a) and inner inset shadows instead",
-            "Do not use chromatic text colors for body copy — all body text sits in the neutral grey scale",
-            "Do not use Berkeley Mono for headings or marketing copy — it is reserved for issue IDs, keyboard shortcuts, and technical metadata",
+            "Do not use overly heavy font weights (800+) where medium/semibold provides sufficient contrast",
+            "Do not introduce conflicting chromatic accent colors for secondary buttons — reserve primary color for main CTAs",
+            "Do not mix arbitrary corner radii — stick strictly to the design token radius scale",
+            "Do not use harsh heavy drop shadows — favor crisp borders and subtle ambient elevation",
+            "Do not use low-contrast text for body copy — ensure WCAG AA readability against the canvas",
         ]
         return DesignPrinciples(dos=dos, donts=donts)
 
-    def _generate_agent_prompts(self, colors: List[ColorToken], font_fams: List[FontFamilySpec], spacing: SpacingShapeSpec, components: List[ComponentSpec]) -> AgentPromptGuideSpec:
+    def _generate_agent_prompts(self, theme: str, colors: List[ColorToken], font_fams: List[FontFamilySpec], spacing: SpacingShapeSpec, components: List[ComponentSpec]) -> AgentPromptGuideSpec:
+        brand_color = next((c for c in colors if c.category == "brand" and c.token_name == "--color-primary"), None)
+        if not brand_color:
+            brand_color = next((c for c in colors if c.category == "brand"), None)
+        brand_hex = brand_color.hex_value if brand_color else ("#ff5c35" if theme == "light" else "#e4f222")
+        on_primary = next((c for c in colors if c.token_name == "--color-on-primary"), None)
+        on_primary_hex = on_primary.hex_value if on_primary else ("#ffffff" if theme == "light" else "#08090a")
+
+        is_dark = (theme == "dark")
+        heading_color = "#ffffff" if is_dark else "#111827"
+        body_color = "#d0d6e0" if is_dark else "#374151"
+        muted_color = "#8a8f98" if is_dark else "#6b7280"
+        canvas_bg = "#08090a" if is_dark else "#ffffff"
+        card_bg = "#0f1011" if is_dark else "#ffffff"
+        border_color = "#23252a" if is_dark else "#e5e7eb"
+
         quick_colors = {
-            "text (primary heading)": "#ffffff",
-            "text (body)": "#d0d6e0",
-            "text (muted)": "#8a8f98",
-            "background (canvas)": "#08090a",
-            "background (card)": "#0f1011",
-            "border (hairline)": "#23252a",
-            "accent (CTA)": "#e4f222",
-            "primary action": "#e4f222 (filled action)",
+            "text (primary heading)": heading_color,
+            "text (body)": body_color,
+            "text (muted)": muted_color,
+            "background (canvas)": canvas_bg,
+            "background (card)": card_bg,
+            "border (hairline)": border_color,
+            "accent (CTA)": brand_hex,
+            "primary action": f"{brand_hex} (filled action)",
         }
         prompts = [
             (
                 "Hero headline block",
-                "Full-bleed #08090a canvas. Headline at 64px Inter Variable weight 510, color #ffffff, letter-spacing -0.022em, line-height 1.0. Subtext at 16px Inter weight 400, color #8a8f98. No button — secondary link text in #d0d6e0 with arrow glyph.",
+                f"Full-bleed {canvas_bg} canvas. Headline at 56–64px weight 600, color {heading_color}, letter-spacing -0.02em, line-height 1.1. Subtext at 18px weight 400, color {body_color}. Primary CTA in {brand_hex} with {on_primary_hex} text.",
             ),
             (
-                "Product screenshot card",
-                "Background #0f1011, border-radius 12px, inset border 1px #23252a via box-shadow, padding 24px. Contains a simulated app UI at full opacity over the card surface. No outer drop shadow.",
+                "Feature showcase card",
+                f"Background {card_bg}, border-radius 12px, border 1px {border_color}, padding 24px. Clear heading, supporting copy in {body_color}, and optional action link.",
             ),
             (
-                "Acid-lime primary action button",
-                "Background #e4f222, text #08090a, border-radius 6px, padding 10px 16px, Inter 14px weight 510, letter-spacing -0.011em. Only one per view.",
+                "Primary action button",
+                f"Background {brand_hex}, text {on_primary_hex}, border-radius 6px, padding 12px 20px, font weight 500. Main CTA trigger.",
             ),
             (
-                "Nav top bar",
-                "Background #08090a (transparent over canvas), padding 16px horizontal, max-width 1200px centered. Logo wordmark #ffffff at 16px weight 510 left-aligned. Nav links #d0d6e0 at 13px weight 400, 8px gaps. Right-aligned white pill sign-up button: bg #ffffff, text #08090a, border-radius 9999px, padding 8px 16px.",
+                "Navigation top bar",
+                f"Background {canvas_bg}, padding 16px horizontal, max-width 1200px centered. Brand mark left-aligned, links in {body_color}, right-aligned primary CTA button in {brand_hex}.",
             ),
             (
-                "Status badge row",
-                "Horizontal flex, 8px gap. Each badge: background rgba(255,255,255,0.05), text #8a8f98, border-radius 4px, padding 0px 6px, Inter 12px weight 400. Color-coded variants: #27a644 for success, #eb5757 for error, #6366f1 for tags.",
+                "Badge / Category pill",
+                f"Background {'rgba(255,255,255,0.05)' if is_dark else '#f3f4f6'}, text {muted_color}, border-radius 4px, padding 2px 8px, font size 12px.",
             ),
         ]
         return AgentPromptGuideSpec(quick_colors=quick_colors, component_prompts=prompts)
 
     def _recommend_similar_brands(self, theme: str, brand_name: str) -> List[SimilarBrandSpec]:
+        if theme == "light":
+            return [
+                SimilarBrandSpec(
+                    name="HubSpot",
+                    description="Clean white canvas with high-energy brand orange CTA, structured rhythmic typography, and approachable modern SaaS layouts",
+                ),
+                SimilarBrandSpec(
+                    name="Stripe",
+                    description="Pristine light aesthetic with vibrant primary actions, refined typography scale, and crisp subtle borders",
+                ),
+                SimilarBrandSpec(
+                    name="Notion",
+                    description="High-contrast black-on-white typography with purposeful functional accents and minimalist modular cards",
+                ),
+                SimilarBrandSpec(
+                    name="Intercom",
+                    description="Friendly modern SaaS visual language with bold headline typography, clean cards, and clear visual hierarchy",
+                ),
+            ]
         return [
             SimilarBrandSpec(
                 name="Vercel",
-                description="Same dark-canvas-first approach with hairline borders, tight Inter typography, and product-screenshot-as-hero layout — both treat the product UI as the visual content rather than illustration",
+                description="Same dark-canvas-first approach with hairline borders, tight Inter typography, and product-screenshot-as-hero layout",
             ),
             SimilarBrandSpec(
                 name="Cursor",
-                description="Identical midnight dark mode with acid-lime accent CTA, compact Inter type at 400–510 weights, and product-screenshot showcase cards at 12px radius",
+                description="Midnight dark mode with high-contrast accent CTA, compact typography at 400–510 weights, and showcase cards",
             ),
             SimilarBrandSpec(
                 name="Raycast",
-                description="Shared dark precision-instrument aesthetic — compact spacing, 6px button radius, monochromatic chrome with a single functional accent color for active states",
+                description="Precision-instrument aesthetic — compact spacing, 6px button radius, monochromatic chrome with functional accent color",
             ),
             SimilarBrandSpec(
                 name="Framer",
-                description="Same dark-canvas layout language with large 48–64px Inter headings at tight tracking, product-screenshot hero cards, and minimal ornament between sections",
+                description="Dark-canvas layout language with large headings at tight tracking and minimal ornament between sections",
             ),
         ]
 
@@ -883,23 +1029,33 @@ class DesignSystemExtractor:
         return "clean architectural clarity on crisp paper"
 
     def _generate_aesthetic_summary(self, brand: str, theme: str, colors: List[ColorToken], font_fams: List[FontFamilySpec], spacing: SpacingShapeSpec) -> str:
+        brand_color = next((c for c in colors if c.category == "brand" and c.token_name == "--color-primary"), None)
+        if not brand_color:
+            brand_color = next((c for c in colors if c.category == "brand"), None)
+        brand_hex = brand_color.hex_value if brand_color else ("#ff5c35" if theme == "light" else "#e4f222")
+
         if theme == "dark":
             return (
                 f"{brand}'s design system is a midnight command center built on near-black surfaces (#08090a) "
-                "with paper-white type and one electric acid-lime accent (#e4f222) that functions as a functional flashlight — "
+                f"with paper-white type and one electric accent ({brand_hex}) that functions as a functional flashlight — "
                 "small, high-contrast, and used sparingly to signal action. The interface treats darkness as a substrate rather than "
                 "a theme: text is crisp white at tight tracking (-0.022em), weights sit in a low 400–510 band rather than bold, "
                 "and borders are hairline-thin (0.5px) to let geometry do the work that shadows usually would. Components feel "
-                "precision-machined — 6px and 12px radii, compact 8–12px paddings, and almost no decorative ornament — letting the "
-                "product UI be the only visual texture in an otherwise quiet system."
+                "precision-machined — 6px and 12px radii, compact 8–12px paddings, and almost no decorative ornament."
             )
         return (
             f"{brand}'s design system embraces pristine high-contrast minimalism built on clean paper surfaces "
-            "with jet-black typography and purposeful accents. Spacing is strictly rhythmic on an 8px ladder, borders are "
+            f"with jet-black typography and purposeful brand accents ({brand_hex}). Spacing is strictly rhythmic on an 8px ladder, borders are "
             "hairline-crisp, and typography features tight tracking on display headings with comfortable body line-heights."
         )
 
     def _generate_elevation_summary(self, theme: str, spacing: SpacingShapeSpec) -> str:
+        if theme == "light":
+            return (
+                "Elevation is achieved through crisp hairline borders (1px #e5e7eb or #f0f0f0) and subtle soft ambient drop shadows "
+                "(rgba(0,0,0,0.04) 0 2px 4px) against clean white surfaces. Visual hierarchy comes from surface-level progression "
+                "(#ffffff -> #f9fafb -> #f3f4f6) and border definition."
+            )
         return (
             "Elevation is achieved almost entirely through hairline borders (0.5px #23252a or 1px inset #23252a) "
             "and subtle dark drop shadows (rgba(0,0,0,0.4) 0 2px 4px) rather than layered shadow stacks. The visual hierarchy "

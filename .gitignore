@@ -13,3 +13,4 @@ harness/config/verification_env.yaml
 # 未追跡のままだと drive の integration.merge が conflict になるため常に除外する。
 /dashboard.html
 /dashboard.md
+design-extracts/
