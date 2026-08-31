@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import collections
 
-from harness.extract.generate import render_prompt
+from harness.extract.generate import (
+    render_components_css,
+    render_prompt,
+    render_skeleton_html,
+    render_tokens_css,
+)
 from harness.extract.tokens import TOKEN_CATEGORIES
 
 
@@ -165,3 +170,65 @@ def test_render_prompt_does_not_break_on_missing_categories_or_components() -> N
     assert empty_markdown.startswith("# Design Prompt")
     for category in TOKEN_CATEGORIES:
         assert f"## {category.title()}" in empty_markdown
+
+
+def test_render_tokens_css() -> None:
+    tokens = _sample_tokens()
+    css = render_tokens_css(tokens)
+    assert isinstance(css, str)
+    assert ":root {" in css
+    assert "}" in css
+    assert css == render_tokens_css(tokens)
+
+    empty_css = render_tokens_css({})
+    assert ":root {" in empty_css
+
+    from harness.extract.analyze import AgentPromptGuideSpec, DesignPrinciples, DesignSystemAnalysis, SpacingShapeSpec
+    ds = DesignSystemAnalysis(
+        brand_name="TestBrand",
+        tagline="Test Tagline",
+        theme="dark",
+        aesthetic_summary="Test aesthetic",
+        colors=[],
+        font_families=[],
+        type_scale=[],
+        spacing_shapes=SpacingShapeSpec("4px", "compact", [], [], []),
+        components=[],
+        principles=DesignPrinciples([], []),
+        surfaces=[],
+        elevation_summary="",
+        imagery_summary="",
+        layout_summary="",
+        agent_prompts=AgentPromptGuideSpec({}, []),
+        similar_brands=[],
+        css_custom_properties=":root {\n  --color-test: #123456;\n}",
+        tailwind_v4_theme="",
+    )
+    ds_css = render_tokens_css({}, design_system=ds)
+    assert ":root {" in ds_css
+    assert "--color-test: #123456;" in ds_css
+
+
+def test_render_components_css() -> None:
+    css = render_components_css()
+    assert isinstance(css, str)
+    assert ".btn-primary" in css
+    assert ".btn-secondary" in css
+    assert ".card-surface" in css
+    assert ".nav-container" in css
+    assert ".input-field" in css
+    assert ".badge" in css
+
+
+def test_render_skeleton_html() -> None:
+    metadata = {"title": "Test Page Title", "google_fonts": "https://fonts.googleapis.com/css2?family=Roboto&display=swap"}
+    html = render_skeleton_html(metadata)
+    assert isinstance(html, str)
+    assert "<!DOCTYPE html>" in html
+    assert "<title>Test Page Title</title>" in html
+    assert "fonts.googleapis.com" in html
+    assert "tokens.css" in html
+    assert "components.css" in html
+    assert "/* CSS Reset */" in html
+    assert "btn-primary" in html
+
