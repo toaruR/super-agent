@@ -21,10 +21,24 @@ from typing import Any, Callable, Dict, Optional, Sequence, Union
 
 from harness.extract.analyze import ComponentAnalysis, analyze_components
 from harness.extract.fetch import BrowserDriver, PageFetchResult, fetch_rendered_page
-from harness.extract.generate import render_design_md, render_prompt
+from harness.extract.generate import (
+    render_components_css,
+    render_design_md,
+    render_prompt,
+    render_skeleton_html,
+    render_tokens_css,
+)
 from harness.extract.refine import RefinementResult, apply_refinement
 from harness.extract.robots import RobotsChecker
-from harness.extract.storage import DESIGN_FILENAME, PROMPT_FILENAME, TOKENS_FILENAME, save_snapshot
+from harness.extract.storage import (
+    COMPONENTS_CSS_FILENAME,
+    DESIGN_FILENAME,
+    PROMPT_FILENAME,
+    SKELETON_HTML_FILENAME,
+    TOKENS_CSS_FILENAME,
+    TOKENS_FILENAME,
+    save_snapshot,
+)
 from harness.extract.tokens import build_design_tokens
 from harness.extract.verify import (
     ImageLike,
@@ -42,6 +56,9 @@ __all__ = [
     "run_tokenize",
     "run_generate",
     "run_generate_design_md",
+    "render_tokens_css",
+    "render_components_css",
+    "render_skeleton_html",
     "run_store",
     "run_verify",
     "run_refine",
@@ -62,10 +79,25 @@ class PipelineResult:
     prompt_path: Path
     tokens_path: Path
     design_md: str = ""
+    tokens_css: str = ""
+    components_css: str = ""
+    skeleton_html: str = ""
 
     @property
     def design_md_path(self) -> Path:
         return self.snapshot_dir / DESIGN_FILENAME
+
+    @property
+    def tokens_css_path(self) -> Path:
+        return self.snapshot_dir / TOKENS_CSS_FILENAME
+
+    @property
+    def components_css_path(self) -> Path:
+        return self.snapshot_dir / COMPONENTS_CSS_FILENAME
+
+    @property
+    def skeleton_html_path(self) -> Path:
+        return self.snapshot_dir / SKELETON_HTML_FILENAME
 
     @property
     def design_file(self) -> str:
@@ -135,6 +167,9 @@ def run_store(
     screenshots: Optional[Dict[str, bytes]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     timestamp: Optional[str] = None,
+    tokens_css: Optional[str] = None,
+    components_css: Optional[str] = None,
+    skeleton_html: Optional[str] = None,
 ) -> Path:
     """T7(store): トークンJSONと生成プロンプトをスナップショットとして保存する。単独呼び出し可能。"""
     return save_snapshot(
@@ -145,6 +180,9 @@ def run_store(
         screenshots=screenshots,
         metadata=metadata,
         timestamp=timestamp,
+        tokens_css=tokens_css,
+        components_css=components_css,
+        skeleton_html=skeleton_html,
     )
 
 
@@ -229,11 +267,14 @@ def run_pipeline(
     tokens = run_tokenize(analysis)
 
     if log_fn:
-        log_fn("[generate] Generating prompt.md and DESIGN.md...")
+        log_fn("[generate] Generating prompt.md, DESIGN.md, tokens.css, components.css, and skeleton.html...")
     if progress_cb:
-        progress_cb("extracting", "Generating prompt.md and DESIGN.md...")
+        progress_cb("extracting", "Generating prompt.md, DESIGN.md, tokens.css, components.css, and skeleton.html...")
     prompt = run_generate(tokens, url=url)
     design_md = run_generate_design_md(tokens, url=url, design_system=analysis.design_system)
+    tokens_css = render_tokens_css(tokens, design_system=analysis.design_system)
+    components_css = render_components_css(design_system=analysis.design_system)
+    skeleton_html = render_skeleton_html(metadata or {}, design_system=analysis.design_system)
 
     if log_fn:
         log_fn(f"[store] Saving snapshot to {base_dir} (site: {site or url})...")
@@ -247,6 +288,9 @@ def run_pipeline(
         screenshots=screenshots,
         metadata=metadata,
         timestamp=timestamp,
+        tokens_css=tokens_css,
+        components_css=components_css,
+        skeleton_html=skeleton_html,
     )
 
     # DESIGN.md に Refero Styles 形式を書き込む
@@ -267,4 +311,8 @@ def run_pipeline(
         prompt_path=snapshot_dir / PROMPT_FILENAME,
         tokens_path=snapshot_dir / TOKENS_FILENAME,
         design_md=design_md,
+        tokens_css=tokens_css,
+        components_css=components_css,
+        skeleton_html=skeleton_html,
     )
+
