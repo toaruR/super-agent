@@ -197,3 +197,17 @@ def test_pipeline_generates_and_stores_css_and_html_assets(tmp_path) -> None:
     assert result.components_css_path.read_text(encoding="utf-8") == result.components_css
     assert result.skeleton_html_path.read_text(encoding="utf-8") == result.skeleton_html
 
+
+def test_reproduce_ui_skill_files_exist() -> None:
+    from pathlib import Path
+    agents_skill = Path(".agents/skills/reproduce-ui/SKILL.md")
+    claude_skill = Path(".claude/skills/reproduce-ui/SKILL.md")
+    assert agents_skill.is_file(), f"missing {agents_skill}"
+    assert claude_skill.is_file(), f"missing {claude_skill}"
+    agents_content = agents_skill.read_text(encoding="utf-8")
+    claude_content = claude_skill.read_text(encoding="utf-8")
+    assert "reproduce-ui" in agents_content
+    assert "reproduce-ui" in claude_content
+    assert "Step 1:" in agents_content
+    assert "Step 4:" in agents_content
+
