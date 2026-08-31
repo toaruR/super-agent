@@ -166,3 +166,34 @@ def test_each_stage_can_be_invoked_independently(tmp_path) -> None:
     )
     assert refinement.tokens != tokens
     assert refinement.prompt.startswith("# Design Prompt")
+
+
+def test_pipeline_generates_and_stores_css_and_html_assets(tmp_path) -> None:
+    result = extract_role.run_pipeline(
+        "https://example.com/",
+        FakeBrowserDriver(),
+        robots_checker=_robots_checker(),
+        base_dir=tmp_path,
+        breakpoints=[375, 1280],
+        timestamp="20260101T000000Z",
+    )
+
+    # Verify asset files are generated and stored
+    assert result.tokens_css_path.is_file()
+    assert result.components_css_path.is_file()
+    assert result.skeleton_html_path.is_file()
+
+    assert result.tokens_css_path.name == "tokens.css"
+    assert result.components_css_path.name == "components.css"
+    assert result.skeleton_html_path.name == "skeleton.html"
+
+    # Verify dataclass properties
+    assert ":root" in result.tokens_css
+    assert ".btn-primary" in result.components_css
+    assert "<!DOCTYPE html>" in result.skeleton_html
+
+    # Verify file contents match dataclass properties
+    assert result.tokens_css_path.read_text(encoding="utf-8") == result.tokens_css
+    assert result.components_css_path.read_text(encoding="utf-8") == result.components_css
+    assert result.skeleton_html_path.read_text(encoding="utf-8") == result.skeleton_html
+
