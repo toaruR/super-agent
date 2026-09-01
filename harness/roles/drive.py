@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
-from harness.core.ledger import Sequencer
+from harness.core.ledger import Sequencer, _same_path
 from harness.roles.decomposer import (
     decompose as decomposer_decompose,
     parse_tasks_md,
@@ -686,7 +686,9 @@ def drive(
             idx += 1
             # --- Adaptive re-planning (planner) BEFORE this layer ---
             if adaptive and seq is not None:
-                events = seq.load()
+                all_events = seq.load_flat()
+                events = [e for e in all_events
+                          if _same_path(e.get("design_file", ""), spec_path or "")]
                 planner_role_defaults = resolve_role("planner", config_dir)
                 rep = planner_role.replan(
                     requirement, tasks, events=events,

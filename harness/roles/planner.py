@@ -132,20 +132,48 @@ REPLAN_PROMPT = """\
 """
 
 
+# Human-readable labels for known event types. This is a formatting aid only,
+# NOT a filter: unknown types still get a line (see _summarize_events) so a
+# new event type added elsewhere in the pipeline never silently vanishes from
+# the replan summary (it previously did -- see docs/plans/replan-events-summary-fix.md).
+_EVENT_LABELS = {
+    "task.implemented": "完了(実装)",
+    "integrated": "完了(統合)",
+    "implementer.error": "失敗(実装エラー)",
+    "review.pass": "レビュー合格",
+    "review.fail": "レビュー不合格",
+    "judgment": "判定",
+    "conflict": "統合コンフリクト",
+    "integration.merge": "統合マージ開始",
+    "integration.failed": "統合失敗",
+    "integrated.failed": "統合後検証失敗",
+    "integrate.error": "統合エラー",
+    "worktree.error": "worktree作成失敗",
+    "decompose.rejected": "分解却下",
+    "decompose.error": "分解エラー",
+    "architect.error": "設計エラー",
+}
+
+
 def _summarize_events(events: list[dict]) -> str:
-    """Compact ledger summary for the planner prompt."""
+    """Compact ledger summary for the planner prompt.
+
+    Every event produces a line -- unknown types fall back to a generic
+    "<task_id>: <type> <detail>" format instead of being dropped, so the
+    planner always sees what actually happened even for event types this
+    function doesn't explicitly know about.
+    """
     if not events:
         return "（まだ実装イベントなし）"
     lines = []
     for e in events:
         t = e.get("type", "")
         tid = e.get("task_id", "")
-        if t in ("task.implemented", "integrated"):
-            lines.append(f"- {tid}: 完了({t})")
-        elif t in ("implementer.error", "review.failed", "task.blocked"):
-            lines.append(f"- {tid}: 失敗({t}) {e.get('error') or e.get('reason') or ''}")
-        elif t == "review.verdict":
-            lines.append(f"- {tid}: review={e.get('verdict')}")
+        detail = e.get("error") or e.get("why") or e.get("detail") or e.get("reason") or ""
+        label = _EVENT_LABELS.get(t, t)
+        if t == "judgment" and e.get("verdict"):
+            label = f"{label}={e['verdict']}"
+        lines.append(f"- {tid}: {label}" + (f" {detail}" if detail else ""))
     return "\n".join(lines) if lines else "（実装イベントなし）"
 
 

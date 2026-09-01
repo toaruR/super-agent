@@ -294,7 +294,7 @@ def test_drive_adaptive_calls_planner_replan() -> None:
          mock.patch.object(drive, "resolve_role", return_value={"vendor": "claude", "model": None}), \
          mock.patch.object(drive, "Sequencer") as m_seq_cls:
         m_seq = m_seq_cls.return_value
-        m_seq.load.return_value = []
+        m_seq.load_flat.return_value = []
         m_planner.replan.return_value = {
             "ok": True,
             "tasks": [
@@ -307,6 +307,62 @@ def test_drive_adaptive_calls_planner_replan() -> None:
         drive.drive("", None, "probe/sample/my-design-tasks.md",
                     seq=m_seq, dry_run=False, adaptive=True)
     assert m_planner.replan.called, "planner.replan must be called in adaptive mode"
+
+
+def test_drive_replan_receives_flat_events_for_current_design_only(tmp_path) -> None:
+    """Regression: replan() must receive a flat list of individual event
+    dicts (each with a "type"), filtered to the current design_file --
+    not the raw chunk list from Sequencer.load() (which has no "type" key
+    at all and silently produced an empty summary), and not events from an
+    unrelated design_file sharing the same ledger.
+
+    See docs/plans/replan-events-summary-fix.md.
+    """
+    from harness.core.ledger import Ledger
+
+    ledger_path = tmp_path / "events.jsonl"
+    spec_path = "probe/sample/my-design.md"
+    other_spec_path = str(tmp_path / "other-design.md")
+
+    ledger = Ledger(str(ledger_path))
+    ledger.append_event(spec_path, "", {"event_id": "T1:0", "type": "task.implemented", "task_id": "T1"})
+    ledger.append_event(other_spec_path, "", {"event_id": "OX:0", "type": "integrated", "task_id": "OX"})
+
+    from harness.core.ledger import Sequencer
+    seq = Sequencer(str(ledger_path))
+    seq.start()
+    try:
+        with mock.patch.object(drive, "structural_check", return_value=[]), \
+             mock.patch.object(drive, "implement", return_value={"ok": True, "commit": "c1"}), \
+             mock.patch.object(drive, "run_pipeline", return_value={"verdict": "pass"}), \
+             mock.patch.object(drive, "integrate", return_value={"ok": True}), \
+             mock.patch.object(drive, "create_worktree", return_value={"ok": True}), \
+             mock.patch.object(drive, "schedule"), \
+             mock.patch.object(drive, "parse_tasks_md", return_value=[
+                 {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+             ]), \
+             mock.patch.object(drive, "planner_role") as m_planner, \
+             mock.patch.object(drive, "resolve_role", return_value={"vendor": "claude", "model": None}):
+            m_planner.replan.return_value = {
+                "ok": True,
+                "tasks": [
+                    {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
+                ],
+                "investigation_needed": [],
+                "notes": "",
+            }
+            drive.drive("", spec_path, "probe/sample/my-design-tasks.md",
+                        seq=seq, dry_run=False, adaptive=True)
+    finally:
+        seq.stop()
+
+    assert m_planner.replan.called
+    events_arg = m_planner.replan.call_args.kwargs["events"]
+    assert all(isinstance(e.get("type"), str) and e["type"] for e in events_arg), \
+        "events passed to replan must be individual event dicts with a type, not raw chunks"
+    task_ids = {e.get("task_id") for e in events_arg}
+    assert "T1" in task_ids
+    assert "OX" not in task_ids, "events from an unrelated design_file must be filtered out"
 
 
 def test_drive_integrates_each_layer_before_next_layer_starts() -> None:
@@ -484,7 +540,7 @@ def test_drive_checks_out_target_branch_before_integrate() -> None:
              mock.patch.object(drive, "Sequencer") as m_seq_cls, \
              mock.patch.object(_sp, "run", side_effect=fake_run):
             m_seq = m_seq_cls.return_value
-            m_seq.load.return_value = []
+            m_seq.load_flat.return_value = []
             m_planner.replan.return_value = {"ok": True, "tasks": [
                 {"task_id": "T1", "goal": "g", "acceptance": [], "touch_allow": ["f.py"], "depends_on": []},
             ], "investigation_needed": [], "notes": ""}

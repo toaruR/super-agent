@@ -100,6 +100,33 @@ def test_summarize_events_compact() -> None:
     assert "import failed" in s
 
 
+def test_summarize_events_keeps_unknown_types_as_fallback() -> None:
+    """Event types not in _EVENT_LABELS must still produce a line (not be
+    silently dropped) -- see docs/plans/replan-events-summary-fix.md."""
+    events = [
+        {"type": "conflict", "task_id": "dashboard-render-html",
+         "detail": "merge conflict in dashboard.py"},
+        {"type": "some_future_type", "task_id": "dashboard-render-md"},
+    ]
+    s = planner_role._summarize_events(events)
+    assert "dashboard-render-html" in s
+    assert "統合コンフリクト" in s
+    assert "merge conflict in dashboard.py" in s
+    assert "dashboard-render-md" in s
+    assert "some_future_type" in s
+
+
+def test_summarize_events_shows_judgment_verdict() -> None:
+    events = [
+        {"type": "judgment", "task_id": "dashboard-model",
+         "verdict": "pass_with_findings", "why": "minor style issue"},
+    ]
+    s = planner_role._summarize_events(events)
+    assert "dashboard-model" in s
+    assert "判定=pass_with_findings" in s
+    assert "minor style issue" in s
+
+
 def test_detect_oversplit_finds_shared_file() -> None:
     tasks = [
         {"task_id": "A", "touch_allow": ["harness/x.py"]},
