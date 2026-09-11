@@ -95,29 +95,27 @@ def test_role_model_and_effort_resolution() -> None:
     # resolved by resolve_role(); build_command consumes the resolved model/effort.
     from harness.core.invoke import resolve_role
 
-    # design role -> hermes / muse-spark-1.3-contributor-free / high
+    # design role -> agy / gemini-3.6-flash / high
     rd = resolve_role("design", "harness/config")
-    assert rd == {"vendor": "hermes", "model": "muse-spark-1.3-contributor-free", "effort": "high", "timeout": None}
-    he = load_vendors("harness/config")["hermes"]
-    cmd = build_command(he, "P", model=rd["model"], effort=rd["effort"])
-    assert "-m" in cmd and "muse-spark-1.3-contributor-free" in cmd  # pass-through (no alias)
-    assert "--reasoning" in cmd and "high" in cmd
-    assert "--provider" in cmd and "opencode-free" in cmd  # zen keyless free tier (nous 404s)
+    assert rd == {"vendor": "agy", "model": "gemini-3.6-flash", "effort": "high", "timeout": None}
+    ag = load_vendors("harness/config")["agy"]
+    cmd = build_command(ag, "P", model=rd["model"], effort=rd["effort"])
+    assert "gemini-3.6-flash-high" in cmd
 
-    # implement role -> first channel: hermes / muse-spark-1.3-contributor-free / high
+    # implement role -> hermes / hy3:Free / high (flag-style effort)
     ri = resolve_role("implement", "harness/config")
-    assert ri["vendor"] == "hermes" and ri["model"] == "muse-spark-1.3-contributor-free" and ri["effort"] == "high"
+    assert ri["vendor"] == "hermes" and ri["model"] == "hy3:Free" and ri["effort"] == "high"
     he = load_vendors("harness/config")["hermes"]
     cmd = build_command(he, "P", model=ri["model"], effort=ri["effort"])
-    assert "-m" in cmd and "muse-spark-1.3-contributor-free" in cmd
+    assert "-m" in cmd and "tencent/hy3:free" in cmd  # hy3:Free normalized
     assert "--reasoning" in cmd and "high" in cmd
 
-    # review role -> hermes / muse-spark-1.3-contributor-free / high
+    # review role -> agy / gemini-3.6-flash / high (model_suffix folded)
     rr = resolve_role("review", "harness/config")
-    assert rr["vendor"] == "hermes" and rr["model"] == "muse-spark-1.3-contributor-free"
-    he = load_vendors("harness/config")["hermes"]
-    cmd = build_command(he, "P", model=rr["model"], effort=rr["effort"])
-    assert "muse-spark-1.3-contributor-free" in cmd
+    assert rr["vendor"] == "agy" and rr["model"] == "gemini-3.6-flash"
+    ag = load_vendors("harness/config")["agy"]
+    cmd = build_command(ag, "P", model=rr["model"], effort=rr["effort"])
+    assert "gemini-3.6-flash-high" in cmd  # suffixed
 
     # codex uses config-style effort (not tied to any current role default,
     # but still a declared vendor and its build_command path stays covered)
@@ -133,7 +131,6 @@ def test_role_model_and_effort_resolution() -> None:
     assert ro == {"vendor": "agy", "model": "custom-m", "effort": "low", "timeout": None}
 
     # explicit --model on agy is suffixed (model_suffix always folds effort in)
-    ag = load_vendors("harness/config")["agy"]
     cmd = build_command(ag, "P", model="other-model", effort="low")
     assert "other-model-low" in cmd and "--effort" not in cmd
 
