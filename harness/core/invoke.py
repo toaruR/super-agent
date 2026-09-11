@@ -928,6 +928,20 @@ def _run_streaming(
     }
 
 
+def _closed_pipe_read_end() -> int:
+    """Return the read end of an already-closed pipe (immediate EOF).
+
+    Windows: DEVNULL (NUL) reports isatty()==True, so hermes takes its
+    interactive branch and the contributor-tier consent gate cancels every
+    headless call despite security.allow_data_training_tiers_noninteractive
+    (実測 2026-09-11: stdin=DEVNULL -> "Model override cancelled.", exit 1).
+    A closed pipe reads EOF with isatty()==False, letting the ack apply.
+    """
+    r, w = os.pipe()
+    os.close(w)
+    return r
+
+
 def _start_hermes_log_tail(
     exe: str, session_id: str, q: "queue.Queue[tuple[str, str | None]]"
 ) -> tuple[subprocess.Popen | None, threading.Thread | None]:
@@ -977,11 +991,17 @@ def _run_hermes(
 
     Returns the same shape as `_run_streaming()`.
     """
-    proc = subprocess.Popen(
-        cmd, cwd=cwd, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", shell=False,
-    )
+    # Closed pipe (NOT DEVNULL): on Windows NUL isatty()==True, which trips
+    # hermes' interactive consent gate — see _closed_pipe_read_end.
+    stdin_fd = _closed_pipe_read_end()
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, stdin=stdin_fd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", shell=False,
+        )
+    finally:
+        os.close(stdin_fd)  # Popen dup()s it for the child; drop our copy
     q: "queue.Queue[tuple[str, str | None]]" = queue.Queue()
     threads = [
         threading.Thread(target=_reader_thread, args=(proc.stdout, "stdout", q), daemon=True),
