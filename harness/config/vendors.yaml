@@ -9,8 +9,10 @@
 roles:
   # design:    { vendor: claude, model: claude-sonnet-5,  effort: high }
   # planner:   { vendor: claude, model: claude-sonnet-5,  effort: high }   # 実行中の再計画（design と同一 vendor/skill だが別責務） 
-  design:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
-  planner:   { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  design:    { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+  planner:   { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+  # design:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  # planner:   { vendor: agy,    model: gemini-3.6-flash, effort: high }
   # implement はチャンネルリスト（Stage B 並列(b) のマルチチャンネル実装）。
   # 各エントリが1チャンネル = 独立 worktree で並列実行。チャンネル数 = リスト長。
   # model/effort はチャンネルごとに指定可。単一辞書 {vendor,model,effort} も後方互換。
@@ -31,14 +33,20 @@ roles:
     # - { vendor: hermes, model: hy3:Free,         effort: high }
     # - { vendor: hermes, model: hy3:Free,         effort: high }
     # - { vendor: hermes, model: hy3:Free,         effort: high }
-    - { vendor: agy,    model: gemini-3.6-flash, effort: high }
-    - { vendor: agy,    model: gemini-3.6-flash, effort: high }
-    - { vendor: agy,    model: gemini-3.6-flash, effort: high }
-    - { vendor: agy,    model: gemini-3.6-flash, effort: high }
-    - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+    - { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+    - { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+    - { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+    - { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+    - { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
+    # - { vendor: agy,    model: gemini-3.6-flash, effort: high }
   # review:    { vendor: codex,  model: gpt-5.6-luna,    effort: high }   # codex v0.147.0 で gpt-5.6-luna が実測で通る（25倍安価: $0.20/$1.20 vs gpt-5.5 の $5/$30）
   # review:    { vendor: claude, model: claude-sonnet-5,  effort: high }
-  review:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
+  review:    { vendor: hermes, model: muse-spark-1.3-contributor-free, effort: high }
+  # review:    { vendor: agy,    model: gemini-3.6-flash, effort: high }
 
 claude:
   model_flag: "--model"
@@ -147,7 +155,16 @@ hermes:
   # 同一問いへの回答が変わらず、--reasoning bogus でもエラーにならず通る（値検証が
   # 緩い、またはモデル側で無視）。フラグを外すよりはマシだが「high が効いている証拠
   # はなし」。将来のモデル/CLI で効く可能性を残し削除はしない。
-  headless:  ["hermes", "chat", "-q", "{prompt}", "-Q"]
+  headless:  ["hermes", "chat", "-q", "{prompt}", "-Q", "--provider", "opencode-free"]
+  # 実測(2026-09-11): muse-spark-1.3-contributor-free は既定(nous)経由だと
+  # `HTTP 404: Model ... not found` で弾かれる。Zen relay のキーレス枠
+  # (provider `opencode-free`) 経由で `Reply with exactly: OK` → `OK` が live で通った。
+  # contributor-tier のため同意ゲートがあるが、hermes 側 config
+  # `security.allow_data_training_tiers_noninteractive: true` で無人実行を許可済み。
+  # 注意: 当該 tier はプロンプトが学習に使われる。標準版に戻す場合は model と
+  # provider を見直すこと。
+  # なお invoke.py の _run_hermes は stdin に閉じたパイプを渡すこと（DEVNULL=NUL は
+  # Windows で isatty()==True になり同意ゲートで毎回キャンセルされる実測あり）。
   # hermes に構造化出力フラグはない。schema は prompt 内指示とし、
   # extract_result が出力の最後の JSON 行を拾う（result_path 省略→全体）。
   # structured キーは意図的に省略（build_command でガード済み）。
